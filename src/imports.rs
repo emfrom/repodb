@@ -174,18 +174,8 @@ pub fn register(c: &Connection, locator: &str) -> Result<()> {
     let is_url =
         !is_remote_git && (locator.starts_with("http://") || locator.starts_with("https://"));
     let path = Path::new(locator);
-    let same_repository = path.is_dir()
-        && path.canonicalize().ok()
-            == Command::new("git")
-                .args(["rev-parse", "--show-toplevel"])
-                .output()
-                .ok()
-                .filter(|o| o.status.success())
-                .and_then(|o| String::from_utf8(o.stdout).ok())
-                .and_then(|root| Path::new(root.trim()).canonicalize().ok());
     let is_git = is_remote_git
         || path.is_dir()
-            && !same_repository
             && Command::new("git")
                 .args(["-C", locator, "rev-parse", "--git-dir"])
                 .output()
@@ -279,7 +269,7 @@ pub fn refresh(c: &Connection) -> Result<()> {
             let repository = if Path::new(&locator).is_dir() {
                 locator.clone()
             } else {
-                let mirror = cache_dir.join(format!("git-{}", id.trim_start_matches("import:")));
+                let mirror = cache_dir.join(format!("git-{}", checksum(locator.as_bytes())));
                 fs::create_dir_all(&cache_dir)?;
                 if !mirror.exists() {
                     let status = Command::new("git")

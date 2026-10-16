@@ -100,7 +100,9 @@ fn imported_files_refresh_with_references_and_both_retention_policies() {
     );
     assert!(!search_json(root, &["third"]).is_empty());
     let directory = root.to_string_lossy().into_owned();
-    assert!(!run(root, &["import", &directory]).0);
+    assert!(run(root, &["import", &directory]).0);
+    assert!(run(root, &["refresh"]).0);
+    assert!(!search_json(root, &["Rust phrase"]).is_empty());
 }
 
 #[test]
@@ -175,6 +177,40 @@ fn imported_git_repository_refreshes_with_identity_commit_path_and_line_refs() {
             .any(|x| x["repo_id"].as_str().unwrap().contains(&remote)),
         "{remote_result:?}"
     );
+}
+
+#[test]
+fn long_file_git_locator_uses_bounded_mirror_directory_name() {
+    let repo = repository();
+    let root = repo.path();
+    assert!(run(root, &["init"]).0);
+
+    let source = repository();
+    let parent = tempfile::tempdir().unwrap();
+    let nested = parent.path().join("a".repeat(100)).join("b".repeat(100));
+    fs::create_dir_all(&nested).unwrap();
+    let bare = nested.join("remote.git");
+    let clone = Command::new("git")
+        .args(["clone", "--bare"])
+        .arg(source.path())
+        .arg(&bare)
+        .output()
+        .unwrap();
+    assert!(clone.status.success());
+    let locator = format!("file://{}", bare.display());
+    assert!(locator.len() > 128);
+    assert!(run(root, &["import", &locator]).0);
+    assert!(run(root, &["refresh"]).0);
+    assert!(!search_json(root, &["Rust phrase"]).is_empty());
+
+    let cache = root.join(".git").join("repodb-cache");
+    let mirrors = fs::read_dir(cache)
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+        .filter(|name| name.starts_with("git-"))
+        .collect::<Vec<_>>();
+    assert_eq!(mirrors.len(), 1, "{mirrors:?}");
+    assert!(mirrors[0].len() <= 68, "{:?}", mirrors[0]);
 }
 
 #[test]
