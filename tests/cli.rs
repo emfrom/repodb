@@ -1053,6 +1053,35 @@ fn deleted_refs_are_pruned_only_on_refresh_while_shared_reachable_blobs_survive(
 }
 
 #[test]
+fn large_history_tree_refreshes_incrementally_and_keeps_the_snapshot_atomic() {
+    let repo = repository();
+    let root = repo.path();
+    assert!(run(root, &["init"]).0);
+    let before = search_json(root, &["TARGET", "--all-history"]);
+
+    let dir = root.join("tree");
+    fs::create_dir(&dir).unwrap();
+    for index in 0..2_000 {
+        fs::write(
+            dir.join(format!("file-{index:04}.txt")),
+            b"many tree entries\\n",
+        )
+        .unwrap();
+    }
+    git(root, &["add", "tree"]);
+    git(root, &["commit", "-qm", "large tree"]);
+    assert!(run(root, &["refresh"]).0);
+    let after = search_json(root, &["TARGET", "--all-history"]);
+    assert_eq!(after.len(), before.len());
+    assert_eq!(after[0]["path"], before[0]["path"]);
+    assert_eq!(after[0]["text"], before[0]["text"]);
+    assert_eq!(
+        search_json(root, &["many tree entries", "--all-history"]).len(),
+        1
+    );
+}
+
+#[test]
 fn oversized_history_blob_is_rejected_without_replacing_searchable_snapshot() {
     let repo = repository();
     let root = repo.path();
