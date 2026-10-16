@@ -331,32 +331,57 @@ fn vectors<'a>(
     model: &str,
     dimension: usize,
     max_bytes: Option<usize>,
+    budget: &mut Budget,
 ) -> Result<(Vec<Vec<u8>>, usize)> {
     let mut dim = dimension;
     let mut out = vec![];
     let mut total_bytes = 0usize;
     for text in texts {
-        // Each JSON number needs at least one byte, so stdout bytes bound the
-        // element count. Vec growth can reserve up to twice that many f32s
-        // (8 bytes/element), and the encoded Vec may reserve twice its 4-byte
-        // payload (8 bytes/element). Reserve stdout + both capacities (17 bytes/stdout byte),
-        // previously retained rows, and embed's bounded 64 KiB stderr capture.
-        let output_limit = max_bytes.map(|limit| {
-            limit
-                .saturating_sub(total_bytes)
-                .saturating_sub(EMBEDDING_STDERR_BYTES)
-                / 17
-        });
-        let v = crate::embed_with_output_limit(command, model, text, output_limit)?;
+        budget.reserve_vec(&mut out, 1, "history vector rows")?;
+        let remaining_vectors =
+            max_bytes.map_or(usize::MAX, |limit| limit.saturating_sub(total_bytes));
+        let remaining = budget.remaining().min(remaining_vectors);
+        let output_limit = remaining.saturating_sub(EMBEDDING_STDERR_BYTES) / 17;
+        // Each JSON number needs at least one byte. The stdout limit therefore
+        // bounds both Vec capacities (at most 8 bytes/element each); with stdout
+        // and bounded stderr, 17 bytes per stdout byte covers the full live peak.
+        let workspace = output_limit
+            .checked_mul(17)
+            .and_then(|bytes| bytes.checked_add(EMBEDDING_STDERR_BYTES))
+            .ok_or_else(memory_limit)?;
+        budget.charge(workspace, "embedding workspace")?;
+        let v = match crate::embed_with_output_limit(command, model, text, Some(output_limit)) {
+            Ok(v) => v,
+            Err(error) => {
+                budget.release(workspace);
+                return Err(error);
+            }
+        };
+        let decoded_capacity = v.capacity() * std::mem::size_of::<f32>();
+        budget.release(workspace - decoded_capacity);
         if dim != 0 && dim != v.len() {
+            budget.release(decoded_capacity);
             return Err("embedding dimension mismatch".into());
         }
         dim = v.len();
-        let encoded = as_bytes(&v);
-        total_bytes += encoded.len();
-        if max_bytes.is_some_and(|limit| total_bytes > limit) {
+        let payload = v
+            .len()
+            .checked_mul(std::mem::size_of::<f32>())
+            .ok_or_else(memory_limit)?;
+        if max_bytes.is_some_and(|limit| total_bytes.saturating_add(payload) > limit) {
+            budget.release(decoded_capacity);
             return Err(format!("history refresh limit exceeded: embedding vectors exceed {} bytes; reduce indexed history and retry", max_bytes.unwrap()).into());
         }
+        let mut encoded = Vec::new();
+        if let Err(error) = budget.reserve_vec(&mut encoded, payload, "encoded history vector") {
+            budget.release(decoded_capacity);
+            return Err(error);
+        }
+        for value in &v {
+            encoded.extend_from_slice(&value.to_le_bytes());
+        }
+        budget.release(decoded_capacity);
+        total_bytes += payload;
         out.push(encoded);
     }
     Ok((out, dim))
@@ -403,11 +428,32 @@ mod tests {
             "model",
             0,
             Some(limit),
+            &mut Budget::new(limit, "history refresh limit exceeded"),
         );
         assert!(
             result.is_err(),
             "short numeric JSON must respect aggregate bound"
         );
+    }
+
+    #[test]
+    fn history_vector_row_capacity_obeys_budget_boundary() {
+        let row_size = std::mem::size_of::<Vec<u8>>();
+        let mut budget = Budget::new(row_size, "history refresh limit exceeded");
+        let mut rows = Vec::<Vec<u8>>::new();
+        budget
+            .reserve_vec(&mut rows, 1, "history vector rows")
+            .unwrap();
+        assert_eq!(budget.used(), rows.capacity() * row_size);
+        let excessive_growth = rows.capacity() + 1;
+        assert!(
+            budget
+                .reserve_vec(&mut rows, excessive_growth, "history vector rows")
+                .is_err()
+        );
+        assert_eq!(budget.used(), rows.capacity() * row_size);
+        budget.release(rows.capacity() * row_size);
+        assert_eq!(budget.used(), 0);
     }
 
     #[test]
@@ -594,7 +640,8 @@ pub fn refresh(c: &mut Connection) -> Result<()> {
                 command,
                 model,
                 *dim,
-                Some(MAX_VECTOR_BYTES.min(preparation_bytes.remaining())),
+                Some(MAX_VECTOR_BYTES),
+                &mut preparation_bytes,
             )?;
             Ok::<_, Box<dyn std::error::Error>>((rows, dimension))
         })
@@ -668,12 +715,17 @@ pub fn reembed(c: &mut Connection, command: &str, model: &str) -> Result<()> {
         s.query_map([], |r| Ok((r.get::<_, usize>(0)?, r.get::<_, String>(1)?)))?
             .collect::<std::result::Result<Vec<_>, _>>()?
     };
+    let mut preparation_bytes = Budget::new(
+        MAX_REFRESH_MEMORY_BYTES,
+        "history refresh limit exceeded: preparation data",
+    );
     let (rows, mut dim) = vectors(
         units.iter().map(|(_, text)| text.as_str()),
         command,
         model,
         0,
         None,
+        &mut preparation_bytes,
     )?;
     let tx = publish_transaction(c, version)?;
     tx.execute("DELETE FROM unit_embeddings", [])?;
