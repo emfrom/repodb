@@ -3,13 +3,13 @@ use serde::Serialize;
 use std::{
     env,
     error::Error,
-    io::{Read, Write},
     path::PathBuf,
     process::{Command, Stdio},
 };
 
 mod history;
 mod imports;
+mod process;
 mod segmentation;
 
 type Result<T> = std::result::Result<T, Box<dyn Error>>;
@@ -32,50 +32,24 @@ struct SearchResult {
     repo_id: Option<String>,
 }
 fn git(args: &[&str]) -> Result<Vec<u8>> {
-    const MAX_STDERR_BYTES: usize = 64 * 1024;
-    let mut child = Command::new("git")
-        .args(args)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()?;
-    let stdout = child.stdout.take().unwrap();
-    let stderr = child.stderr.take().unwrap();
-    let stdout = std::thread::spawn(move || read_bounded_command_output(stdout, 256 * 1024 * 1024));
-    let stderr = std::thread::spawn(move || read_bounded_command_output(stderr, MAX_STDERR_BYTES));
-    let status = child.wait()?;
-    let (stdout, stdout_exceeded) = stdout.join().map_err(|_| "git stdout reader panicked")??;
-    let (stderr, stderr_exceeded) = stderr.join().map_err(|_| "git stderr reader panicked")??;
-    if stdout_exceeded || stderr_exceeded {
-        return Err("git command output exceeded its bounded capture".into());
-    }
-    if !status.success() {
+    let output = process::capture(
+        &mut Command::new("git")
+            .args(args)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()?,
+        256 * 1024 * 1024,
+        64 * 1024,
+    )?;
+    if !output.status.success() {
         return Err(format!(
             "git {} failed: {}",
             args.join(" "),
-            String::from_utf8_lossy(&stderr)
+            String::from_utf8_lossy(&output.stderr)
         )
         .into());
     }
-    Ok(stdout)
-}
-
-pub(crate) fn read_bounded_command_output(
-    mut reader: impl std::io::Read,
-    limit: usize,
-) -> std::io::Result<(Vec<u8>, bool)> {
-    let mut output = Vec::with_capacity(limit.min(8192));
-    let mut buffer = [0u8; 8192];
-    let mut exceeded = false;
-    loop {
-        let count = reader.read(&mut buffer)?;
-        if count == 0 {
-            break;
-        }
-        let keep = limit.saturating_sub(output.len()).min(count);
-        output.extend_from_slice(&buffer[..keep]);
-        exceeded |= keep != count;
-    }
-    Ok((output, exceeded))
+    Ok(output.stdout)
 }
 fn root() -> Result<PathBuf> {
     Ok(PathBuf::from(
@@ -146,36 +120,21 @@ pub(crate) fn embed_with_output_limit(
         .args(["--json", "-"])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(if output_limit.is_some() {
-            Stdio::null()
-        } else {
-            Stdio::piped()
-        })
+        .stderr(Stdio::piped())
         .spawn()?;
-    child.stdin.take().unwrap().write_all(text.as_bytes())?;
-    let stdout = child.stdout.take().unwrap();
-    let output = if let Some(limit) = output_limit {
-        let mut output = Vec::new();
-        stdout
-            .take(limit.saturating_add(1) as u64)
-            .read_to_end(&mut output)?;
-        if output.len() > limit {
-            let _ = child.kill();
-            let _ = child.wait();
-            return Err(format!("history refresh limit exceeded: embedding output exceeds {limit} bytes; reduce indexed history and retry").into());
-        }
-        output
-    } else {
-        let mut output = Vec::new();
-        let mut stdout = stdout;
-        stdout.read_to_end(&mut output)?;
-        output
-    };
-    let status = child.wait()?;
-    if !status.success() {
+    let limit = output_limit.unwrap_or(256 * 1024 * 1024);
+    let output = process::capture_with_input(&mut child, text.as_bytes(), limit, 64 * 1024)?;
+    if output.exceeded {
+        return Err(if output_limit.is_some() {
+            format!("history refresh limit exceeded: embedding output exceeds {limit} bytes; reduce indexed history and retry").into()
+        } else {
+            "embedding command output exceeded its bounded capture".into()
+        });
+    }
+    if !output.status.success() {
         return Err("embedding command failed".into());
     }
-    let v: Vec<f32> = serde_json::from_slice(&output)?;
+    let v: Vec<f32> = serde_json::from_slice(&output.stdout)?;
     validate_vector(&v)?;
     Ok(v)
 }

@@ -1,8 +1,8 @@
-use crate::{Result, SearchResult, as_bytes, embed, read_bounded_command_output};
+use crate::{Result, SearchResult, as_bytes, embed, process};
 use rusqlite::{Connection, params};
 use std::{
     fs,
-    io::{Read, Write},
+    io::Read,
     path::Path,
     process::{Command, Stdio},
 };
@@ -29,25 +29,21 @@ fn bounded_command_output(
     stdout_limit: usize,
     used: &mut usize,
 ) -> Result<(std::process::ExitStatus, Vec<u8>, Vec<u8>)> {
-    let stdout = child
-        .stdout
-        .take()
-        .ok_or("command stdout was not captured")?;
-    let stderr = child
-        .stderr
-        .take()
-        .ok_or("command stderr was not captured")?;
-    let stdout = std::thread::spawn(move || read_bounded_command_output(stdout, stdout_limit));
-    let stderr =
-        std::thread::spawn(move || read_bounded_command_output(stderr, MAX_COMMAND_STDERR_BYTES));
-    let status = child.wait()?;
-    let (out, out_exceeded) = stdout.join().map_err(|_| "stdout reader panicked")??;
-    let (err, err_exceeded) = stderr.join().map_err(|_| "stderr reader panicked")??;
-    if out_exceeded || err_exceeded {
+    bounded_command_output_with_input(child, &[], stdout_limit, used)
+}
+
+fn bounded_command_output_with_input(
+    child: &mut std::process::Child,
+    input: &[u8],
+    stdout_limit: usize,
+    used: &mut usize,
+) -> Result<(std::process::ExitStatus, Vec<u8>, Vec<u8>)> {
+    let output = process::capture_with_input(child, input, stdout_limit, MAX_COMMAND_STDERR_BYTES)?;
+    if output.exceeded {
         return Err(format!("subprocess output exceeded its bounded capture (stdout: {stdout_limit} bytes, stderr: {MAX_COMMAND_STDERR_BYTES} bytes)").into());
     }
-    charge_refresh_memory(used, err.len(), "subprocess stderr")?;
-    Ok((status, out, err))
+    charge_refresh_memory(used, output.stderr.len(), "subprocess stderr")?;
+    Ok((output.status, output.stdout, output.stderr))
 }
 
 fn charge_refresh_memory(used: &mut usize, bytes: usize, description: &str) -> Result<()> {
@@ -64,10 +60,10 @@ fn import_embed(command: &str, model: &str, text: &str, used: &mut usize) -> Res
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()?;
-    child.stdin.take().unwrap().write_all(text.as_bytes())?;
     let output_limit = MAX_EMBEDDING_OUTPUT_BYTES
         .min(MAX_REFRESH_MEMORY_BYTES.saturating_sub(*used + MAX_COMMAND_STDERR_BYTES) / 2);
-    let (status, stdout, stderr) = bounded_command_output(&mut child, output_limit, used)?;
+    let (status, stdout, stderr) =
+        bounded_command_output_with_input(&mut child, text.as_bytes(), output_limit, used)?;
     charge_refresh_memory(used, stdout.len(), "embedding command output")?;
     if !status.success() {
         return Err(format!(
@@ -603,9 +599,9 @@ pub fn refresh(c: &Connection) -> Result<()> {
                     .stderr(Stdio::piped())
                     .spawn()
                     .map_err(|error| format!("PDF imports require pdftotext on PATH: {error}"))?;
-                child.stdin.take().unwrap().write_all(&source_bytes)?;
-                let output = bounded_command_output(
+                let output = bounded_command_output_with_input(
                     &mut child,
+                    &source_bytes,
                     MAX_PDF_TEXT_BYTES.min(
                         MAX_REFRESH_MEMORY_BYTES
                             .saturating_sub(refresh_memory_bytes + MAX_COMMAND_STDERR_BYTES),
