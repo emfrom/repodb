@@ -1561,6 +1561,53 @@ fn long_document_units_are_bounded_lossless_and_use_unicode_safe_source_ranges()
 }
 
 #[test]
+fn rust_top_level_constructs_are_embedded_individually_with_source_references() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let repo = repository();
+    let root = repo.path();
+    let source = "fn alpha() {}\n\nstruct Beta;\n";
+    fs::write(root.join("constructs.rs"), source).unwrap();
+    git(root, &["add", "constructs.rs"]);
+    git(root, &["commit", "-qm", "top-level constructs"]);
+    let commit = git_text(root, &["rev-parse", "HEAD"]);
+    let fake = root.join("construct-embedder");
+    let inputs = root.join("embedding-inputs");
+    fs::write(
+        &fake,
+        "#!/bin/sh\ninput=$(cat)\ncase \"$input\" in 'fn alpha() {}'|'struct Beta;') printf '%s\\n' \"$input\" >> \"$REPODB_TEST_INPUTS\" ;; esac\nprintf '[1,0]'\n",
+    )
+    .unwrap();
+    fs::set_permissions(&fake, fs::Permissions::from_mode(0o755)).unwrap();
+    assert!(run(root, &["init"]).0);
+    assert!(
+        run_with_env(
+            root,
+            &["reembed", "--command", fake.to_str().unwrap()],
+            &[("REPODB_TEST_INPUTS", inputs.to_str().unwrap())],
+        )
+        .0
+    );
+
+    assert_eq!(
+        fs::read_to_string(inputs).unwrap(),
+        "fn alpha() {}\nstruct Beta;\n"
+    );
+    for (query, text, start, end) in [
+        ("fn alpha", "fn alpha() {}", 1, 1),
+        ("struct Beta", "struct Beta;", 3, 3),
+    ] {
+        let results = search_json(root, &[query]);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0]["text"], text);
+        assert_eq!(results[0]["commit_id"], commit);
+        assert_eq!(results[0]["path"], "constructs.rs");
+        assert_eq!(results[0]["line_start"], start);
+        assert_eq!(results[0]["line_end"], end);
+    }
+}
+
+#[test]
 fn rust_top_level_syntax_preserves_nested_items_attributes_comments_and_source_gaps() {
     let repo = repository();
     let root = repo.path();
