@@ -89,6 +89,31 @@ fn init_refresh_search_and_json_are_repository_local_and_exact() {
 }
 
 #[test]
+fn semantic_search_uses_configured_fake_embeddings_and_precise_refs() {
+    let repo = repository();
+    let root = repo.path();
+    let fake = root.join("fake-embedder");
+    fs::write(&fake, "#!/bin/sh\ncat >/dev/null\nprintf '[1.0, 0.0]'\n").unwrap();
+    use std::os::unix::fs::PermissionsExt;
+    fs::set_permissions(&fake, fs::Permissions::from_mode(0o755)).unwrap();
+    assert!(run(root, &["init"]).0);
+
+    let (ok, output) = run(root, &["reembed", "--command", fake.to_str().unwrap()]);
+    assert!(ok, "{output}");
+    let (ok, output) = run(
+        root,
+        &["search", "unrelated wording", "--semantic", "--json"],
+    );
+    assert!(ok, "{output}");
+    let results: serde_json::Value = serde_json::from_str(&output).unwrap();
+    assert!(!results.as_array().unwrap().is_empty());
+    assert_eq!(results[0]["path"], "notes.txt");
+    assert_eq!(results[0]["line_start"], 1);
+    assert!(results[0]["commit_id"].as_str().is_some());
+    assert!(results[0]["distance"].as_f64().is_some());
+}
+
+#[test]
 fn uncommitted_phrase_is_not_searchable() {
     let repo = repository();
     let root = repo.path();
