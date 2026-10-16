@@ -123,14 +123,13 @@ pub(crate) fn embed_with_output_limit(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()?;
-    let limit = output_limit.unwrap_or(256 * 1024 * 1024);
-    let output = process::capture_with_input(&mut child, text.as_bytes(), limit, 64 * 1024)?;
+    let output = match output_limit {
+        Some(limit) => process::capture_with_input(&mut child, text.as_bytes(), limit, 64 * 1024)?,
+        None => process::capture_with_input_unbounded(&mut child, text.as_bytes())?,
+    };
     if output.exceeded {
-        return Err(if output_limit.is_some() {
-            format!("history refresh limit exceeded: embedding output exceeds {limit} bytes; reduce indexed history and retry").into()
-        } else {
-            "embedding command output exceeded its bounded capture".into()
-        });
+        let limit = output_limit.expect("bounded capture has a limit");
+        return Err(format!("history refresh limit exceeded: embedding output exceeds {limit} bytes; reduce indexed history and retry").into());
     }
     if !output.status.success() {
         return Err("embedding command failed".into());

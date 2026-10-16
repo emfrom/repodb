@@ -768,40 +768,38 @@ pub fn refresh(c: &Connection) -> Result<()> {
 
 pub fn reembed(c: &Connection, command: &str, model: &str) -> Result<Option<usize>> {
     init(c)?;
-    let rows = {
-        let mut stmt = c.prepare("SELECT source_id,version,line,text,'file',NULL FROM imported_units UNION ALL SELECT source_id,commit_id,line,text,'git',path FROM imported_git_units ORDER BY 1,2,3")?;
-        stmt.query_map([], |r| {
-            Ok((
-                r.get::<_, String>(0)?,
-                r.get::<_, String>(1)?,
-                r.get::<_, usize>(2)?,
-                r.get::<_, String>(3)?,
-                r.get::<_, String>(4)?,
-                r.get::<_, Option<String>>(5)?,
-            ))
-        })?
-        .collect::<std::result::Result<Vec<_>, _>>()?
-    };
-    let mut vectors = Vec::with_capacity(rows.len());
+    c.execute_batch("PRAGMA temp_store=FILE; DROP TABLE IF EXISTS temp.import_reembed_vectors; CREATE TEMP TABLE import_reembed_vectors(kind TEXT NOT NULL, source_id TEXT NOT NULL, version TEXT NOT NULL, line INTEGER NOT NULL, path TEXT, vector BLOB NOT NULL);")?;
     let mut dimension = None;
-    for (_, _, _, text, _, _) in &rows {
-        let vector = embed(command, model, text)?;
-        if dimension.is_some_and(|d| d != vector.len()) {
-            return Err("embedding dimension mismatch".into());
+    {
+        let mut stmt = c.prepare("SELECT source_id,version,line,text,'file',NULL FROM imported_units UNION ALL SELECT source_id,commit_id,line,text,'git',path FROM imported_git_units ORDER BY 1,2,3")?;
+        let mut rows = stmt.query([])?;
+        let mut staged =
+            c.prepare("INSERT INTO temp.import_reembed_vectors VALUES(?1,?2,?3,?4,?5,?6)")?;
+        while let Some(row) = rows.next()? {
+            let source: String = row.get(0)?;
+            let version: String = row.get(1)?;
+            let line: usize = row.get(2)?;
+            let text: String = row.get(3)?;
+            let kind: String = row.get(4)?;
+            let path: Option<String> = row.get(5)?;
+            let vector = embed(command, model, &text)?;
+            if dimension.is_some_and(|d| d != vector.len()) {
+                return Err("embedding dimension mismatch".into());
+            }
+            dimension = Some(vector.len());
+            staged.execute(params![
+                kind,
+                source,
+                version,
+                line,
+                path,
+                as_bytes(&vector)
+            ])?;
         }
-        dimension = Some(vector.len());
-        vectors.push(as_bytes(&vector));
     }
-    for ((source, version, line, _, kind, path), vector) in rows.iter().zip(vectors) {
-        if kind == "git" {
-            c.execute("UPDATE imported_git_units SET vector=?1 WHERE source_id=?2 AND commit_id=?3 AND line=?4 AND path=?5", params![vector, source, version, line, path])?;
-        } else {
-            c.execute(
-                "UPDATE imported_units SET vector=?1 WHERE source_id=?2 AND version=?3 AND line=?4",
-                params![vector, source, version, line],
-            )?;
-        }
-    }
+    c.execute("UPDATE imported_units SET vector=(SELECT vector FROM temp.import_reembed_vectors v WHERE v.kind='file' AND v.source_id=imported_units.source_id AND v.version=imported_units.version AND v.line=imported_units.line)", [])?;
+    c.execute("UPDATE imported_git_units SET vector=(SELECT vector FROM temp.import_reembed_vectors v WHERE v.kind='git' AND v.source_id=imported_git_units.source_id AND v.version=imported_git_units.commit_id AND v.line=imported_git_units.line AND v.path=imported_git_units.path)", [])?;
+    c.execute_batch("DROP TABLE temp.import_reembed_vectors")?;
     Ok(dimension)
 }
 

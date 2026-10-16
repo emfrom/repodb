@@ -48,10 +48,37 @@ pub(crate) fn capture_with_input(
     stdout_limit: usize,
     stderr_limit: usize,
 ) -> std::io::Result<Output> {
+    capture_streams(child, input, Some(stdout_limit), Some(stderr_limit))
+}
+
+pub(crate) fn capture_with_input_unbounded(
+    child: &mut Child,
+    input: &[u8],
+) -> std::io::Result<Output> {
+    capture_streams(child, input, None, None)
+}
+
+fn capture_streams(
+    child: &mut Child,
+    input: &[u8],
+    stdout_limit: Option<usize>,
+    stderr_limit: Option<usize>,
+) -> std::io::Result<Output> {
+    fn drain(reader: impl Read, limit: Option<usize>) -> std::io::Result<(Vec<u8>, bool)> {
+        match limit {
+            Some(limit) => drain_bounded(reader, limit),
+            None => {
+                let mut output = Vec::new();
+                let mut reader = reader;
+                reader.read_to_end(&mut output)?;
+                Ok((output, false))
+            }
+        }
+    }
     let stdout = child.stdout.take().expect("captured stdout");
     let stderr = child.stderr.take().expect("captured stderr");
-    let stdout = std::thread::spawn(move || drain_bounded(stdout, stdout_limit));
-    let stderr = std::thread::spawn(move || drain_bounded(stderr, stderr_limit));
+    let stdout = std::thread::spawn(move || drain(stdout, stdout_limit));
+    let stderr = std::thread::spawn(move || drain(stderr, stderr_limit));
     if let Some(mut stdin) = child.stdin.take() {
         let write_result = stdin.write_all(input);
         drop(stdin);
@@ -90,6 +117,22 @@ mod tests {
             assert!(output.capacity() <= limit);
             assert_eq!(exceeded, input.len() > limit);
         }
+    }
+
+    #[test]
+    fn unbounded_capture_drains_output_while_feeding_large_stdin() {
+        let mut child = Command::new("sh")
+            .args(["-c", "cat >/dev/null; head -c 1048576 /dev/zero"])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let input = vec![b'x'; 1024 * 1024];
+        let output = capture_with_input_unbounded(&mut child, &input).unwrap();
+        assert!(output.status.success());
+        assert!(!output.exceeded);
+        assert_eq!(output.stdout.len(), 1024 * 1024);
     }
 
     #[test]

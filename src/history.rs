@@ -700,31 +700,35 @@ pub fn refresh(c: &mut Connection) -> Result<()> {
 
 pub fn reembed(c: &mut Connection, command: &str, model: &str) -> Result<()> {
     let version = snapshot_version(c)?;
-    let units = {
-        let mut s = c.prepare("SELECT unit_id,text FROM indexed_units ORDER BY unit_id")?;
-        s.query_map([], |r| Ok((r.get::<_, usize>(0)?, r.get::<_, String>(1)?)))?
-            .collect::<std::result::Result<Vec<_>, _>>()?
-    };
+    c.execute_batch("PRAGMA temp_store=FILE; DROP TABLE IF EXISTS temp.reembed_vectors; CREATE TEMP TABLE reembed_vectors(unit_id INTEGER PRIMARY KEY, vector BLOB NOT NULL);")?;
     let mut preparation_bytes = Budget::new(
         MAX_REFRESH_MEMORY_BYTES,
         "history refresh limit exceeded: preparation data",
     );
-    let (rows, mut dim) = vectors(
-        units.iter().map(|(_, text)| text.as_str()),
-        command,
-        model,
-        0,
-        None,
-        &mut preparation_bytes,
-    )?;
+    let mut dim = 0;
+    {
+        let mut units = c.prepare("SELECT unit_id,text FROM indexed_units ORDER BY unit_id")?;
+        let mut rows = units.query([])?;
+        let mut staged = c.prepare("INSERT INTO temp.reembed_vectors VALUES(?1,?2)")?;
+        while let Some(row) = rows.next()? {
+            let unit_id: usize = row.get(0)?;
+            let text: String = row.get(1)?;
+            let (mut vector, dimension) = vectors(
+                std::iter::once(text.as_str()),
+                command,
+                model,
+                dim,
+                None,
+                &mut preparation_bytes,
+            )?;
+            let encoded = vector.pop().ok_or("embedding produced no vector")?;
+            staged.execute(params![unit_id, encoded])?;
+            dim = dimension;
+        }
+    }
     let tx = publish_transaction(c, version)?;
     tx.execute("DELETE FROM unit_embeddings", [])?;
-    for ((unit_id, _), vector) in units.iter().zip(rows) {
-        tx.execute(
-            "INSERT INTO unit_embeddings VALUES(?1,?2)",
-            params![unit_id, vector],
-        )?;
-    }
+    tx.execute("INSERT INTO unit_embeddings SELECT unit_id,vector FROM temp.reembed_vectors ORDER BY unit_id", [])?;
     if let Some(import_dim) = crate::imports::reembed(&tx, command, model)? {
         if dim != 0 && dim != import_dim {
             return Err("embedding dimension mismatch".into());
@@ -739,6 +743,7 @@ pub fn reembed(c: &mut Connection, command: &str, model: &str) -> Result<()> {
         tx.execute("INSERT INTO embedding_config VALUES(?1,?2) ON CONFLICT(key) DO UPDATE SET value=excluded.value", params![key,value])?;
     }
     tx.commit()?;
+    c.execute_batch("DROP TABLE temp.reembed_vectors")?;
     Ok(())
 }
 
