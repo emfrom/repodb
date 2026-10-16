@@ -39,8 +39,8 @@ fn bounded_command_output_with_input(
     used: &mut Budget,
 ) -> Result<(std::process::ExitStatus, Vec<u8>, Vec<u8>)> {
     let remaining = used.remaining();
-    let stderr_limit = remaining.min(MAX_COMMAND_STDERR_BYTES);
-    let stdout_limit = stdout_limit.min(remaining - stderr_limit);
+    let stdout_limit = stdout_limit.min(remaining);
+    let stderr_limit = (remaining - stdout_limit).min(MAX_COMMAND_STDERR_BYTES);
     let reservation = stdout_limit + stderr_limit;
     charge_refresh_memory(used, reservation, "subprocess output capture")?;
 
@@ -65,8 +65,11 @@ fn import_embed(command: &str, model: &str, text: &str, used: &mut Budget) -> Re
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()?;
+    // A JSON number needs at least one input byte; Vec growth can reserve up to
+    // twice the element count, so budget up to 8 bytes of vector capacity per
+    // captured stdout byte while stdout remains live.
     let output_limit = MAX_EMBEDDING_OUTPUT_BYTES
-        .min(used.remaining().saturating_sub(MAX_COMMAND_STDERR_BYTES) / 2);
+        .min(used.remaining().saturating_sub(MAX_COMMAND_STDERR_BYTES) / 9);
     let (status, stdout, stderr) =
         bounded_command_output_with_input(&mut child, text.as_bytes(), output_limit, used)?;
     if !status.success() {
@@ -76,7 +79,17 @@ fn import_embed(command: &str, model: &str, text: &str, used: &mut Budget) -> Re
         )
         .into());
     }
+    let vector_reservation = stdout
+        .len()
+        .checked_mul(2 * std::mem::size_of::<f32>())
+        .ok_or("embedding vector capacity exceeds refresh budget")?;
+    charge_refresh_memory(used, vector_reservation, "embedding vector capacity")?;
     let vector: Vec<f32> = serde_json::from_slice(&stdout)?;
+    let vector_bytes = vector.capacity() * std::mem::size_of::<f32>();
+    used.release(vector_reservation - vector_bytes);
+    let stdout_bytes = stdout.len();
+    drop(stdout);
+    used.release(stdout_bytes);
     if vector.is_empty()
         || vector.iter().any(|value| !value.is_finite())
         || vector.iter().all(|value| *value == 0.0)
@@ -458,13 +471,6 @@ pub fn refresh(c: &Connection) -> Result<()> {
                             line.len(),
                             "Git indexed unit text",
                         )?;
-                        if let Some(vector) = &vector {
-                            charge_refresh_memory(
-                                &mut refresh_memory_bytes,
-                                vector.len().saturating_mul(std::mem::size_of::<f32>()),
-                                "Git embedding vector",
-                            )?;
-                        }
                         charge_refresh_memory(
                             &mut refresh_memory_bytes,
                             std::mem::size_of::<(String, usize, String, Option<Vec<u8>>)>(),
@@ -700,13 +706,6 @@ pub fn refresh(c: &Connection) -> Result<()> {
                 dimension = Some(vector.len());
             }
             charge_refresh_memory(&mut refresh_memory_bytes, text.len(), "indexed unit text")?;
-            if let Some(vector) = &vector {
-                charge_refresh_memory(
-                    &mut refresh_memory_bytes,
-                    vector.len().saturating_mul(std::mem::size_of::<f32>()),
-                    "embedding vector",
-                )?;
-            }
             charge_refresh_memory(
                 &mut refresh_memory_bytes,
                 std::mem::size_of::<(usize, String, Option<Vec<u8>>, Option<usize>)>(),
@@ -937,6 +936,26 @@ mod tests {
     use super::{bounded_command_output_with_input, checksum};
     use crate::budget::Budget;
     use std::process::{Command, Stdio};
+
+    #[test]
+    fn command_stdout_and_stderr_capture_fit_remaining_budget_together() {
+        let mut budget = Budget::new(10, "refresh limit exceeded");
+        budget.charge(3, "existing refresh data").unwrap();
+        let mut child = Command::new("sh")
+            .args(["-c", "printf 1234; printf abc >&2"])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+
+        let (status, stdout, stderr) =
+            bounded_command_output_with_input(&mut child, &[], 4, &mut budget).unwrap();
+
+        assert!(status.success());
+        assert_eq!(stdout, b"1234");
+        assert_eq!(stderr, b"abc");
+        assert_eq!(budget.used(), 10, "combined capture fits exactly");
+    }
 
     #[test]
     fn command_stderr_capture_is_limited_by_remaining_budget() {
