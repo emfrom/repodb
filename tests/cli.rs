@@ -104,6 +104,98 @@ fn imported_files_refresh_with_references_and_both_retention_policies() {
 }
 
 #[test]
+fn imports_retain_latest_fetch_and_reembed_backfills_and_refreshes_vectors() {
+    let repo = repository();
+    let root = repo.path();
+    assert!(run(root, &["init"]).0);
+    let fake = root.join("fake-import-embedder");
+    fs::write(&fake, "#!/bin/sh\ncat >/dev/null\nprintf '[1.0, 0.0]'\n").unwrap();
+    use std::os::unix::fs::PermissionsExt;
+    fs::set_permissions(&fake, fs::Permissions::from_mode(0o755)).unwrap();
+    let file = root.join("external.txt");
+    fs::write(&file, "old version marker\n").unwrap();
+    let file_string = file.to_string_lossy().into_owned();
+    assert!(run(root, &["import", &file_string]).0);
+    assert!(run(root, &["refresh"]).0);
+    assert!(run(root, &["reembed", "--command", fake.to_str().unwrap()]).0);
+    assert!(
+        search_json(root, &["marker", "--semantic"])
+            .iter()
+            .any(|x| x["path"] == file_string)
+    );
+    assert!(run(root, &["retention", "all"]).0);
+    fs::write(&file, "newest version marker\n").unwrap();
+    assert!(run(root, &["refresh"]).0);
+    assert!(run(root, &["retention", "latest"]).0);
+    let newest = search_json(root, &["newest"]);
+    assert!(
+        newest.iter().any(|x| x["path"] == file_string),
+        "{newest:?}"
+    );
+    assert!(
+        !search_json(root, &["old version"])
+            .iter()
+            .any(|x| x["path"] == file_string)
+    );
+}
+
+#[test]
+fn combined_search_merges_imported_candidates_before_global_limit() {
+    let repo = repository();
+    let root = repo.path();
+    assert!(run(root, &["init"]).0);
+    let fake = root.join("fake-import-embedder");
+    fs::write(&fake, "#!/bin/sh\ninput=$(cat)\ncase \"$input\" in *needle*) printf '[1.0, 0.0]' ;; *) printf '[0.0, 1.0]' ;; esac\n").unwrap();
+    use std::os::unix::fs::PermissionsExt;
+    fs::set_permissions(&fake, fs::Permissions::from_mode(0o755)).unwrap();
+    assert!(run(root, &["reembed", "--command", fake.to_str().unwrap()]).0);
+    let file = root.join("external.txt");
+    fs::write(&file, "needle imported exact hit\n").unwrap();
+    let file_string = file.to_string_lossy().into_owned();
+    assert!(run(root, &["import", &file_string]).0);
+    assert!(run(root, &["refresh"]).0);
+    let results = search_json(root, &["needle", "--combined", "--semantic-limit", "1"]);
+    assert_eq!(results.len(), 1, "{results:?}");
+    assert_eq!(results[0]["path"], file_string, "{results:?}");
+}
+
+#[test]
+fn imported_url_fetch_is_bounded_and_restricts_redirect_protocols() {
+    use std::os::unix::fs::PermissionsExt;
+    let repo = repository();
+    let root = repo.path();
+    assert!(run(root, &["init"]).0);
+    let bin = root.join("bin");
+    fs::create_dir(&bin).unwrap();
+    let capture = root.join("curl-args.txt");
+    let curl = bin.join("curl");
+    fs::write(
+        &curl,
+        "#!/bin/sh\nprintf '%s\n' \"$@\" > \"$CAPTURE\"\nhead -c 10485761 /dev/zero\nexit 0\n",
+    )
+    .unwrap();
+    fs::set_permissions(&curl, fs::Permissions::from_mode(0o755)).unwrap();
+    assert!(run(root, &["import", "https://example.invalid/source.txt"]).0);
+    let path = format!("{}:{}", bin.display(), std::env::var("PATH").unwrap());
+    assert!(
+        !run_with_env(
+            root,
+            &["refresh"],
+            &[("PATH", &path), ("CAPTURE", capture.to_str().unwrap())]
+        )
+        .0
+    );
+    let args = fs::read_to_string(capture).unwrap();
+    for expected in [
+        "--max-time\n30",
+        "--max-filesize\n10485760",
+        "--proto-redir\n=http,https",
+    ] {
+        assert!(args.contains(expected), "missing {expected:?} in {args:?}");
+    }
+}
+
+#[test]
 fn imported_url_and_semantic_search_use_loopback_and_fake_embeddings() {
     use std::{
         io::{Read, Write},

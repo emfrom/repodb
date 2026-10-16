@@ -159,6 +159,12 @@ fn reembed(c: &mut Connection, command: &str, model: &str) -> Result<()> {
             st.execute(params![p, i, t, id, as_bytes(&v)])?;
         }
     }
+    if let Some(import_dim) = imports::reembed(&tx, command, model)? {
+        if dim.is_some_and(|d| d != import_dim) {
+            return Err("embedding dimension mismatch".into());
+        }
+        dim = Some(import_dim);
+    }
     for (k, v) in [
         ("command", command),
         ("model", model),
@@ -371,8 +377,28 @@ fn execute() -> Result<()> {
             } else {
                 semantic(&c, &q, limit, &commits)?
             };
-            if mode == "exact" || mode == "semantic" {
+            if mode == "exact" || mode == "semantic" || mode == "combined" {
                 result.extend(imports::search(&c, &q, mode, limit)?);
+            }
+            if mode == "semantic" || mode == "combined" {
+                result.sort_by(|a, b| {
+                    a.distance
+                        .unwrap_or(f64::INFINITY)
+                        .total_cmp(&b.distance.unwrap_or(f64::INFINITY))
+                        .then(a.path.cmp(&b.path))
+                        .then(a.line_start.cmp(&b.line_start))
+                });
+                if mode == "semantic" {
+                    result.truncate(limit);
+                } else {
+                    let mut rank = 0;
+                    result.retain(|candidate| {
+                        let keep = rank < limit
+                            || candidate.text.to_lowercase().contains(&q.to_lowercase());
+                        rank += 1;
+                        keep
+                    });
+                }
             }
             if json {
                 println!("{}", serde_json::to_string_pretty(&result)?)

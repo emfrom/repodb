@@ -1,14 +1,37 @@
 use crate::{Result, SearchResult, as_bytes, embed};
 use rusqlite::{Connection, params};
-use std::{fs, path::Path, process::Command};
+use std::{
+    fs,
+    io::Read,
+    path::Path,
+    process::{Command, Stdio},
+};
+
+const MAX_URL_BYTES: usize = 10 * 1024 * 1024;
 
 fn init(c: &Connection) -> Result<()> {
-    c.execute_batch("CREATE TABLE IF NOT EXISTS imported_sources(id TEXT PRIMARY KEY, locator TEXT NOT NULL UNIQUE, kind TEXT NOT NULL); CREATE TABLE IF NOT EXISTS imported_versions(source_id TEXT NOT NULL, version TEXT NOT NULL, content TEXT NOT NULL, PRIMARY KEY(source_id,version)); CREATE TABLE IF NOT EXISTS imported_units(source_id TEXT NOT NULL, version TEXT NOT NULL, line INTEGER NOT NULL, text TEXT NOT NULL, vector BLOB, PRIMARY KEY(source_id,version,line)); CREATE TABLE IF NOT EXISTS import_config(key TEXT PRIMARY KEY,value TEXT NOT NULL);")?;
+    c.execute_batch("CREATE TABLE IF NOT EXISTS imported_sources(id TEXT PRIMARY KEY, locator TEXT NOT NULL UNIQUE, kind TEXT NOT NULL); CREATE TABLE IF NOT EXISTS imported_versions(source_id TEXT NOT NULL, version TEXT NOT NULL, content TEXT NOT NULL, fetched_order INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(source_id,version)); CREATE TABLE IF NOT EXISTS imported_units(source_id TEXT NOT NULL, version TEXT NOT NULL, line INTEGER NOT NULL, text TEXT NOT NULL, vector BLOB, PRIMARY KEY(source_id,version,line)); CREATE TABLE IF NOT EXISTS import_config(key TEXT PRIMARY KEY,value TEXT NOT NULL);")?;
+    if !column_exists(c, "imported_versions", "fetched_order")? {
+        c.execute(
+            "ALTER TABLE imported_versions ADD COLUMN fetched_order INTEGER NOT NULL DEFAULT 0",
+            [],
+        )?;
+        c.execute("UPDATE imported_versions SET fetched_order=rowid", [])?;
+    }
     c.execute(
         "INSERT OR IGNORE INTO import_config VALUES('retention','latest')",
         [],
     )?;
     Ok(())
+}
+
+fn column_exists(c: &Connection, table: &str, column: &str) -> Result<bool> {
+    let mut stmt = c.prepare(&format!("PRAGMA table_info({table})"))?;
+    let names = stmt.query_map([], |row| row.get::<_, String>(1))?;
+    Ok(names
+        .collect::<std::result::Result<Vec<_>, _>>()?
+        .iter()
+        .any(|name| name == column))
 }
 
 fn identity(locator: &str) -> String {
@@ -50,7 +73,7 @@ pub fn set_retention(c: &Connection, value: &str) -> Result<()> {
         [value],
     )?;
     if value == "latest" {
-        c.execute("DELETE FROM imported_versions WHERE version NOT IN (SELECT max(version) FROM imported_versions GROUP BY source_id)", [])?;
+        c.execute("DELETE FROM imported_versions WHERE EXISTS (SELECT 1 FROM imported_versions newer WHERE newer.source_id=imported_versions.source_id AND newer.fetched_order>imported_versions.fetched_order)", [])?;
         c.execute("DELETE FROM imported_units WHERE NOT EXISTS (SELECT 1 FROM imported_versions v WHERE v.source_id=imported_units.source_id AND v.version=imported_units.version)", [])?;
     }
     Ok(())
@@ -70,6 +93,15 @@ pub fn refresh(c: &Connection) -> Result<()> {
         .collect::<std::result::Result<Vec<_>, _>>()?;
     drop(st);
     let cfg: Option<(String,String)> = c.query_row("SELECT (SELECT value FROM embedding_config WHERE key='command'),(SELECT value FROM embedding_config WHERE key='model')", [], |r| Ok((r.get(0)?,r.get(1)?))).ok();
+    let configured_dimension = c
+        .query_row(
+            "SELECT value FROM embedding_config WHERE key='dimension'",
+            [],
+            |r| r.get::<_, String>(0),
+        )
+        .ok()
+        .and_then(|v| v.parse::<usize>().ok())
+        .filter(|d| *d != 0);
     let retention: String = c.query_row(
         "SELECT value FROM import_config WHERE key='retention'",
         [],
@@ -80,9 +112,40 @@ pub fn refresh(c: &Connection) -> Result<()> {
         let content = if kind == "file" {
             fs::read_to_string(&locator)?
         } else {
-            let output = Command::new("curl")
-                .args(["--fail", "--location", "--silent", "--show-error", &locator])
-                .output()?;
+            let mut child = Command::new("curl")
+                .args([
+                    "--fail",
+                    "--location",
+                    "--silent",
+                    "--show-error",
+                    "--max-time",
+                    "30",
+                    "--max-filesize",
+                    "10485760",
+                    "--proto-redir",
+                    "=http,https",
+                    &locator,
+                ])
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()?;
+            let mut response = Vec::with_capacity(MAX_URL_BYTES.min(64 * 1024));
+            child
+                .stdout
+                .take()
+                .unwrap()
+                .take((MAX_URL_BYTES + 1) as u64)
+                .read_to_end(&mut response)?;
+            let too_large = response.len() > MAX_URL_BYTES;
+            if too_large {
+                let _ = child.kill();
+            }
+            let output = child.wait_with_output()?;
+            if too_large {
+                return Err(
+                    format!("URL response exceeds {MAX_URL_BYTES} bytes: {locator}").into(),
+                );
+            }
             if !output.status.success() {
                 return Err(format!(
                     "URL fetch failed for {locator}: {}",
@@ -90,7 +153,7 @@ pub fn refresh(c: &Connection) -> Result<()> {
                 )
                 .into());
             }
-            String::from_utf8(output.stdout)?
+            String::from_utf8(response)?
         };
         let version = format!(
             "{:x}",
@@ -101,16 +164,30 @@ pub fn refresh(c: &Connection) -> Result<()> {
                     .wrapping_mul(1099511628211))
         );
         let mut units = Vec::new();
+        let mut dimension = None;
         for (i, line) in content.lines().enumerate() {
             let vector = cfg
                 .as_ref()
                 .map(|(cmd, model)| embed(cmd, model, line))
                 .transpose()?;
+            if let Some(vector) = &vector {
+                if dimension.is_some_and(|d| d != vector.len())
+                    || configured_dimension.is_some_and(|d| d != vector.len())
+                {
+                    return Err("embedding dimension mismatch".into());
+                }
+                dimension = Some(vector.len());
+            }
             units.push((i + 1, line.to_owned(), vector.map(|v| as_bytes(&v))));
         }
+        let fetched_order: i64 = tx.query_row(
+            "SELECT COALESCE(MAX(fetched_order),0)+1 FROM imported_versions",
+            [],
+            |r| r.get(0),
+        )?;
         tx.execute(
-            "INSERT OR IGNORE INTO imported_versions VALUES(?1,?2,?3)",
-            params![id, version, content],
+            "INSERT INTO imported_versions(source_id,version,content,fetched_order) VALUES(?1,?2,?3,?4) ON CONFLICT(source_id,version) DO UPDATE SET content=excluded.content,fetched_order=excluded.fetched_order",
+            params![id, version, content, fetched_order],
         )?;
         for (line, text, vector) in units {
             tx.execute(
@@ -120,17 +197,50 @@ pub fn refresh(c: &Connection) -> Result<()> {
         }
         if retention == "latest" {
             tx.execute(
-                "DELETE FROM imported_versions WHERE source_id=?1 AND version<>?2",
-                params![id, version],
+                "DELETE FROM imported_versions WHERE source_id=?1 AND fetched_order<>?2",
+                params![id, fetched_order],
             )?;
             tx.execute(
-                "DELETE FROM imported_units WHERE source_id=?1 AND version<>?2",
-                params![id, version],
+                "DELETE FROM imported_units WHERE source_id=?1 AND version NOT IN (SELECT version FROM imported_versions WHERE source_id=?1)",
+                [&id],
             )?;
         }
     }
     tx.commit()?;
     Ok(())
+}
+
+pub fn reembed(c: &Connection, command: &str, model: &str) -> Result<Option<usize>> {
+    init(c)?;
+    let rows = {
+        let mut stmt = c.prepare("SELECT source_id,version,line,text FROM imported_units ORDER BY source_id,version,line")?;
+        stmt.query_map([], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, usize>(2)?,
+                r.get::<_, String>(3)?,
+            ))
+        })?
+        .collect::<std::result::Result<Vec<_>, _>>()?
+    };
+    let mut vectors = Vec::with_capacity(rows.len());
+    let mut dimension = None;
+    for (_, _, _, text) in &rows {
+        let vector = embed(command, model, text)?;
+        if dimension.is_some_and(|d| d != vector.len()) {
+            return Err("embedding dimension mismatch".into());
+        }
+        dimension = Some(vector.len());
+        vectors.push(as_bytes(&vector));
+    }
+    for ((source, version, line, _), vector) in rows.iter().zip(vectors) {
+        c.execute(
+            "UPDATE imported_units SET vector=?1 WHERE source_id=?2 AND version=?3 AND line=?4",
+            params![vector, source, version, line],
+        )?;
+    }
+    Ok(dimension)
 }
 
 pub fn search(c: &Connection, query: &str, mode: &str, limit: usize) -> Result<Vec<SearchResult>> {
@@ -140,6 +250,16 @@ pub fn search(c: &Connection, query: &str, mode: &str, limit: usize) -> Result<V
     if semantic {
         let (cmd,model): (String,String) = c.query_row("SELECT (SELECT value FROM embedding_config WHERE key='command'),(SELECT value FROM embedding_config WHERE key='model')", [], |r| Ok((r.get(0)?,r.get(1)?))).map_err(|_| "no embeddings; run reembed")?;
         vector = Some(as_bytes(&embed(&cmd, &model, query)?));
+        let dimension: i64 = c
+            .query_row(
+                "SELECT value FROM embedding_config WHERE key='dimension'",
+                [],
+                |r| r.get::<_, String>(0),
+            )?
+            .parse()?;
+        if dimension != 0 && vector.as_ref().unwrap().len() != dimension as usize * 4 {
+            return Err("query embedding dimension mismatch".into());
+        }
     }
     let mut st = c.prepare("SELECT s.locator,u.line,u.text,u.version,u.vector FROM imported_units u JOIN imported_sources s ON s.id=u.source_id")?;
     let rows = st.query_map([], |r| {
@@ -156,6 +276,9 @@ pub fn search(c: &Connection, query: &str, mode: &str, limit: usize) -> Result<V
         let (locator, line, text, version, stored) = row?;
         if semantic {
             if let (Some(v), Some(q)) = (stored.as_deref(), vector.as_deref()) {
+                if v.len() != q.len() {
+                    return Err("imported embedding dimension mismatch".into());
+                }
                 let d: f64 =
                     c.query_row("SELECT vec_distance_cosine(?1,?2)", params![v, q], |r| {
                         r.get(0)
@@ -190,7 +313,17 @@ pub fn search(c: &Connection, query: &str, mode: &str, limit: usize) -> Result<V
     }
     if semantic {
         out.sort_by(|a, b| a.0.total_cmp(&b.0));
-        out.truncate(limit);
+        if mode == "combined" {
+            let mut rank = 0;
+            out.retain(|(_, result)| {
+                let keep =
+                    rank < limit || result.text.to_lowercase().contains(&query.to_lowercase());
+                rank += 1;
+                keep
+            });
+        } else {
+            out.truncate(limit);
+        }
     }
     Ok(out.into_iter().map(|x| x.1).collect())
 }

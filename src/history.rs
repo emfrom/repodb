@@ -283,7 +283,7 @@ pub fn reembed(c: &mut Connection, command: &str, model: &str) -> Result<()> {
         s.query_map([], |r| Ok((r.get::<_, usize>(0)?, r.get::<_, String>(1)?)))?
             .collect::<std::result::Result<Vec<_>, _>>()?
     };
-    let (rows, dim) = vectors(
+    let (rows, mut dim) = vectors(
         units.iter().map(|(_, text)| text.as_str()),
         command,
         model,
@@ -296,6 +296,12 @@ pub fn reembed(c: &mut Connection, command: &str, model: &str) -> Result<()> {
             "INSERT INTO unit_embeddings VALUES(?1,?2)",
             params![unit_id, vector],
         )?;
+    }
+    if let Some(import_dim) = crate::imports::reembed(&tx, command, model)? {
+        if dim != 0 && dim != import_dim {
+            return Err("embedding dimension mismatch".into());
+        }
+        dim = import_dim;
     }
     for (key, value) in [
         ("command", command),
