@@ -8,6 +8,8 @@ use std::{
     process::{Command, Stdio},
 };
 
+mod history;
+
 type Result<T> = std::result::Result<T, Box<dyn Error>>;
 
 #[derive(Serialize)]
@@ -20,6 +22,8 @@ struct SearchResult {
     commit_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     distance: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    blob_id: Option<String>,
 }
 fn git(args: &[&str]) -> Result<Vec<u8>> {
     let o = Command::new("git").args(args).output()?;
@@ -55,7 +59,9 @@ fn open_db() -> Result<Connection> {
         >(sqlite_vec::sqlite3_vec_init as *const ())))
     };
     let c = Connection::open(database()?)?;
-    c.execute_batch("CREATE TABLE IF NOT EXISTS indexed_files(path TEXT PRIMARY KEY NOT NULL,commit_id TEXT NOT NULL,content TEXT NOT NULL); CREATE TABLE IF NOT EXISTS embeddings(path TEXT NOT NULL,line INTEGER NOT NULL,text TEXT NOT NULL,commit_id TEXT NOT NULL,vector BLOB NOT NULL,PRIMARY KEY(path,line)); CREATE TABLE IF NOT EXISTS embedding_config(key TEXT PRIMARY KEY,value TEXT NOT NULL);")?;
+    if !history::is_current(&c)? {
+        c.execute_batch("CREATE TABLE IF NOT EXISTS indexed_files(path TEXT PRIMARY KEY NOT NULL,commit_id TEXT NOT NULL,content TEXT NOT NULL); CREATE TABLE IF NOT EXISTS embeddings(path TEXT NOT NULL,line INTEGER NOT NULL,text TEXT NOT NULL,commit_id TEXT NOT NULL,vector BLOB NOT NULL,PRIMARY KEY(path,line)); CREATE TABLE IF NOT EXISTS embedding_config(key TEXT PRIMARY KEY,value TEXT NOT NULL);")?;
+    }
     Ok(c)
 }
 fn resolved_executable(command: &str) -> Option<PathBuf> {
@@ -115,79 +121,11 @@ fn validate_vector(v: &[f32]) -> Result<()> {
     }
     Ok(())
 }
-fn refresh(c: &mut Connection) -> Result<()> {
-    let commit = String::from_utf8(git(&["rev-parse", "HEAD"])?)?
-        .trim()
-        .to_owned();
-    let tree = git(&["ls-tree", "-r", "-z", "--full-tree", "HEAD"])?;
-    let mut files = vec![];
-    for r in tree.split(|b| *b == 0).filter(|r| !r.is_empty()) {
-        let Some(t) = r.iter().position(|b| *b == b'\t') else {
-            continue;
-        };
-        let meta = String::from_utf8_lossy(&r[..t]);
-        let mut f = meta.split_whitespace();
-        let _ = f.next();
-        let kind = f.next();
-        let oid = f.next();
-        let Ok(path) = std::str::from_utf8(&r[t + 1..]) else {
-            continue;
-        };
-        if kind != Some("blob") || path.starts_with(".git/") {
-            continue;
-        }
-        let Some(oid) = oid else { continue };
-        let b = git(&["cat-file", "blob", oid])?;
-        if b.contains(&0) {
-            continue;
-        }
-        if let Ok(text) = String::from_utf8(b) {
-            files.push((path.to_owned(), text))
-        }
-    }
-    let cfg:Option<(String,String)>=c.query_row("SELECT (SELECT value FROM embedding_config WHERE key='command'),(SELECT value FROM embedding_config WHERE key='model')",[],|r|Ok((r.get(0)?,r.get(1)?))).ok();
-    let tx = c.transaction()?;
-    tx.execute("DELETE FROM indexed_files", [])?;
-    {
-        let mut s = tx.prepare("INSERT INTO indexed_files VALUES(?1,?2,?3)")?;
-        for (p, t) in &files {
-            s.execute(params![p, commit, t])?;
-        }
-    }
-    tx.execute("DELETE FROM embeddings", [])?;
-    if let Some((command, model)) = cfg {
-        let mut rows = vec![];
-        let mut dim = None;
-        for (p, text) in &files {
-            for (i, line) in text.lines().enumerate() {
-                let v = embed(&command, &model, line)?;
-                if dim.is_some_and(|d| d != v.len()) {
-                    return Err("embedding dimension mismatch".into());
-                }
-                dim = Some(v.len());
-                rows.push((p.clone(), i + 1, line.to_owned(), commit.clone(), v));
-            }
-        }
-        let mut s = tx.prepare("INSERT INTO embeddings VALUES(?1,?2,?3,?4,?5)")?;
-        for (p, i, t, id, v) in rows {
-            s.execute(params![p, i, t, id, as_bytes(&v)])?;
-        }
-        tx.execute(
-            "UPDATE embedding_config SET value=?1 WHERE key='dimension'",
-            [dim.unwrap_or(0).to_string()],
-        )?;
-        tx.execute(
-            "UPDATE embedding_config SET value=?1 WHERE key='model'",
-            [model],
-        )?;
-    }
-    tx.commit()?;
-    Ok(())
-}
 fn as_bytes(v: &[f32]) -> Vec<u8> {
     v.iter().flat_map(|x| x.to_le_bytes()).collect()
 }
 fn reembed(c: &mut Connection, command: &str, model: &str) -> Result<()> {
+    let version = history::snapshot_version(c)?;
     let mut st = c.prepare("SELECT path,commit_id,content FROM indexed_files ORDER BY path")?;
     let files = st
         .query_map([], |r| {
@@ -211,7 +149,7 @@ fn reembed(c: &mut Connection, command: &str, model: &str) -> Result<()> {
             rows.push((p.clone(), i + 1, line.to_owned(), id.clone(), v));
         }
     }
-    let tx = c.transaction()?;
+    let tx = history::publish_transaction(c, version)?;
     tx.execute("DELETE FROM embeddings", [])?;
     {
         let mut st = tx.prepare("INSERT INTO embeddings VALUES(?1,?2,?3,?4,?5)")?;
@@ -229,7 +167,7 @@ fn reembed(c: &mut Connection, command: &str, model: &str) -> Result<()> {
     tx.commit()?;
     Ok(())
 }
-fn exact(c: &Connection, q: &str) -> Result<Vec<SearchResult>> {
+fn exact(c: &Connection, q: &str, commits: &[String]) -> Result<Vec<SearchResult>> {
     let mut s = c.prepare("SELECT path,content,commit_id FROM indexed_files ORDER BY path")?;
     let rows = s.query_map([], |r| {
         Ok((
@@ -241,6 +179,9 @@ fn exact(c: &Connection, q: &str) -> Result<Vec<SearchResult>> {
     let mut out = vec![];
     for row in rows {
         let (p, content, id) = row?;
+        if !commits.contains(&id) {
+            continue;
+        }
         for (i, l) in content.lines().enumerate() {
             if l.to_lowercase().contains(&q.to_lowercase()) {
                 out.push(SearchResult {
@@ -250,6 +191,7 @@ fn exact(c: &Connection, q: &str) -> Result<Vec<SearchResult>> {
                     text: l.to_owned(),
                     commit_id: Some(id.clone()),
                     distance: None,
+                    blob_id: None,
                 })
             }
         }
@@ -277,27 +219,42 @@ fn query_vector(c: &Connection, q: &str) -> Result<Vec<f32>> {
             |r| r.get::<_, String>(0),
         )?
         .parse()?;
-    if v.len() as i64 != dim {
+    // Zero records an empty index whose model dimension is not established yet.
+    if dim != 0 && v.len() as i64 != dim {
         return Err("query embedding dimension mismatch".into());
     }
     Ok(v)
 }
-fn semantic_with_vector(c: &Connection, v: &[f32], limit: usize) -> Result<Vec<SearchResult>> {
-    let mut s=c.prepare("SELECT path,line,text,commit_id,vec_distance_cosine(vector,?1) d FROM embeddings ORDER BY d,path,line LIMIT ?2")?;
-    let rows = s.query_map(params![as_bytes(v), limit as i64], |r| {
-        Ok(SearchResult {
-            path: r.get(0)?,
-            line_start: r.get(1)?,
-            line_end: r.get(1)?,
-            text: r.get(2)?,
-            commit_id: Some(r.get(3)?),
-            distance: Some(r.get(4)?),
-        })
-    })?;
+fn semantic_with_vector(
+    c: &Connection,
+    v: &[f32],
+    limit: usize,
+    commits: &[String],
+) -> Result<Vec<SearchResult>> {
+    let mut s=c.prepare("SELECT path,line,text,commit_id,vec_distance_cosine(vector,?1) d FROM embeddings WHERE commit_id IN (SELECT value FROM json_each(?3)) ORDER BY d,path,line LIMIT ?2")?;
+    let rows = s.query_map(
+        params![as_bytes(v), limit as i64, serde_json::to_string(commits)?],
+        |r| {
+            Ok(SearchResult {
+                path: r.get(0)?,
+                line_start: r.get(1)?,
+                line_end: r.get(1)?,
+                text: r.get(2)?,
+                commit_id: Some(r.get(3)?),
+                distance: Some(r.get(4)?),
+                blob_id: None,
+            })
+        },
+    )?;
     Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
 }
-fn semantic(c: &Connection, q: &str, limit: usize) -> Result<Vec<SearchResult>> {
-    semantic_with_vector(c, &query_vector(c, q)?, limit)
+fn semantic(
+    c: &Connection,
+    q: &str,
+    limit: usize,
+    commits: &[String],
+) -> Result<Vec<SearchResult>> {
+    semantic_with_vector(c, &query_vector(c, q)?, limit, commits)
 }
 fn execute() -> Result<()> {
     let mut a = env::args().skip(1);
@@ -309,7 +266,7 @@ fn execute() -> Result<()> {
             if a.next().is_some() {
                 return Err("unexpected arguments".into());
             }
-            refresh(&mut open_db()?)?
+            history::refresh(&mut open_db()?)?
         }
         "reembed" => {
             let mut command = env::var("HOME").map(|h| format!("{h}/bin/generate_embeddings"))?;
@@ -321,14 +278,34 @@ fn execute() -> Result<()> {
                     _ => return Err(format!("unexpected argument {x}").into()),
                 }
             }
-            reembed(&mut open_db()?, &command, &model)?
+            let mut c = open_db()?;
+            if history::is_current(&c)? {
+                history::reembed(&mut c, &command, &model)?;
+            } else {
+                reembed(&mut c, &command, &model)?;
+            }
         }
         "search" => {
             let mut query = None;
+            let mut scope = history::Scope::default();
             let (mut json, mut mode, mut limit) = (false, "exact", 20usize);
             while let Some(x) = a.next() {
                 match x.as_str() {
                     "--json" => json = true,
+                    "--all-history" => scope.all_history = true,
+                    "--current-worktree" => scope.current_worktree = true,
+                    "--commit" => {
+                        if scope.commit.is_some() {
+                            return Err("--commit may only be specified once".into());
+                        }
+                        scope.commit = Some(a.next().ok_or("--commit requires ID")?);
+                    }
+                    "--include-commit" => scope
+                        .include
+                        .push(a.next().ok_or("--include-commit requires ID")?),
+                    "--exclude-commit" => scope
+                        .exclude
+                        .push(a.next().ok_or("--exclude-commit requires ID")?),
                     "--semantic" => mode = "semantic",
                     "--combined" => mode = "combined",
                     "--semantic-limit" => limit = a.next().ok_or("missing limit")?.parse()?,
@@ -340,17 +317,22 @@ fn execute() -> Result<()> {
                 }
             }
             let q = query.ok_or("search requires query")?;
-            let c = open_db()?;
-            let result = if mode == "exact" {
-                exact(&c, &q)?
+            let mut connection = open_db()?;
+            // Scope, model configuration and results belong to one read snapshot.
+            let c = connection.transaction()?;
+            let commits = scope.resolve(&c)?;
+            let result = if history::is_current(&c)? {
+                history::search(&c, &q, mode, limit, &commits)?
+            } else if mode == "exact" {
+                exact(&c, &q, &commits)?
             } else if mode == "combined" {
                 let v = query_vector(&c, &q)?;
-                let mut candidates = semantic_with_vector(&c, &v, limit)?;
+                let mut candidates = semantic_with_vector(&c, &v, limit, &commits)?;
                 let mut seen = std::collections::HashSet::new();
                 for x in &candidates {
                     seen.insert((x.path.clone(), x.line_start));
                 }
-                for mut x in exact(&c, &q)? {
+                for mut x in exact(&c, &q, &commits)? {
                     if seen.insert((x.path.clone(), x.line_start)) {
                         let distance: f64 = c.query_row(
                             "SELECT vec_distance_cosine(vector,?1) FROM embeddings WHERE path=?2 AND line=?3",
@@ -369,13 +351,23 @@ fn execute() -> Result<()> {
                 });
                 candidates
             } else {
-                semantic(&c, &q, limit)?
+                semantic(&c, &q, limit, &commits)?
             };
             if json {
                 println!("{}", serde_json::to_string_pretty(&result)?)
             } else {
                 for x in result {
-                    println!("{}:{}-{}: {}", x.path, x.line_start, x.line_end, x.text)
+                    let mut reference = String::new();
+                    if let Some(commit) = x.commit_id {
+                        reference.push_str(&format!(" [commit {commit}]"));
+                    }
+                    if let Some(blob) = x.blob_id {
+                        reference.push_str(&format!(" [blob {blob}]"));
+                    }
+                    println!(
+                        "{}:{}-{}{}: {}",
+                        x.path, x.line_start, x.line_end, reference, x.text
+                    )
                 }
             }
         }
