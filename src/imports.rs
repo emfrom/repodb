@@ -9,6 +9,9 @@ use std::{
 
 const MAX_IMPORT_BYTES: usize = 10 * 1024 * 1024;
 const MAX_PDF_TEXT_BYTES: usize = 10 * 1024 * 1024;
+const MAX_REFRESH_MEMORY_BYTES: usize = 256 * 1024 * 1024;
+const MAX_COMMAND_STDERR_BYTES: usize = 64 * 1024;
+const MAX_EMBEDDING_OUTPUT_BYTES: usize = 1024 * 1024;
 const MAX_IMPORTED_UNITS: usize = 100_000;
 const MAX_PDF_PAGES: usize = 100_000;
 
@@ -19,6 +22,83 @@ fn read_bounded(reader: impl Read, limit: usize, description: &str) -> Result<Ve
         return Err(format!("{description} exceeds the {limit}-byte import limit").into());
     }
     Ok(bytes)
+}
+
+fn drain_bounded(mut reader: impl Read, limit: usize) -> std::io::Result<(Vec<u8>, bool)> {
+    let mut bytes = Vec::with_capacity(limit.min(8192));
+    let mut buffer = [0u8; 8192];
+    let mut exceeded = false;
+    loop {
+        let count = reader.read(&mut buffer)?;
+        if count == 0 {
+            break;
+        }
+        let keep = limit.saturating_sub(bytes.len()).min(count);
+        bytes.extend_from_slice(&buffer[..keep]);
+        exceeded |= keep != count;
+    }
+    Ok((bytes, exceeded))
+}
+
+fn bounded_command_output(
+    child: &mut std::process::Child,
+    stdout_limit: usize,
+    used: &mut usize,
+) -> Result<(std::process::ExitStatus, Vec<u8>, Vec<u8>)> {
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or("command stdout was not captured")?;
+    let stderr = child
+        .stderr
+        .take()
+        .ok_or("command stderr was not captured")?;
+    let stdout = std::thread::spawn(move || drain_bounded(stdout, stdout_limit));
+    let stderr = std::thread::spawn(move || drain_bounded(stderr, MAX_COMMAND_STDERR_BYTES));
+    let status = child.wait()?;
+    let (out, out_exceeded) = stdout.join().map_err(|_| "stdout reader panicked")??;
+    let (err, err_exceeded) = stderr.join().map_err(|_| "stderr reader panicked")??;
+    if out_exceeded || err_exceeded {
+        return Err(format!("subprocess output exceeded its bounded capture (stdout: {stdout_limit} bytes, stderr: {MAX_COMMAND_STDERR_BYTES} bytes)").into());
+    }
+    charge_refresh_memory(used, err.len(), "subprocess stderr")?;
+    Ok((status, out, err))
+}
+
+fn charge_refresh_memory(used: &mut usize, bytes: usize, description: &str) -> Result<()> {
+    *used = used.checked_add(bytes).filter(|total| *total <= MAX_REFRESH_MEMORY_BYTES)
+        .ok_or_else(|| format!("import refresh exceeds the 256 MiB aggregate preparation-memory budget while preparing {description}; reduce registered imports or their size and retry"))?;
+    Ok(())
+}
+
+fn import_embed(command: &str, model: &str, text: &str, used: &mut usize) -> Result<Vec<f32>> {
+    let mut child = Command::new(command)
+        .env("REPODB_EMBEDDING_MODEL", model)
+        .args(["--json", "-"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()?;
+    child.stdin.take().unwrap().write_all(text.as_bytes())?;
+    let output_limit = MAX_EMBEDDING_OUTPUT_BYTES
+        .min(MAX_REFRESH_MEMORY_BYTES.saturating_sub(*used + MAX_COMMAND_STDERR_BYTES) / 2);
+    let (status, stdout, stderr) = bounded_command_output(&mut child, output_limit, used)?;
+    charge_refresh_memory(used, stdout.len(), "embedding command output")?;
+    if !status.success() {
+        return Err(format!(
+            "embedding command failed: {}",
+            String::from_utf8_lossy(&stderr)
+        )
+        .into());
+    }
+    let vector: Vec<f32> = serde_json::from_slice(&stdout)?;
+    if vector.is_empty()
+        || vector.iter().any(|value| !value.is_finite())
+        || vector.iter().all(|value| *value == 0.0)
+    {
+        return Err("embedding must be a nonempty finite vector with nonzero norm".into());
+    }
+    Ok(vector)
 }
 
 fn init(c: &Connection) -> Result<()> {
@@ -120,11 +200,11 @@ fn checksum(bytes: &[u8]) -> String {
     state.iter().map(|word| format!("{word:08x}")).collect()
 }
 
-fn cache_pages(cache: &Path) -> Result<Option<Vec<String>>> {
+fn cache_pages(cache: &Path, max_bytes: usize) -> Result<Option<(Vec<String>, usize)>> {
     match fs::File::open(cache) {
-        Ok(file) => match read_bounded(file, 64 * 1024 * 1024, "PDF conversion cache") {
+        Ok(file) => match read_bounded(file, max_bytes, "PDF conversion cache") {
             Ok(bytes) => match serde_json::from_slice(&bytes) {
-                Ok(pages) => Ok(Some(pages)),
+                Ok(pages) => Ok(Some((pages, bytes.len()))),
                 Err(_) => {
                     fs::remove_file(cache)?;
                     Ok(None)
@@ -159,7 +239,7 @@ fn write_cache(cache: &Path, pages: &[String]) -> Result<()> {
             .write(true)
             .create_new(true)
             .open(&temp)?;
-        file.write_all(&serde_json::to_vec(pages)?)?;
+        serde_json::to_writer(&mut file, pages)?;
         file.sync_all()?;
         fs::rename(&temp, cache)?;
         Ok(())
@@ -235,17 +315,23 @@ pub fn set_retention(c: &Connection, value: &str) -> Result<()> {
     Ok(())
 }
 
-fn git_output(repo: &str, args: &[&str]) -> Result<Vec<u8>> {
-    let output = Command::new("git").args(["-C", repo]).args(args).output()?;
-    if !output.status.success() {
+fn git_output(repo: &str, args: &[&str], limit: usize, used: &mut usize) -> Result<Vec<u8>> {
+    let mut child = Command::new("git")
+        .args(["-C", repo])
+        .args(args)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()?;
+    let (status, stdout, stderr) = bounded_command_output(&mut child, limit, used)?;
+    if !status.success() {
         return Err(format!(
             "git {} failed: {}",
             args.join(" "),
-            String::from_utf8_lossy(&output.stderr)
+            String::from_utf8_lossy(&stderr)
         )
         .into());
     }
-    Ok(output.stdout)
+    Ok(stdout)
 }
 
 pub fn refresh(c: &Connection) -> Result<()> {
@@ -282,6 +368,8 @@ pub fn refresh(c: &Connection) -> Result<()> {
         .ok_or("database has no parent directory")?
         .join("repodb-cache");
     let tx = c.unchecked_transaction()?;
+    // This conservative cumulative accounting includes buffers and representations materialized during preparation.
+    let mut refresh_memory_bytes = 0usize;
     for (id, locator, kind) in sources {
         if kind == "git" {
             let repository = if Path::new(&locator).is_dir() {
@@ -309,10 +397,19 @@ pub fn refresh(c: &Connection) -> Result<()> {
                 }
                 mirror.to_string_lossy().into_owned()
             };
-            let commits = String::from_utf8(git_output(
+            let commits_bytes = git_output(
                 &repository,
                 &["rev-list", "--all", "--date-order"],
-            )?)?;
+                MAX_REFRESH_MEMORY_BYTES
+                    .saturating_sub(refresh_memory_bytes + MAX_COMMAND_STDERR_BYTES),
+                &mut refresh_memory_bytes,
+            )?;
+            charge_refresh_memory(
+                &mut refresh_memory_bytes,
+                commits_bytes.len(),
+                "Git commit list",
+            )?;
+            let commits = String::from_utf8(commits_bytes)?;
             let mut commits = commits.lines().map(str::to_owned).collect::<Vec<_>>();
             let selected = if retention == "latest" {
                 commits.into_iter().take(1).collect()
@@ -324,16 +421,37 @@ pub fn refresh(c: &Connection) -> Result<()> {
                 let paths = git_output(
                     &repository,
                     &["ls-tree", "-r", "--name-only", "-z", &commit],
+                    MAX_REFRESH_MEMORY_BYTES
+                        .saturating_sub(refresh_memory_bytes + MAX_COMMAND_STDERR_BYTES),
+                    &mut refresh_memory_bytes,
                 )?;
+                charge_refresh_memory(&mut refresh_memory_bytes, paths.len(), "Git path list")?;
                 let mut content = String::new();
                 let mut units = Vec::new();
                 for path in paths.split(|b| *b == 0).filter(|p| !p.is_empty()) {
                     let path = String::from_utf8(path.to_vec())?;
                     let spec = format!("{commit}:{path}");
-                    let bytes = git_output(&repository, &["show", &spec])?;
+                    let bytes = git_output(
+                        &repository,
+                        &["show", &spec],
+                        MAX_REFRESH_MEMORY_BYTES
+                            .saturating_sub(refresh_memory_bytes + MAX_COMMAND_STDERR_BYTES),
+                        &mut refresh_memory_bytes,
+                    )?;
+                    charge_refresh_memory(
+                        &mut refresh_memory_bytes,
+                        bytes.len(),
+                        "Git blob input",
+                    )?;
                     let Ok(text) = String::from_utf8(bytes) else {
                         continue;
                     };
+                    charge_refresh_memory(&mut refresh_memory_bytes, text.len(), "Git blob text")?;
+                    charge_refresh_memory(
+                        &mut refresh_memory_bytes,
+                        path.len() + text.len() + 2,
+                        "Git joined content",
+                    )?;
                     content.push_str(&path);
                     content.push('\n');
                     content.push_str(&text);
@@ -346,12 +464,43 @@ pub fn refresh(c: &Connection) -> Result<()> {
                         }
                         let vector = cfg
                             .as_ref()
-                            .map(|(cmd, model)| embed(cmd, model, line))
+                            .map(|(cmd, model)| {
+                                import_embed(cmd, model, line, &mut refresh_memory_bytes)
+                            })
                             .transpose()?;
                         if let Some(vector) = &vector
                             && configured_dimension.is_some_and(|d| d != vector.len())
                         {
                             return Err("embedding dimension mismatch".into());
+                        }
+                        charge_refresh_memory(
+                            &mut refresh_memory_bytes,
+                            line.len(),
+                            "Git indexed unit text",
+                        )?;
+                        if let Some(vector) = &vector {
+                            charge_refresh_memory(
+                                &mut refresh_memory_bytes,
+                                vector.len().saturating_mul(std::mem::size_of::<f32>()),
+                                "Git embedding vector",
+                            )?;
+                        }
+                        charge_refresh_memory(
+                            &mut refresh_memory_bytes,
+                            std::mem::size_of::<(String, usize, String, Option<Vec<u8>>)>(),
+                            "Git indexed unit metadata",
+                        )?;
+                        charge_refresh_memory(
+                            &mut refresh_memory_bytes,
+                            path.len(),
+                            "Git unit path",
+                        )?;
+                        if let Some(vector) = &vector {
+                            charge_refresh_memory(
+                                &mut refresh_memory_bytes,
+                                vector.len() * 4,
+                                "Git stored vector bytes",
+                            )?;
                         }
                         units.push((
                             path.clone(),
@@ -377,6 +526,14 @@ pub fn refresh(c: &Connection) -> Result<()> {
             }
             continue;
         }
+        if kind == "file" {
+            let size = fs::metadata(&locator)?.len();
+            charge_refresh_memory(
+                &mut refresh_memory_bytes,
+                size as usize,
+                "local import input",
+            )?;
+        }
         let source_bytes = if kind == "file" {
             read_bounded(
                 fs::File::open(&locator)?,
@@ -401,25 +558,23 @@ pub fn refresh(c: &Connection) -> Result<()> {
                 .stdout(Stdio::piped())
                 .stderr(Stdio::piped())
                 .spawn()?;
-            let response = read_bounded(
-                child.stdout.take().unwrap(),
-                MAX_IMPORT_BYTES,
-                &format!("URL response from {locator}"),
-            );
-            let too_large = response.is_err();
-            if too_large {
-                let _ = child.kill();
-            }
-            let output = child.wait_with_output()?;
-            let response = response?;
-            if !output.status.success() {
+            let output = bounded_command_output(
+                &mut child,
+                MAX_IMPORT_BYTES.min(
+                    MAX_REFRESH_MEMORY_BYTES
+                        .saturating_sub(refresh_memory_bytes + MAX_COMMAND_STDERR_BYTES),
+                ),
+                &mut refresh_memory_bytes,
+            )?;
+            if !output.0.success() {
                 return Err(format!(
                     "URL fetch failed for {locator}: {}",
-                    String::from_utf8_lossy(&output.stderr)
+                    String::from_utf8_lossy(&output.2)
                 )
                 .into());
             }
-            response
+            charge_refresh_memory(&mut refresh_memory_bytes, output.1.len(), "URL response")?;
+            output.1
         };
         let is_pdf = source_bytes
             .windows(5)
@@ -429,10 +584,25 @@ pub fn refresh(c: &Connection) -> Result<()> {
                 .extension()
                 .and_then(|extension| extension.to_str())
                 .is_some_and(|extension| extension.eq_ignore_ascii_case("pdf"));
+        if !is_pdf {
+            charge_refresh_memory(
+                &mut refresh_memory_bytes,
+                source_bytes.len(),
+                "decoded local import text",
+            )?;
+        }
         let pages = if is_pdf {
             let source_version = checksum(&source_bytes);
             let cache = cache_dir.join(format!("{source_version}.json"));
-            if let Some(pages) = cache_pages(&cache)? {
+            if let Some((pages, cache_bytes)) = cache_pages(
+                &cache,
+                ((MAX_REFRESH_MEMORY_BYTES - refresh_memory_bytes) / 2).min(64 * 1024 * 1024),
+            )? {
+                charge_refresh_memory(
+                    &mut refresh_memory_bytes,
+                    cache_bytes,
+                    "PDF cache representation",
+                )?;
                 if pages.len() > MAX_PDF_PAGES {
                     return Err(format!(
                         "PDF {locator} exceeds the {MAX_PDF_PAGES}-page import limit"
@@ -449,24 +619,32 @@ pub fn refresh(c: &Connection) -> Result<()> {
                     .spawn()
                     .map_err(|error| format!("PDF imports require pdftotext on PATH: {error}"))?;
                 child.stdin.take().unwrap().write_all(&source_bytes)?;
-                let text_bytes = read_bounded(
-                    child.stdout.take().unwrap(),
-                    MAX_PDF_TEXT_BYTES,
-                    &format!("PDF text extracted from {locator}"),
-                );
-                if text_bytes.is_err() {
-                    let _ = child.kill();
-                }
-                let output = child.wait_with_output()?;
-                let text_bytes = text_bytes?;
-                if !output.status.success() {
+                let output = bounded_command_output(
+                    &mut child,
+                    MAX_PDF_TEXT_BYTES.min(
+                        MAX_REFRESH_MEMORY_BYTES
+                            .saturating_sub(refresh_memory_bytes + MAX_COMMAND_STDERR_BYTES),
+                    ),
+                    &mut refresh_memory_bytes,
+                )?;
+                charge_refresh_memory(
+                    &mut refresh_memory_bytes,
+                    output.1.len(),
+                    "PDF conversion output",
+                )?;
+                if !output.0.success() {
                     return Err(format!(
                         "PDF conversion failed for {locator}: {}",
-                        String::from_utf8_lossy(&output.stderr)
+                        String::from_utf8_lossy(&output.2)
                     )
                     .into());
                 }
-                let text = String::from_utf8(text_bytes)?;
+                let text = String::from_utf8(output.1)?;
+                charge_refresh_memory(
+                    &mut refresh_memory_bytes,
+                    text.len(),
+                    "PDF page text copies",
+                )?;
                 if text.matches('\u{c}').count() >= MAX_PDF_PAGES {
                     return Err(format!(
                         "PDF {locator} exceeds the {MAX_PDF_PAGES}-page import limit"
@@ -480,6 +658,18 @@ pub fn refresh(c: &Connection) -> Result<()> {
         } else {
             vec![String::from_utf8(source_bytes.clone())?]
         };
+        charge_refresh_memory(
+            &mut refresh_memory_bytes,
+            pages.iter().map(String::len).sum(),
+            "PDF/cache pages",
+        )?;
+        let content_size =
+            pages.iter().map(String::len).sum::<usize>() + pages.len().saturating_sub(1);
+        charge_refresh_memory(
+            &mut refresh_memory_bytes,
+            content_size,
+            "joined imported content",
+        )?;
         let content = if is_pdf {
             pages.join("\n")
         } else {
@@ -488,6 +678,16 @@ pub fn refresh(c: &Connection) -> Result<()> {
         let version = checksum(content.as_bytes());
         let mut units = Vec::new();
         let mut dimension = None;
+        let line_count = if is_pdf {
+            pages.len()
+        } else {
+            content.lines().count()
+        };
+        charge_refresh_memory(
+            &mut refresh_memory_bytes,
+            line_count.saturating_mul(std::mem::size_of::<(usize, Option<usize>, &str)>()),
+            "indexed unit references",
+        )?;
         let lines = if is_pdf {
             pages
                 .iter()
@@ -513,7 +713,7 @@ pub fn refresh(c: &Connection) -> Result<()> {
             }
             let vector = cfg
                 .as_ref()
-                .map(|(cmd, model)| embed(cmd, model, text))
+                .map(|(cmd, model)| import_embed(cmd, model, text, &mut refresh_memory_bytes))
                 .transpose()?;
             if let Some(vector) = &vector {
                 if dimension.is_some_and(|d| d != vector.len())
@@ -522,6 +722,26 @@ pub fn refresh(c: &Connection) -> Result<()> {
                     return Err("embedding dimension mismatch".into());
                 }
                 dimension = Some(vector.len());
+            }
+            charge_refresh_memory(&mut refresh_memory_bytes, text.len(), "indexed unit text")?;
+            if let Some(vector) = &vector {
+                charge_refresh_memory(
+                    &mut refresh_memory_bytes,
+                    vector.len().saturating_mul(std::mem::size_of::<f32>()),
+                    "embedding vector",
+                )?;
+            }
+            charge_refresh_memory(
+                &mut refresh_memory_bytes,
+                std::mem::size_of::<(usize, String, Option<Vec<u8>>, Option<usize>)>(),
+                "indexed unit metadata",
+            )?;
+            if let Some(vector) = &vector {
+                charge_refresh_memory(
+                    &mut refresh_memory_bytes,
+                    vector.len() * 4,
+                    "stored vector bytes",
+                )?;
             }
             units.push((line, text.to_owned(), vector.map(|v| as_bytes(&v)), page));
         }

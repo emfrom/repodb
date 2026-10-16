@@ -128,6 +128,34 @@ fn oversized_local_file_is_rejected_without_replacing_imported_snapshot() {
 }
 
 #[test]
+fn aggregate_import_inputs_over_budget_do_not_replace_imported_snapshot() {
+    let repo = repository();
+    let root = repo.path();
+    assert!(run(root, &["init"]).0);
+    let preserved = root.join("preserved.txt");
+    fs::write(&preserved, "previous aggregate snapshot marker\n").unwrap();
+    let preserved_locator = preserved.to_string_lossy().into_owned();
+    assert!(run(root, &["import", &preserved_locator]).0);
+    assert!(run(root, &["refresh"]).0);
+
+    for index in 0..26 {
+        let file = root.join(format!("large-{index}.txt"));
+        fs::File::create(&file)
+            .unwrap()
+            .set_len(10 * 1024 * 1024)
+            .unwrap();
+        let locator = file.to_string_lossy().into_owned();
+        assert!(run(root, &["import", &locator]).0);
+    }
+    let (success, _) = run(root, &["refresh"]);
+    assert!(!success, "aggregate imported input must be bounded");
+    assert_eq!(
+        search_json(root, &["previous aggregate snapshot marker"]).len(),
+        1
+    );
+}
+
+#[test]
 fn oversized_pdf_conversion_does_not_replace_imported_snapshot() {
     use std::os::unix::fs::PermissionsExt;
     let repo = repository();
@@ -167,6 +195,80 @@ fn oversized_pdf_conversion_does_not_replace_imported_snapshot() {
         1
     );
     assert!(search_json(root, &["uncommitted replacement marker"]).is_empty());
+}
+
+#[test]
+fn noisy_pdf_converter_stderr_is_bounded_and_preserves_imported_snapshot() {
+    use std::os::unix::fs::PermissionsExt;
+    let repo = repository();
+    let root = repo.path();
+    assert!(run(root, &["init"]).0);
+    let preserved = root.join("preserved.txt");
+    fs::write(&preserved, "previous searchable snapshot marker\n").unwrap();
+    let pdf = root.join("manual.pdf");
+    fs::write(&pdf, b"%PDF-test").unwrap();
+    let preserved_locator = preserved.to_string_lossy().into_owned();
+    let pdf_locator = pdf.to_string_lossy().into_owned();
+    assert!(run(root, &["import", &preserved_locator]).0);
+    assert!(run(root, &["import", &pdf_locator]).0);
+    let bin = root.join("bin");
+    fs::create_dir(&bin).unwrap();
+    let converter = bin.join("pdftotext");
+    fs::write(
+        &converter,
+        "#!/bin/sh\ncat >/dev/null\nprintf 'old pdf text'\n",
+    )
+    .unwrap();
+    fs::set_permissions(&converter, fs::Permissions::from_mode(0o755)).unwrap();
+    let path = format!("{}:{}", bin.display(), std::env::var("PATH").unwrap());
+    assert!(run_with_env(root, &["refresh"], &[("PATH", path.as_str())]).0);
+
+    fs::write(
+        &converter,
+        "#!/bin/sh\ncat >/dev/null\nhead -c 1048576 /dev/zero >&2\nprintf 'replacement text'\n",
+    )
+    .unwrap();
+    fs::write(&pdf, b"%PDF-changed source").unwrap();
+    fs::write(&preserved, "replacement searchable snapshot marker\n").unwrap();
+    let (success, _) = run_with_env(root, &["refresh"], &[("PATH", path.as_str())]);
+    assert!(!success, "oversized converter stderr must fail refresh");
+    assert_eq!(
+        search_json(root, &["previous searchable snapshot marker"]).len(),
+        1
+    );
+    assert!(search_json(root, &["replacement searchable snapshot marker"]).is_empty());
+}
+
+#[test]
+fn oversized_import_embedding_output_does_not_replace_imported_snapshot() {
+    use std::os::unix::fs::PermissionsExt;
+    let repo = repository();
+    let root = repo.path();
+    assert!(run(root, &["init"]).0);
+    let file = root.join("source.txt");
+    fs::write(&file, "previous imported marker\n").unwrap();
+    let locator = file.to_string_lossy().into_owned();
+    assert!(run(root, &["import", &locator]).0);
+    assert!(run(root, &["refresh"]).0);
+
+    let command = root.join("import-embedder");
+    fs::write(&command, "#!/bin/sh\ncat >/dev/null\nprintf '[1.0, 0.0]'\n").unwrap();
+    fs::set_permissions(&command, fs::Permissions::from_mode(0o755)).unwrap();
+    assert!(run(root, &["reembed", "--command", command.to_str().unwrap()]).0);
+    fs::write(
+        &command,
+        "#!/bin/sh\ncat >/dev/null\ndd if=/dev/zero bs=1048576 count=2 2>/dev/null\n",
+    )
+    .unwrap();
+    fs::write(&file, "replacement imported marker\n").unwrap();
+
+    let (success, _) = run(root, &["refresh"]);
+    assert!(
+        !success,
+        "oversized imported embedding output must fail refresh"
+    );
+    assert_eq!(search_json(root, &["previous imported marker"]).len(), 1);
+    assert!(search_json(root, &["replacement imported marker"]).is_empty());
 }
 
 #[test]
