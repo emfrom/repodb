@@ -38,11 +38,18 @@ fn bounded_command_output_with_input(
     stdout_limit: usize,
     used: &mut Budget,
 ) -> Result<(std::process::ExitStatus, Vec<u8>, Vec<u8>)> {
-    let output = process::capture_with_input(child, input, stdout_limit, MAX_COMMAND_STDERR_BYTES)?;
+    let remaining = used.remaining();
+    let stderr_limit = remaining.min(MAX_COMMAND_STDERR_BYTES);
+    let stdout_limit = stdout_limit.min(remaining - stderr_limit);
+    let reservation = stdout_limit + stderr_limit;
+    charge_refresh_memory(used, reservation, "subprocess output capture")?;
+
+    let output = process::capture_with_input(child, input, stdout_limit, stderr_limit)?;
     if output.exceeded {
-        return Err(format!("subprocess output exceeded its bounded capture (stdout: {stdout_limit} bytes, stderr: {MAX_COMMAND_STDERR_BYTES} bytes)").into());
+        used.release(reservation);
+        return Err(format!("subprocess output exceeded its bounded capture (stdout: {stdout_limit} bytes, stderr: {stderr_limit} bytes)").into());
     }
-    charge_refresh_memory(used, output.stderr.len(), "subprocess stderr")?;
+    used.release(reservation - output.stdout.len() - output.stderr.len());
     Ok((output.status, output.stdout, output.stderr))
 }
 
@@ -62,7 +69,6 @@ fn import_embed(command: &str, model: &str, text: &str, used: &mut Budget) -> Re
         .min(used.remaining().saturating_sub(MAX_COMMAND_STDERR_BYTES) / 2);
     let (status, stdout, stderr) =
         bounded_command_output_with_input(&mut child, text.as_bytes(), output_limit, used)?;
-    charge_refresh_memory(used, stdout.len(), "embedding command output")?;
     if !status.success() {
         return Err(format!(
             "embedding command failed: {}",
@@ -387,11 +393,6 @@ pub fn refresh(c: &Connection) -> Result<()> {
                     .saturating_sub(MAX_COMMAND_STDERR_BYTES),
                 &mut refresh_memory_bytes,
             )?;
-            charge_refresh_memory(
-                &mut refresh_memory_bytes,
-                commits_bytes.len(),
-                "Git commit list",
-            )?;
             let commits = String::from_utf8(commits_bytes)?;
             let mut commits = commits.lines().map(str::to_owned).collect::<Vec<_>>();
             let selected = if retention == "latest" {
@@ -409,7 +410,6 @@ pub fn refresh(c: &Connection) -> Result<()> {
                         .saturating_sub(MAX_COMMAND_STDERR_BYTES),
                     &mut refresh_memory_bytes,
                 )?;
-                charge_refresh_memory(&mut refresh_memory_bytes, paths.len(), "Git path list")?;
                 let mut content = String::new();
                 let mut units = Vec::new();
                 for path in paths.split(|b| *b == 0).filter(|p| !p.is_empty()) {
@@ -422,11 +422,6 @@ pub fn refresh(c: &Connection) -> Result<()> {
                             .remaining()
                             .saturating_sub(MAX_COMMAND_STDERR_BYTES),
                         &mut refresh_memory_bytes,
-                    )?;
-                    charge_refresh_memory(
-                        &mut refresh_memory_bytes,
-                        bytes.len(),
-                        "Git blob input",
                     )?;
                     let Ok(text) = String::from_utf8(bytes) else {
                         continue;
@@ -559,7 +554,6 @@ pub fn refresh(c: &Connection) -> Result<()> {
                 )
                 .into());
             }
-            charge_refresh_memory(&mut refresh_memory_bytes, output.1.len(), "URL response")?;
             output.1
         };
         let is_pdf = source_bytes
@@ -613,11 +607,6 @@ pub fn refresh(c: &Connection) -> Result<()> {
                             .saturating_sub(MAX_COMMAND_STDERR_BYTES),
                     ),
                     &mut refresh_memory_bytes,
-                )?;
-                charge_refresh_memory(
-                    &mut refresh_memory_bytes,
-                    output.1.len(),
-                    "PDF conversion output",
                 )?;
                 if !output.0.success() {
                     return Err(format!(
@@ -945,7 +934,33 @@ pub fn search(c: &Connection, query: &str, mode: &str, limit: usize) -> Result<V
 
 #[cfg(test)]
 mod tests {
-    use super::checksum;
+    use super::{bounded_command_output_with_input, checksum};
+    use crate::budget::Budget;
+    use std::process::{Command, Stdio};
+
+    #[test]
+    fn command_stderr_capture_is_limited_by_remaining_budget() {
+        let mut budget = Budget::new(10, "refresh limit exceeded");
+        budget.charge(7, "existing refresh data").unwrap();
+        let mut child = Command::new("sh")
+            .args(["-c", "printf 1234 >&2"])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+
+        let result = bounded_command_output_with_input(&mut child, &[], 8, &mut budget);
+
+        assert!(
+            result.is_err(),
+            "stderr exceeding available budget is rejected"
+        );
+        assert_eq!(
+            budget.used(),
+            7,
+            "rejected output must release its bounded capture reservation"
+        );
+    }
 
     #[test]
     fn checksum_is_sha256_and_distinguishes_cache_inputs() {
