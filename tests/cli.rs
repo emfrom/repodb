@@ -104,6 +104,80 @@ fn imported_files_refresh_with_references_and_both_retention_policies() {
 }
 
 #[test]
+fn imported_git_repository_refreshes_with_identity_commit_path_and_line_refs() {
+    let repo = repository();
+    let root = repo.path();
+    let external = tempfile::tempdir().unwrap();
+    git(external.path(), &["init", "-q"]);
+    git(
+        external.path(),
+        &["config", "user.email", "test@example.com"],
+    );
+    git(external.path(), &["config", "user.name", "Test"]);
+    fs::write(external.path().join("guide.md"), "first git marker\n").unwrap();
+    git(external.path(), &["add", "."]);
+    git(external.path(), &["commit", "-qm", "first"]);
+    let first = git_text(external.path(), &["rev-parse", "HEAD"]);
+    let locator = external.path().to_string_lossy().into_owned();
+    assert!(run(root, &["import", &locator]).0);
+    assert!(run(root, &["refresh"]).0);
+    let results = search_json(root, &["first git marker"]);
+    assert_eq!(results.len(), 1, "{results:?}");
+    assert_eq!(results[0]["path"], "guide.md");
+    assert_eq!(results[0]["commit_id"], first);
+    assert_eq!(results[0]["line_start"], 1);
+    assert_eq!(results[0]["line_end"], 1);
+    assert!(results[0]["repo_id"].as_str().unwrap().contains(&locator));
+    let embedder = root.join("git-embedder");
+    fs::write(
+        &embedder,
+        "#!/bin/sh\ncat >/dev/null\nprintf '[1.0, 0.0]'\n",
+    )
+    .unwrap();
+    use std::os::unix::fs::PermissionsExt;
+    fs::set_permissions(&embedder, fs::Permissions::from_mode(0o755)).unwrap();
+    assert!(run(root, &["reembed", "--command", embedder.to_str().unwrap()]).0);
+    let semantic = search_json(root, &["unrelated phrase", "--semantic"]);
+    assert!(
+        semantic
+            .iter()
+            .any(|x| x["repo_id"] == locator && x["commit_id"] == first)
+    );
+
+    fs::write(external.path().join("guide.md"), "second git marker\n").unwrap();
+    git(external.path(), &["add", "."]);
+    git(external.path(), &["commit", "-qm", "second"]);
+    let second = git_text(external.path(), &["rev-parse", "HEAD"]);
+    assert!(search_json(root, &["second git marker"]).is_empty());
+    assert!(run(root, &["retention", "all"]).0);
+    assert!(run(root, &["refresh"]).0);
+    let newest = search_json(root, &["second git marker"]);
+    assert_eq!(newest[0]["commit_id"], second);
+    assert!(!search_json(root, &["first git marker"]).is_empty());
+    assert!(run(root, &["retention", "latest"]).0);
+    assert!(search_json(root, &["first git marker"]).is_empty());
+
+    let bare = external.path().join("remote.git");
+    let clone = Command::new("git")
+        .args(["clone", "--bare"])
+        .arg(external.path())
+        .arg(&bare)
+        .output()
+        .unwrap();
+    assert!(clone.status.success());
+    let remote = format!("file://{}", bare.display());
+    assert!(run(root, &["import", &remote]).0);
+    assert!(run(root, &["refresh"]).0);
+    let remote_result = search_json(root, &["second git marker"]);
+    assert!(
+        remote_result
+            .iter()
+            .any(|x| x["repo_id"].as_str().unwrap().contains(&remote)),
+        "{remote_result:?}"
+    );
+}
+
+#[test]
 fn imported_pdfs_preserve_pages_cache_conversions_and_refresh_versions() {
     use std::os::unix::fs::PermissionsExt;
     let repo = repository();

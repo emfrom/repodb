@@ -28,6 +28,8 @@ struct SearchResult {
     blob_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     page: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    repo_id: Option<String>,
 }
 fn git(args: &[&str]) -> Result<Vec<u8>> {
     let o = Command::new("git").args(args).output()?;
@@ -203,6 +205,7 @@ fn exact(c: &Connection, q: &str, commits: &[String]) -> Result<Vec<SearchResult
                     distance: None,
                     blob_id: None,
                     page: None,
+                    repo_id: None,
                 })
             }
         }
@@ -255,6 +258,7 @@ fn semantic_with_vector(
                 distance: Some(r.get(4)?),
                 blob_id: None,
                 page: None,
+                repo_id: None,
             })
         },
     )?;
@@ -283,9 +287,11 @@ fn execute() -> Result<()> {
             imports::refresh(&db)?;
         }
         "import" => {
-            let locator = a.next().ok_or("import requires one local file or URL")?;
+            let locator = a
+                .next()
+                .ok_or("import requires one local file, URL, or Git repository")?;
             if a.next().is_some() {
-                return Err("import accepts one file or URL; directories are not supported".into());
+                return Err("import accepts one file, URL, or Git repository".into());
             }
             imports::register(&open_db()?, &locator)?;
         }
@@ -414,6 +420,9 @@ fn execute() -> Result<()> {
                     }
                     if let Some(blob) = x.blob_id {
                         reference.push_str(&format!(" [blob {blob}]"));
+                    }
+                    if let Some(repo_id) = x.repo_id {
+                        reference.push_str(&format!(" [repo {repo_id}]"));
                     }
                     if let Some(page) = x.page {
                         println!("{}:page {}{}: {}", x.path, page, reference, x.text);

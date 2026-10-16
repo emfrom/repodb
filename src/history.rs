@@ -365,6 +365,7 @@ pub fn search(
                     blob_id: Some(r.get(5)?),
                     distance: r.get(6)?,
                     page: None,
+                    repo_id: None,
                 },
             ))
         },

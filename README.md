@@ -52,7 +52,7 @@ search requires `reembed [--command PATH] [--model ID]`; `--semantic-limit N`
 
 ### Imported sources
 
-Register one local file or an HTTP(S) URL at a time with `repodb import PATH_OR_URL`; directories are rejected. `repodb retention latest` (the default) keeps only the newest fetched version per source, while `repodb retention all` retains prior versions. `repodb refresh` explicitly reads registered files and fetches registered URLs; searches never fetch. Imported results identify the original path or URL and a one-based line range. Semantic imported search uses the repository's configured embedding command.
+Register one local file, HTTP(S) URL, local Git repository, or remote Git URL at a time with `repodb import PATH_OR_URL`. Git remotes can use SSH, Git, `file://`, or HTTP(S) URLs ending in `.git`; ordinary directories are rejected. `repodb retention latest` (the default) keeps only the newest fetched version per source, while `repodb retention all` retains prior versions. `repodb refresh` explicitly reads registered files, fetches registered URLs, and updates registered Git repositories; searches never fetch. Imported Git results include the repository locator, commit ID, repository-relative path, and one-based line reference. Semantic imported search uses the repository's configured embedding command.
 
 Importing PDF files requires the `pdftotext` executable (from Poppler) to be installed and available on `PATH` when `repodb refresh` converts a PDF. Extracted PDF text is indexed one unit per page; JSON search results include the one-based `page` number, and human-readable results include the page reference.
 

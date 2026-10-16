@@ -10,7 +10,7 @@ use std::{
 const MAX_URL_BYTES: usize = 10 * 1024 * 1024;
 
 fn init(c: &Connection) -> Result<()> {
-    c.execute_batch("CREATE TABLE IF NOT EXISTS imported_sources(id TEXT PRIMARY KEY, locator TEXT NOT NULL UNIQUE, kind TEXT NOT NULL); CREATE TABLE IF NOT EXISTS imported_versions(source_id TEXT NOT NULL, version TEXT NOT NULL, content TEXT NOT NULL, fetched_order INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(source_id,version)); CREATE TABLE IF NOT EXISTS imported_units(source_id TEXT NOT NULL, version TEXT NOT NULL, line INTEGER NOT NULL, text TEXT NOT NULL, vector BLOB, page INTEGER, PRIMARY KEY(source_id,version,line)); CREATE TABLE IF NOT EXISTS import_config(key TEXT PRIMARY KEY,value TEXT NOT NULL);")?;
+    c.execute_batch("CREATE TABLE IF NOT EXISTS imported_sources(id TEXT PRIMARY KEY, locator TEXT NOT NULL UNIQUE, kind TEXT NOT NULL); CREATE TABLE IF NOT EXISTS imported_versions(source_id TEXT NOT NULL, version TEXT NOT NULL, content TEXT NOT NULL, fetched_order INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(source_id,version)); CREATE TABLE IF NOT EXISTS imported_units(source_id TEXT NOT NULL, version TEXT NOT NULL, line INTEGER NOT NULL, text TEXT NOT NULL, vector BLOB, page INTEGER, PRIMARY KEY(source_id,version,line)); CREATE TABLE IF NOT EXISTS import_config(key TEXT PRIMARY KEY,value TEXT NOT NULL); CREATE TABLE IF NOT EXISTS imported_git_units(source_id TEXT NOT NULL,commit_id TEXT NOT NULL,path TEXT NOT NULL,line INTEGER NOT NULL,text TEXT NOT NULL,vector BLOB,PRIMARY KEY(source_id,commit_id,path,line));")?;
     if !column_exists(c, "imported_units", "page")? {
         c.execute("ALTER TABLE imported_units ADD COLUMN page INTEGER", [])?;
     }
@@ -165,15 +165,44 @@ fn identity(locator: &str) -> String {
 }
 
 pub fn register(c: &Connection, locator: &str) -> Result<()> {
-    let is_url = locator.starts_with("http://") || locator.starts_with("https://");
-    if !is_url {
-        let path = Path::new(locator);
-        if !path.is_file() {
-            return Err("imports must name an individual local file or HTTP(S) URL; directories are not supported".into());
-        }
+    let is_remote_git = locator.starts_with("ssh://")
+        || locator.starts_with("git@")
+        || locator.starts_with("git://")
+        || locator.starts_with("file://")
+        || locator.starts_with("http://") && locator.ends_with(".git")
+        || locator.starts_with("https://") && locator.ends_with(".git");
+    let is_url =
+        !is_remote_git && (locator.starts_with("http://") || locator.starts_with("https://"));
+    let path = Path::new(locator);
+    let same_repository = path.is_dir()
+        && path.canonicalize().ok()
+            == Command::new("git")
+                .args(["rev-parse", "--show-toplevel"])
+                .output()
+                .ok()
+                .filter(|o| o.status.success())
+                .and_then(|o| String::from_utf8(o.stdout).ok())
+                .and_then(|root| Path::new(root.trim()).canonicalize().ok());
+    let is_git = is_remote_git
+        || path.is_dir()
+            && !same_repository
+            && Command::new("git")
+                .args(["-C", locator, "rev-parse", "--git-dir"])
+                .output()
+                .is_ok_and(|o| o.status.success());
+    if !is_url && !is_git && !path.is_file() {
+        return Err(
+            "imports must name an individual local file, HTTP(S) URL, or Git repository".into(),
+        );
     }
     init(c)?;
-    let kind = if is_url { "url" } else { "file" };
+    let kind = if is_git {
+        "git"
+    } else if is_url {
+        "url"
+    } else {
+        "file"
+    };
     c.execute(
         "INSERT OR IGNORE INTO imported_sources VALUES(?1,?2,?3)",
         params![identity(locator), locator, kind],
@@ -193,8 +222,22 @@ pub fn set_retention(c: &Connection, value: &str) -> Result<()> {
     if value == "latest" {
         c.execute("DELETE FROM imported_versions WHERE EXISTS (SELECT 1 FROM imported_versions newer WHERE newer.source_id=imported_versions.source_id AND newer.fetched_order>imported_versions.fetched_order)", [])?;
         c.execute("DELETE FROM imported_units WHERE NOT EXISTS (SELECT 1 FROM imported_versions v WHERE v.source_id=imported_units.source_id AND v.version=imported_units.version)", [])?;
+        c.execute("DELETE FROM imported_git_units WHERE NOT EXISTS (SELECT 1 FROM imported_versions v WHERE v.source_id=imported_git_units.source_id AND v.version=imported_git_units.commit_id)", [])?;
     }
     Ok(())
+}
+
+fn git_output(repo: &str, args: &[&str]) -> Result<Vec<u8>> {
+    let output = Command::new("git").args(["-C", repo]).args(args).output()?;
+    if !output.status.success() {
+        return Err(format!(
+            "git {} failed: {}",
+            args.join(" "),
+            String::from_utf8_lossy(&output.stderr)
+        )
+        .into());
+    }
+    Ok(output.stdout)
 }
 
 pub fn refresh(c: &Connection) -> Result<()> {
@@ -232,6 +275,100 @@ pub fn refresh(c: &Connection) -> Result<()> {
         .join("repodb-cache");
     let tx = c.unchecked_transaction()?;
     for (id, locator, kind) in sources {
+        if kind == "git" {
+            let repository = if Path::new(&locator).is_dir() {
+                locator.clone()
+            } else {
+                let mirror = cache_dir.join(format!("git-{}", id.trim_start_matches("import:")));
+                fs::create_dir_all(&cache_dir)?;
+                if !mirror.exists() {
+                    let status = Command::new("git")
+                        .args(["clone", "--mirror", &locator])
+                        .arg(&mirror)
+                        .status()?;
+                    if !status.success() {
+                        return Err(format!("git clone failed for {locator}").into());
+                    }
+                } else {
+                    let status = Command::new("git")
+                        .arg("--git-dir")
+                        .arg(&mirror)
+                        .args(["fetch", "--prune", "origin"])
+                        .status()?;
+                    if !status.success() {
+                        return Err(format!("git fetch failed for {locator}").into());
+                    }
+                }
+                mirror.to_string_lossy().into_owned()
+            };
+            let commits = String::from_utf8(git_output(
+                &repository,
+                &["rev-list", "--all", "--date-order"],
+            )?)?;
+            let mut commits = commits.lines().map(str::to_owned).collect::<Vec<_>>();
+            let selected = if retention == "latest" {
+                commits.into_iter().take(1).collect()
+            } else {
+                commits.reverse();
+                commits
+            };
+            for commit in selected {
+                let paths = git_output(
+                    &repository,
+                    &["ls-tree", "-r", "--name-only", "-z", &commit],
+                )?;
+                let mut content = String::new();
+                let mut units = Vec::new();
+                for path in paths.split(|b| *b == 0).filter(|p| !p.is_empty()) {
+                    let path = String::from_utf8(path.to_vec())?;
+                    let spec = format!("{commit}:{path}");
+                    let bytes = git_output(&repository, &["show", &spec])?;
+                    let Ok(text) = String::from_utf8(bytes) else {
+                        continue;
+                    };
+                    content.push_str(&path);
+                    content.push('\n');
+                    content.push_str(&text);
+                    if !content.ends_with('\n') {
+                        content.push('\n');
+                    }
+                    for (index, line) in text.lines().enumerate() {
+                        if line.trim().is_empty() {
+                            continue;
+                        }
+                        let vector = cfg
+                            .as_ref()
+                            .map(|(cmd, model)| embed(cmd, model, line))
+                            .transpose()?;
+                        if let Some(vector) = &vector
+                            && configured_dimension.is_some_and(|d| d != vector.len())
+                        {
+                            return Err("embedding dimension mismatch".into());
+                        }
+                        units.push((
+                            path.clone(),
+                            index + 1,
+                            line.to_owned(),
+                            vector.map(|v| as_bytes(&v)),
+                        ));
+                    }
+                }
+                let fetched_order: i64 = tx.query_row(
+                    "SELECT COALESCE(MAX(fetched_order),0)+1 FROM imported_versions",
+                    [],
+                    |r| r.get(0),
+                )?;
+                tx.execute("INSERT INTO imported_versions(source_id,version,content,fetched_order) VALUES(?1,?2,?3,?4) ON CONFLICT(source_id,version) DO UPDATE SET content=excluded.content,fetched_order=excluded.fetched_order", params![id, commit, content, fetched_order])?;
+                for (path, line, text, vector) in units {
+                    tx.execute("INSERT OR REPLACE INTO imported_git_units(source_id,commit_id,path,line,text,vector) VALUES(?1,?2,?3,?4,?5,?6)", params![id, commit, path, line, text, vector])?;
+                }
+            }
+            if retention == "latest" {
+                tx.execute("DELETE FROM imported_versions WHERE source_id=?1 AND version NOT IN (SELECT version FROM imported_versions WHERE source_id=?1 ORDER BY fetched_order DESC LIMIT 1)", [&id])?;
+                tx.execute("DELETE FROM imported_git_units WHERE source_id=?1 AND commit_id NOT IN (SELECT version FROM imported_versions WHERE source_id=?1)", [&id])?;
+            }
+            continue;
+        }
         let source_bytes = if kind == "file" {
             fs::read(&locator)?
         } else {
@@ -387,20 +524,22 @@ pub fn refresh(c: &Connection) -> Result<()> {
 pub fn reembed(c: &Connection, command: &str, model: &str) -> Result<Option<usize>> {
     init(c)?;
     let rows = {
-        let mut stmt = c.prepare("SELECT source_id,version,line,text FROM imported_units ORDER BY source_id,version,line")?;
+        let mut stmt = c.prepare("SELECT source_id,version,line,text,'file',NULL FROM imported_units UNION ALL SELECT source_id,commit_id,line,text,'git',path FROM imported_git_units ORDER BY 1,2,3")?;
         stmt.query_map([], |r| {
             Ok((
                 r.get::<_, String>(0)?,
                 r.get::<_, String>(1)?,
                 r.get::<_, usize>(2)?,
                 r.get::<_, String>(3)?,
+                r.get::<_, String>(4)?,
+                r.get::<_, Option<String>>(5)?,
             ))
         })?
         .collect::<std::result::Result<Vec<_>, _>>()?
     };
     let mut vectors = Vec::with_capacity(rows.len());
     let mut dimension = None;
-    for (_, _, _, text) in &rows {
+    for (_, _, _, text, _, _) in &rows {
         let vector = embed(command, model, text)?;
         if dimension.is_some_and(|d| d != vector.len()) {
             return Err("embedding dimension mismatch".into());
@@ -408,11 +547,15 @@ pub fn reembed(c: &Connection, command: &str, model: &str) -> Result<Option<usiz
         dimension = Some(vector.len());
         vectors.push(as_bytes(&vector));
     }
-    for ((source, version, line, _), vector) in rows.iter().zip(vectors) {
-        c.execute(
-            "UPDATE imported_units SET vector=?1 WHERE source_id=?2 AND version=?3 AND line=?4",
-            params![vector, source, version, line],
-        )?;
+    for ((source, version, line, _, kind, path), vector) in rows.iter().zip(vectors) {
+        if kind == "git" {
+            c.execute("UPDATE imported_git_units SET vector=?1 WHERE source_id=?2 AND commit_id=?3 AND line=?4 AND path=?5", params![vector, source, version, line, path])?;
+        } else {
+            c.execute(
+                "UPDATE imported_units SET vector=?1 WHERE source_id=?2 AND version=?3 AND line=?4",
+                params![vector, source, version, line],
+            )?;
+        }
     }
     Ok(dimension)
 }
@@ -435,7 +578,7 @@ pub fn search(c: &Connection, query: &str, mode: &str, limit: usize) -> Result<V
             return Err("query embedding dimension mismatch".into());
         }
     }
-    let mut st = c.prepare("SELECT s.locator,u.line,u.text,u.version,u.vector,u.page FROM imported_units u JOIN imported_sources s ON s.id=u.source_id")?;
+    let mut st = c.prepare("SELECT s.locator,u.line,u.text,u.version,u.vector,u.page FROM imported_units u JOIN imported_sources s ON s.id=u.source_id WHERE s.kind<>'git'")?;
     let rows = st.query_map([], |r| {
         Ok((
             r.get::<_, String>(0)?,
@@ -469,6 +612,7 @@ pub fn search(c: &Connection, query: &str, mode: &str, limit: usize) -> Result<V
                         distance: Some(d),
                         blob_id: Some(version),
                         page,
+                        repo_id: None,
                     },
                 ));
             }
@@ -484,6 +628,59 @@ pub fn search(c: &Connection, query: &str, mode: &str, limit: usize) -> Result<V
                     distance: None,
                     blob_id: Some(version),
                     page,
+                    repo_id: None,
+                },
+            ));
+        }
+    }
+    let mut git_rows = c.prepare("SELECT s.locator,u.path,u.line,u.text,u.commit_id,u.vector FROM imported_git_units u JOIN imported_sources s ON s.id=u.source_id")?;
+    let rows = git_rows.query_map([], |r| {
+        Ok((
+            r.get::<_, String>(0)?,
+            r.get::<_, String>(1)?,
+            r.get::<_, usize>(2)?,
+            r.get::<_, String>(3)?,
+            r.get::<_, String>(4)?,
+            r.get::<_, Option<Vec<u8>>>(5)?,
+        ))
+    })?;
+    for row in rows {
+        let (repo_id, path, line, text, commit, stored) = row?;
+        if semantic {
+            if let (Some(stored), Some(query_vector)) = (stored.as_deref(), vector.as_deref()) {
+                let distance: f64 = c.query_row(
+                    "SELECT vec_distance_cosine(?1,?2)",
+                    params![stored, query_vector],
+                    |r| r.get(0),
+                )?;
+                out.push((
+                    distance,
+                    SearchResult {
+                        path,
+                        line_start: line,
+                        line_end: line,
+                        text,
+                        commit_id: Some(commit),
+                        distance: Some(distance),
+                        blob_id: None,
+                        page: None,
+                        repo_id: Some(repo_id),
+                    },
+                ));
+            }
+        } else if text.to_lowercase().contains(&query.to_lowercase()) {
+            out.push((
+                0.0,
+                SearchResult {
+                    path,
+                    line_start: line,
+                    line_end: line,
+                    text,
+                    commit_id: Some(commit),
+                    distance: None,
+                    blob_id: None,
+                    page: None,
+                    repo_id: Some(repo_id),
                 },
             ));
         }
