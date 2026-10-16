@@ -11,3 +11,7 @@ Use the five default triage labels. See `docs/agents/triage-labels.md`.
 ### Domain docs
 
 Use the single-context layout. See `docs/agents/domain.md`.
+
+### Installations
+
+For dependency installations or removals, read `UNINSTALL.md` and update its linked ledger.
