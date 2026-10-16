@@ -58,8 +58,14 @@ fn open_db() -> Result<Connection> {
     c.execute_batch("CREATE TABLE IF NOT EXISTS indexed_files(path TEXT PRIMARY KEY NOT NULL,commit_id TEXT NOT NULL,content TEXT NOT NULL); CREATE TABLE IF NOT EXISTS embeddings(path TEXT NOT NULL,line INTEGER NOT NULL,text TEXT NOT NULL,commit_id TEXT NOT NULL,vector BLOB NOT NULL,PRIMARY KEY(path,line)); CREATE TABLE IF NOT EXISTS embedding_config(key TEXT PRIMARY KEY,value TEXT NOT NULL);")?;
     Ok(c)
 }
-fn embed(command: &str, text: &str) -> Result<Vec<f32>> {
+fn embed(command: &str, model: &str, text: &str) -> Result<Vec<f32>> {
+    if command.ends_with("/generate_embeddings") && model != "all-MiniLM-L6-v2" {
+        return Err(
+            "the built-in generate_embeddings command only supports all-MiniLM-L6-v2".into(),
+        );
+    }
     let mut child = Command::new(command)
+        .env("REPODB_EMBEDDING_MODEL", model)
         .args(["--json", "-"])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -132,7 +138,7 @@ fn refresh(c: &mut Connection) -> Result<()> {
         let mut dim = None;
         for (p, text) in &files {
             for (i, line) in text.lines().enumerate() {
-                let v = embed(&command, line)?;
+                let v = embed(&command, &model, line)?;
                 if dim.is_some_and(|d| d != v.len()) {
                     return Err("embedding dimension mismatch".into());
                 }
@@ -175,7 +181,7 @@ fn reembed(c: &mut Connection, command: &str, model: &str) -> Result<()> {
     let mut dim = None;
     for (p, id, content) in files {
         for (i, line) in content.lines().enumerate() {
-            let v = embed(command, line)?;
+            let v = embed(command, model, line)?;
             if dim.is_some_and(|d| d != v.len()) {
                 return Err("embedding dimension mismatch".into());
             }
@@ -236,7 +242,12 @@ fn query_vector(c: &Connection, q: &str) -> Result<Vec<f32>> {
             |r| r.get(0),
         )
         .map_err(|_| "no embeddings; run reembed")?;
-    let v = embed(&command, q)?;
+    let model: String = c.query_row(
+        "SELECT value FROM embedding_config WHERE key='model'",
+        [],
+        |r| r.get(0),
+    )?;
+    let v = embed(&command, &model, q)?;
     let dim: i64 = c
         .query_row(
             "SELECT value FROM embedding_config WHERE key='dimension'",
@@ -291,7 +302,7 @@ fn execute() -> Result<()> {
             reembed(&mut open_db()?, &command, &model)?
         }
         "search" => {
-            let q = a.next().ok_or("search requires query")?;
+            let mut query = None;
             let (mut json, mut mode, mut limit) = (false, "exact", 20usize);
             while let Some(x) = a.next() {
                 match x.as_str() {
@@ -299,9 +310,14 @@ fn execute() -> Result<()> {
                     "--semantic" => mode = "semantic",
                     "--combined" => mode = "combined",
                     "--semantic-limit" => limit = a.next().ok_or("missing limit")?.parse()?,
+                    _ if x.starts_with('-') => {
+                        return Err(format!("unexpected argument {x}").into());
+                    }
+                    _ if query.is_none() => query = Some(x),
                     _ => return Err(format!("unexpected argument {x}").into()),
                 }
             }
+            let q = query.ok_or("search requires query")?;
             let c = open_db()?;
             let result = if mode == "exact" {
                 exact(&c, &q)?
