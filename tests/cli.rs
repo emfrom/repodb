@@ -1197,6 +1197,38 @@ fn large_history_tree_refreshes_incrementally_and_keeps_the_snapshot_atomic() {
 }
 
 #[test]
+fn history_refresh_streams_large_commit_history_with_fake_embeddings() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let repo = repository();
+    let root = repo.path();
+    assert!(run(root, &["init"]).0);
+    let embedder = root.join("history-embedder");
+    fs::write(
+        &embedder,
+        "#!/bin/sh\ncat >/dev/null\nprintf '[1.0, 0.0]'\n",
+    )
+    .unwrap();
+    fs::set_permissions(&embedder, fs::Permissions::from_mode(0o755)).unwrap();
+    assert!(run(root, &["reembed", "--command", embedder.to_str().unwrap()]).0);
+
+    // More commits than the former in-memory history ceiling, all sharing the
+    // same tree/blob so the fixture specifically exercises reachability staging
+    // and deduplication rather than simply generating many independent files.
+    for _ in 0..1_100 {
+        git(root, &["commit", "--allow-empty", "-qm", "history"]);
+    }
+    assert!(run(root, &["refresh"]).0);
+    let results = search_json(root, &["TARGET", "--all-history"]);
+    assert_eq!(results.len(), 1, "identical blobs must remain deduplicated");
+    let db = rusqlite::Connection::open(root.join(".git/repodb.sqlite")).unwrap();
+    let commits: i64 = db
+        .query_row("SELECT count(*) FROM git_commits", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(commits, 1_101);
+}
+
+#[test]
 fn history_blob_larger_than_previous_limit_refreshes() {
     let repo = repository();
     let root = repo.path();

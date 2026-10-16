@@ -5,7 +5,6 @@ use crate::{
 };
 use rusqlite::{Connection, Transaction, TransactionBehavior, params};
 use std::{
-    collections::{BTreeMap, BTreeSet},
     io::{BufRead, BufReader},
     process::{Command, Stdio},
 };
@@ -167,17 +166,6 @@ pub fn publish_transaction(c: &mut Connection, version: i64) -> Result<Transacti
     Ok(tx)
 }
 
-struct Blob {
-    content: Option<String>,
-    status: &'static str,
-}
-struct Occurrence {
-    commit_id: String,
-    blob_id: String,
-    path: Vec<u8>,
-    kind: &'static str,
-}
-
 fn head(preparation_bytes: &mut Budget) -> Result<Option<String>> {
     let (stdout_limit, stderr_limit) = git_capture_limits(128, preparation_bytes.used())?;
     let mut child = Command::new("git")
@@ -211,80 +199,74 @@ fn head(preparation_bytes: &mut Budget) -> Result<Option<String>> {
     result
 }
 
-fn reachable_commits(preparation_bytes: &mut Budget) -> Result<Vec<(String, i64)>> {
-    // Capture immutable roots once; later ref changes cannot mix two snapshots.
-    let mut roots = git_output(
-        &["for-each-ref", "--format=%(objectname)"],
-        MAX_REFRESH_MEMORY_BYTES,
-        preparation_bytes,
-    )?;
-    let mut roots_bytes = roots.capacity();
-    if let Some(head) = head(preparation_bytes)? {
-        let retained_head_bytes = head.len();
-        let head = format!("{head}\n");
-        let old_capacity = roots.capacity();
-        let requested = roots
-            .len()
-            .checked_add(head.len())
-            .ok_or("Git roots capacity overflow")?;
-        let delta = requested.saturating_sub(old_capacity);
-        preparation_bytes.charge(delta, "Git roots capacity")?;
-        if let Err(error) = roots.try_reserve_exact(head.len()) {
-            preparation_bytes.release(delta);
-            return Err(error.into());
-        }
-        let actual_delta = roots.capacity().saturating_sub(old_capacity);
-        if actual_delta > delta {
-            return Err("Git roots allocator exceeded exact capacity bound".into());
-        }
-        preparation_bytes.release(delta - actual_delta);
-        roots.extend_from_slice(head.as_bytes());
-        roots_bytes += actual_delta;
-        preparation_bytes.release(retained_head_bytes);
-    }
-    if roots.is_empty() {
-        return Ok(vec![]);
+fn for_each_reachable_commit(
+    preparation_bytes: &mut Budget,
+    mut visit: impl FnMut(&str, i64, &mut Budget) -> Result<()>,
+) -> Result<()> {
+    const READ_BUFFER_BYTES: usize = 8 * 1024;
+    preparation_bytes.charge(MAX_GIT_STDERR_BYTES, "Git stderr capture")?;
+    preparation_bytes.charge(READ_BUFFER_BYTES, "Git commit read buffer")?;
+    let mut args = vec!["rev-list", "--timestamp", "--all"];
+    let head_id = head(preparation_bytes)?;
+    if let Some(id) = head_id.as_deref() {
+        args.push(id);
     }
     let mut child = Command::new("git")
-        .args(["rev-list", "--timestamp", "--stdin"])
-        .stdin(Stdio::piped())
+        .args(args)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()?;
-    let (stdout_limit, stderr_limit) =
-        git_capture_limits(MAX_REFRESH_MEMORY_BYTES, preparation_bytes.used())?;
-    let output = process::capture_with_input(&mut child, &roots, stdout_limit, stderr_limit)?;
-    let stdout_capacity = output.stdout.capacity();
-    let stderr_capacity = output.stderr.capacity();
-    preparation_bytes.charge(stdout_capacity, "Git commit output capacity")?;
-    preparation_bytes.charge(stderr_capacity, "Git stderr capacity")?;
-    if output.exceeded {
-        return Err(memory_limit());
+    let mut stdout = BufReader::with_capacity(READ_BUFFER_BYTES, child.stdout.take().unwrap());
+    let stderr = child.stderr.take().unwrap();
+    let stderr =
+        std::thread::spawn(move || crate::process::drain_bounded(stderr, MAX_GIT_STDERR_BYTES));
+    let result = (|| -> Result<()> {
+        let mut line = Vec::new();
+        loop {
+            line.clear();
+            let count = stdout.read_until(b'\n', &mut line)?;
+            if count == 0 {
+                break;
+            }
+            preparation_bytes.charge(line.capacity(), "Git commit record")?;
+            let parsed = (|| -> Result<()> {
+                let record = std::str::from_utf8(&line)?;
+                let (timestamp, id) = record
+                    .trim_end()
+                    .split_once(' ')
+                    .ok_or("invalid git commit record")?;
+                visit(id, timestamp.parse()?, preparation_bytes)
+            })();
+            preparation_bytes.release(line.capacity());
+            parsed?;
+        }
+        Ok(())
+    })();
+    if result.is_err() {
+        let _ = child.kill();
     }
-    if !output.status.success() {
-        return Err(format!(
-            "git rev-list failed: {}",
-            String::from_utf8_lossy(&output.stderr)
-        )
-        .into());
+    let status = child.wait()?;
+    let (stderr, _) = stderr.join().map_err(|_| "git stderr reader panicked")??;
+    preparation_bytes.release(READ_BUFFER_BYTES);
+    preparation_bytes.release(MAX_GIT_STDERR_BYTES - stderr.capacity());
+    let stderr_capacity = stderr.capacity();
+    if let Err(error) = result {
+        drop(stderr);
+        preparation_bytes.release(stderr_capacity);
+        return Err(error);
     }
-    let output_bytes = stdout_capacity + stderr_capacity;
-    let stdout = String::from_utf8(output.stdout)?;
-    let mut commits = Vec::new();
-    for line in stdout.lines() {
-        let (timestamp, id) = line.split_once(' ').ok_or("invalid git commit record")?;
-        preparation_bytes.charge(id.len(), "parsed commit identifiers")?;
-        preparation_bytes.reserve_vec(&mut commits, 1, "parsed commit vector")?;
-        commits.push((id.to_owned(), timestamp.parse()?));
+    if !status.success() {
+        let error = format!("git rev-list failed: {}", String::from_utf8_lossy(&stderr));
+        drop(stderr);
+        preparation_bytes.release(stderr_capacity);
+        return Err(error.into());
     }
-    // The captured bytes and parsed records coexist during parsing. Retain the
-    // record charge after releasing the raw rev-list output.
-    drop(stdout);
-    drop(output.stderr);
-    drop(roots);
-    preparation_bytes.release(output_bytes);
-    preparation_bytes.release(roots_bytes);
-    Ok(commits)
+    drop(stderr);
+    preparation_bytes.release(stderr_capacity);
+    if let Some(id) = head_id {
+        preparation_bytes.release(id.len());
+    }
+    Ok(())
 }
 
 fn configuration(c: &Connection) -> Result<Option<(String, String, usize)>> {
@@ -458,103 +440,81 @@ pub fn refresh(c: &mut Connection) -> Result<()> {
         MAX_REFRESH_MEMORY_BYTES,
         "history refresh limit exceeded: preparation data",
     );
-    let commits = reachable_commits(&mut preparation_bytes)?;
-    let mut blobs = BTreeMap::new();
-    let mut occurrences = vec![];
-    for (commit_id, _) in &commits {
-        for_each_tree_record(
-            commit_id,
-            &mut preparation_bytes,
-            |record, preparation_bytes| {
+    c.execute_batch("PRAGMA temp_store=FILE;
+        DROP TABLE IF EXISTS temp.refresh_commits; DROP TABLE IF EXISTS temp.refresh_blobs;
+        DROP TABLE IF EXISTS temp.refresh_occurrences; DROP TABLE IF EXISTS temp.refresh_units;
+        DROP TABLE IF EXISTS temp.refresh_embeddings;
+        CREATE TEMP TABLE refresh_commits(commit_id TEXT PRIMARY KEY, timestamp INTEGER NOT NULL);
+        CREATE TEMP TABLE refresh_blobs(blob_id TEXT PRIMARY KEY, content TEXT, status TEXT NOT NULL);
+        CREATE TEMP TABLE refresh_occurrences(commit_id TEXT NOT NULL, blob_id TEXT NOT NULL, path BLOB NOT NULL, segmentation_kind TEXT NOT NULL, PRIMARY KEY(commit_id,path));
+        CREATE TEMP TABLE refresh_units(unit_id INTEGER PRIMARY KEY, blob_id TEXT NOT NULL, segmentation_kind TEXT NOT NULL, text TEXT NOT NULL, line_start INTEGER NOT NULL, line_end INTEGER NOT NULL);
+        CREATE TEMP TABLE refresh_embeddings(unit_id INTEGER PRIMARY KEY, vector BLOB NOT NULL);")?;
+    {
+        let mut commit_stage =
+            c.prepare("INSERT OR IGNORE INTO temp.refresh_commits VALUES(?1,?2)")?;
+        let mut blob_exists = c.prepare("SELECT 1 FROM temp.refresh_blobs WHERE blob_id=?1")?;
+        let mut blob_stage = c.prepare("INSERT INTO temp.refresh_blobs VALUES(?1,?2,?3)")?;
+        let mut occurrence_stage =
+            c.prepare("INSERT OR IGNORE INTO temp.refresh_occurrences VALUES(?1,?2,?3,?4)")?;
+        for_each_reachable_commit(&mut preparation_bytes, |commit_id, timestamp, budget| {
+            commit_stage.execute(params![commit_id, timestamp])?;
+            for_each_tree_record(commit_id, budget, |record, budget| {
                 let tab = record
                     .iter()
                     .position(|b| *b == b'\t')
                     .ok_or("invalid git tree record")?;
                 let meta = std::str::from_utf8(&record[..tab])?;
-                let fields: Vec<_> = meta.split_whitespace().collect();
-                if fields.len() != 3 {
+                let mut fields = meta.split_whitespace();
+                let _mode = fields.next().ok_or("invalid git tree metadata")?;
+                let object_type = fields.next().ok_or("invalid git tree metadata")?;
+                let blob_id = fields.next().ok_or("invalid git tree metadata")?;
+                if fields.next().is_some() {
                     return Err("invalid git tree metadata".into());
                 }
-                if fields[1] != "blob" {
+                if object_type != "blob" {
                     return Ok(());
                 }
-                let blob_id = fields[2].to_owned();
-                if !blobs.contains_key(&blob_id) {
-                    let size: u64 = String::from_utf8(git_output(
-                        &["cat-file", "-s", &blob_id],
-                        64,
-                        preparation_bytes,
-                    )?)?
-                    .trim()
-                    .parse()?;
-                    let blob_bytes = size as usize;
-                    let blob_overhead = blob_id.len()
-                        + std::mem::size_of::<Blob>()
-                        + std::mem::size_of::<(String, Blob)>();
-                    if blob_bytes.saturating_mul(2).saturating_add(blob_overhead)
-                        > preparation_bytes.remaining()
-                    {
-                        return Err(memory_limit());
-                    }
-                    let bytes = git_output(
-                        &["cat-file", "blob", &blob_id],
-                        blob_bytes,
-                        preparation_bytes,
-                    )?;
-                    preparation_bytes.charge(
-                        blob_bytes.saturating_add(blob_overhead),
-                        "Git blob contents",
-                    )?;
-                    let blob = if bytes.contains(&0) {
-                        Blob {
-                            content: None,
-                            status: "binary",
-                        }
-                    } else {
-                        match String::from_utf8(bytes) {
-                            Ok(content) => Blob {
-                                content: Some(content),
-                                status: "text",
-                            },
-                            Err(_) => Blob {
-                                content: None,
-                                status: "unsupported",
-                            },
-                        }
-                    };
-                    blobs.insert(blob_id.clone(), blob);
-                }
                 let path = &record[tab + 1..];
-                preparation_bytes.charge(
-                    path.len() + commit_id.len() + blob_id.len(),
-                    "Git occurrence payloads",
+                let kind = segmentation::kind(path);
+                if blob_exists.exists([blob_id])? {
+                    occurrence_stage.execute(params![commit_id, blob_id, path, kind])?;
+                    return Ok(());
+                }
+                let size: u64 =
+                    String::from_utf8(git_output(&["cat-file", "-s", blob_id], 64, budget)?)?
+                        .trim()
+                        .parse()?;
+                let bytes = git_output(
+                    &["cat-file", "blob", blob_id],
+                    usize::try_from(size).unwrap_or(usize::MAX),
+                    budget,
                 )?;
-                preparation_bytes.reserve_vec(&mut occurrences, 1, "Git occurrence vector")?;
-                occurrences.push(Occurrence {
-                    commit_id: commit_id.clone(),
-                    blob_id,
-                    path: path.to_vec(),
-                    kind: segmentation::kind(path),
-                });
+                let (content, status) = if bytes.contains(&0) {
+                    (None, "binary")
+                } else {
+                    match String::from_utf8(bytes) {
+                        Ok(content) => (Some(content), "text"),
+                        Err(_) => (None, "unsupported"),
+                    }
+                };
+                blob_stage.execute(params![blob_id, content, status])?;
+                occurrence_stage.execute(params![commit_id, blob_id, path, kind])?;
                 Ok(())
-            },
-        )?;
+            })
+        })?;
     }
-    c.execute_batch("PRAGMA temp_store=FILE;
-        DROP TABLE IF EXISTS temp.refresh_units;
-        DROP TABLE IF EXISTS temp.refresh_embeddings;
-        CREATE TEMP TABLE refresh_units(unit_id INTEGER PRIMARY KEY, blob_id TEXT NOT NULL, segmentation_kind TEXT NOT NULL, text TEXT NOT NULL, line_start INTEGER NOT NULL, line_end INTEGER NOT NULL);
-        CREATE TEMP TABLE refresh_embeddings(unit_id INTEGER PRIMARY KEY, vector BLOB NOT NULL);")?;
-    let mut unit_count = 0usize;
-    let mut unit_stage = c.prepare("INSERT INTO temp.refresh_units VALUES(?1,?2,?3,?4,?5,?6)")?;
-    let variants: BTreeSet<_> = occurrences
-        .iter()
-        .map(|o| (o.blob_id.as_str(), o.kind))
-        .collect();
-    for (blob_id, kind) in variants {
-        if let Some(content) = &blobs[blob_id].content {
-            let mut staging_error: Option<Box<dyn std::error::Error>> = None;
-            segmentation::visit(kind, content, |unit| {
+    let mut unit_count = 0i64;
+    {
+        let mut variants = c.prepare("SELECT DISTINCT b.blob_id,b.content,o.segmentation_kind FROM temp.refresh_blobs b JOIN temp.refresh_occurrences o USING(blob_id) WHERE b.content IS NOT NULL ORDER BY b.blob_id,o.segmentation_kind")?;
+        let mut rows = variants.query([])?;
+        let mut unit_stage =
+            c.prepare("INSERT INTO temp.refresh_units VALUES(?1,?2,?3,?4,?5,?6)")?;
+        while let Some(row) = rows.next()? {
+            let blob_id: String = row.get(0)?;
+            let content: String = row.get(1)?;
+            let kind: String = row.get(2)?;
+            let mut staging_error = None;
+            segmentation::visit(&kind, &content, |unit| {
                 unit_count += 1;
                 if let Err(error) = unit_stage.execute(params![
                     unit_count,
@@ -564,17 +524,16 @@ pub fn refresh(c: &mut Connection) -> Result<()> {
                     unit.line_start,
                     unit.line_end
                 ]) {
-                    staging_error = Some(error.into());
+                    staging_error = Some(error);
                     return false;
                 }
                 true
             });
             if let Some(error) = staging_error {
-                return Err(error);
+                return Err(error.into());
             }
         }
     }
-    drop(unit_stage);
     let cfg = configuration(c)?;
     let mut embedding_dimension = None;
     if let Some((command, model, configured_dimension)) = &cfg {
@@ -583,61 +542,52 @@ pub fn refresh(c: &mut Connection) -> Result<()> {
         let mut embedding_statement =
             c.prepare("INSERT INTO temp.refresh_embeddings VALUES(?1,?2)")?;
         let mut rows = statement.query([])?;
-        let mut vector_bytes = 0usize;
         while let Some(row) = rows.next()? {
             let unit_id: i64 = row.get(0)?;
             let text: String = row.get(1)?;
-            let (mut vectors, dimension) = vectors(
+            let (mut encoded, dimension) = vectors(
                 std::iter::once(text.as_str()),
                 command,
                 model,
                 embedding_dimension.unwrap_or(*configured_dimension),
                 &mut preparation_bytes,
             )?;
-            let vector = vectors.pop().ok_or("embedding produced no vector")?;
-            vector_bytes = vector_bytes.saturating_add(vector.len());
-            embedding_statement.execute(params![unit_id, vector])?;
+            embedding_statement.execute(params![
+                unit_id,
+                encoded.pop().ok_or("embedding produced no vector")?
+            ])?;
             embedding_dimension = Some(dimension);
         }
     }
-    // Nothing published until Git reads and all embedding generation succeed.
     let tx = publish_transaction(c, version)?;
-    tx.execute_batch("DROP TABLE IF EXISTS unit_embeddings;
-        DROP TABLE IF EXISTS git_blob_units; DROP TABLE IF EXISTS indexed_units;
-        DROP TABLE IF EXISTS git_occurrences; DROP TABLE IF EXISTS blob_contents;
-        DROP TABLE IF EXISTS git_commits;
+    tx.execute_batch("DROP TABLE IF EXISTS unit_embeddings; DROP TABLE IF EXISTS git_blob_units; DROP TABLE IF EXISTS indexed_units; DROP TABLE IF EXISTS git_occurrences; DROP TABLE IF EXISTS blob_contents; DROP TABLE IF EXISTS git_commits;
         CREATE TABLE git_commits(commit_id TEXT PRIMARY KEY NOT NULL, timestamp INTEGER NOT NULL);
         CREATE TABLE blob_contents(blob_id TEXT PRIMARY KEY NOT NULL, content TEXT, status TEXT NOT NULL);
         CREATE TABLE git_occurrences(commit_id TEXT NOT NULL REFERENCES git_commits, blob_id TEXT NOT NULL REFERENCES blob_contents, path BLOB NOT NULL, segmentation_kind TEXT NOT NULL, PRIMARY KEY(commit_id,path));
         CREATE TABLE indexed_units(unit_id INTEGER PRIMARY KEY, text TEXT NOT NULL, line_start INTEGER NOT NULL, line_end INTEGER NOT NULL);
         CREATE TABLE git_blob_units(blob_id TEXT NOT NULL REFERENCES blob_contents, unit_id INTEGER NOT NULL REFERENCES indexed_units, segmentation_kind TEXT NOT NULL, PRIMARY KEY(blob_id,segmentation_kind,unit_id));
         CREATE TABLE unit_embeddings(unit_id INTEGER PRIMARY KEY REFERENCES indexed_units, vector BLOB NOT NULL);")?;
-    for (id, timestamp) in commits {
-        tx.execute(
-            "INSERT INTO git_commits VALUES(?1,?2)",
-            params![id, timestamp],
-        )?;
-    }
-    for (id, blob) in blobs {
-        tx.execute(
-            "INSERT INTO blob_contents VALUES(?1,?2,?3)",
-            params![id, blob.content, blob.status],
-        )?;
-    }
-    for occurrence in occurrences {
-        tx.execute(
-            "INSERT INTO git_occurrences VALUES(?1,?2,?3,?4)",
-            params![
-                occurrence.commit_id,
-                occurrence.blob_id,
-                occurrence.path,
-                occurrence.kind
-            ],
-        )?;
-    }
-    tx.execute("INSERT INTO indexed_units SELECT unit_id,text,line_start,line_end FROM temp.refresh_units ORDER BY unit_id", [])?;
-    tx.execute("INSERT INTO git_blob_units SELECT blob_id,unit_id,segmentation_kind FROM temp.refresh_units ORDER BY unit_id", [])?;
-    tx.execute("INSERT INTO unit_embeddings SELECT unit_id,vector FROM temp.refresh_embeddings ORDER BY unit_id", [])?;
+    tx.execute(
+        "INSERT INTO git_commits SELECT * FROM temp.refresh_commits",
+        [],
+    )?;
+    tx.execute(
+        "INSERT INTO blob_contents SELECT * FROM temp.refresh_blobs",
+        [],
+    )?;
+    tx.execute(
+        "INSERT INTO git_occurrences SELECT * FROM temp.refresh_occurrences",
+        [],
+    )?;
+    tx.execute(
+        "INSERT INTO indexed_units SELECT unit_id,text,line_start,line_end FROM temp.refresh_units",
+        [],
+    )?;
+    tx.execute("INSERT INTO git_blob_units SELECT blob_id,unit_id,segmentation_kind FROM temp.refresh_units", [])?;
+    tx.execute(
+        "INSERT INTO unit_embeddings SELECT * FROM temp.refresh_embeddings",
+        [],
+    )?;
     if let Some(dim) = embedding_dimension {
         tx.execute(
             "UPDATE embedding_config SET value=?1 WHERE key='dimension'",
@@ -646,7 +596,7 @@ pub fn refresh(c: &mut Connection) -> Result<()> {
     }
     tx.execute_batch("DROP TABLE IF EXISTS indexed_files; DROP TABLE IF EXISTS embeddings; PRAGMA user_version=3;")?;
     tx.commit()?;
-    c.execute_batch("DROP TABLE temp.refresh_embeddings; DROP TABLE temp.refresh_units;")?;
+    c.execute_batch("DROP TABLE temp.refresh_embeddings; DROP TABLE temp.refresh_units; DROP TABLE temp.refresh_occurrences; DROP TABLE temp.refresh_blobs; DROP TABLE temp.refresh_commits;")?;
     Ok(())
 }
 
