@@ -414,32 +414,42 @@ pub fn refresh(c: &mut Connection) -> Result<()> {
         )?;
     }
     let mut units = vec![];
+    let mut unit_text_bytes = 0usize;
     let variants: BTreeSet<_> = occurrences
         .iter()
         .map(|o| (o.blob_id.as_str(), o.kind))
         .collect();
     for (blob_id, kind) in variants {
         if let Some(content) = &blobs[blob_id].content {
-            for unit in segmentation::segment(kind, content) {
-                preparation_bytes = preparation_bytes
-                    .saturating_add(unit.text.len() + blob_id.len() + std::mem::size_of::<Unit>());
-                if preparation_bytes > MAX_REFRESH_MEMORY_BYTES {
-                    return Err(memory_limit());
+            let mut staging_error: Option<Box<dyn std::error::Error>> = None;
+            segmentation::visit(kind, content, |unit| {
+                if units.len() == MAX_UNITS
+                    || unit_text_bytes.saturating_add(unit.text.len()) > MAX_UNIT_TEXT_BYTES
+                {
+                    staging_error = Some(format!("history refresh limit exceeded: indexed units must fit within {MAX_UNITS} units and {MAX_UNIT_TEXT_BYTES} text bytes; reduce indexed history and retry").into());
+                    return false;
                 }
+                let charge = unit.text.len() + blob_id.len() + std::mem::size_of::<Unit>();
+                if preparation_bytes.saturating_add(charge) > MAX_REFRESH_MEMORY_BYTES {
+                    staging_error = Some(memory_limit());
+                    return false;
+                }
+                preparation_bytes += charge;
+                unit_text_bytes += unit.text.len();
                 units.push(Unit {
                     id: units.len() + 1,
                     blob_id: blob_id.to_owned(),
                     kind,
                     line_start: unit.line_start,
                     line_end: unit.line_end,
-                    text: unit.text,
+                    text: unit.text.to_owned(),
                 });
+                true
+            });
+            if let Some(error) = staging_error {
+                return Err(error);
             }
         }
-    }
-    let unit_text_bytes: usize = units.iter().map(|unit| unit.text.len()).sum();
-    if units.len() > MAX_UNITS || unit_text_bytes > MAX_UNIT_TEXT_BYTES {
-        return Err(format!("history refresh limit exceeded: indexed units must fit within {MAX_UNITS} units and {MAX_UNIT_TEXT_BYTES} text bytes; reduce indexed history and retry").into());
     }
     let cfg = configuration(c)?;
     let embedded = cfg

@@ -1,5 +1,5 @@
-pub struct Unit {
-    pub text: String,
+pub struct Unit<'a> {
+    pub text: &'a str,
     pub line_start: usize,
     pub line_end: usize,
 }
@@ -20,7 +20,7 @@ pub fn kind(path: &[u8]) -> &'static str {
 // Bounds apply to UTF-8 bytes, including preserved internal line endings.
 const MAX_UNIT_BYTES: usize = 4096;
 
-fn bounded(text: &str, mut line_start: usize, out: &mut Vec<Unit>) {
+fn bounded(text: &str, mut line_start: usize, visit: &mut impl FnMut(Unit<'_>) -> bool) -> bool {
     let text = text
         .strip_suffix("\r\n")
         .or_else(|| text.strip_suffix('\n'))
@@ -40,24 +40,27 @@ fn bounded(text: &str, mut line_start: usize, out: &mut Vec<Unit>) {
         }
         let piece = &remaining[..end];
         let newlines = piece.bytes().filter(|b| *b == b'\n').count();
-        out.push(Unit {
-            text: piece.to_owned(),
+        if !visit(Unit {
+            text: piece,
             line_start,
             line_end: line_start + newlines - usize::from(piece.ends_with('\n')),
-        });
+        }) {
+            return false;
+        }
         line_start += newlines;
         remaining = &remaining[end..];
     }
+    true
 }
 
-fn paragraphs(text: &str, base_line: usize, out: &mut Vec<Unit>) {
+fn paragraphs(text: &str, base_line: usize, visit: &mut impl FnMut(Unit<'_>) -> bool) -> bool {
     let mut start = 0;
     let mut offset = 0;
     let mut start_line = base_line;
     for (i, line) in text.split_inclusive('\n').enumerate() {
         if line.trim().is_empty() {
-            if start < offset {
-                bounded(&text[start..offset], start_line, out);
+            if start < offset && !bounded(&text[start..offset], start_line, visit) {
+                return false;
             }
             start = offset + line.len();
             start_line = base_line + i + 1;
@@ -65,18 +68,18 @@ fn paragraphs(text: &str, base_line: usize, out: &mut Vec<Unit>) {
         offset += line.len();
     }
     if start < text.len() {
-        bounded(&text[start..], start_line, out);
+        return bounded(&text[start..], start_line, visit);
     }
+    true
 }
 
-fn rust(text: &str) -> Option<Vec<Unit>> {
+fn rust(text: &str, visit: &mut impl FnMut(Unit<'_>) -> bool) -> Option<bool> {
     use syn::spanned::Spanned;
 
     let file = syn::parse_file(text).ok()?;
     // syn removes these prefixes before parsing; spans address the remainder.
     let prefix = usize::from(text.starts_with('\u{feff}')) * '\u{feff}'.len_utf8()
         + file.shebang.as_ref().map_or(0, String::len);
-    let mut out = vec![];
     let mut cursor = 0;
     let mut line = 1;
     for item in file.items {
@@ -84,23 +87,39 @@ fn rust(text: &str) -> Option<Vec<Unit>> {
         let start = prefix + range.start;
         let end = prefix + range.end;
         // Retain all text outside syntax spans, including comments and file attrs.
-        paragraphs(&text[cursor..start], line, &mut out);
+        if !paragraphs(&text[cursor..start], line, visit) {
+            return Some(false);
+        }
         line += text[cursor..start].bytes().filter(|b| *b == b'\n').count();
-        bounded(&text[start..end], line, &mut out);
+        if !bounded(&text[start..end], line, visit) {
+            return Some(false);
+        }
         line += text[start..end].bytes().filter(|b| *b == b'\n').count();
         cursor = end;
     }
-    paragraphs(&text[cursor..], line, &mut out);
-    Some(out)
+    Some(paragraphs(&text[cursor..], line, visit))
 }
 
-pub fn segment(kind: &str, text: &str) -> Vec<Unit> {
-    if kind == "rust"
-        && let Some(units) = rust(text)
-    {
-        return units;
+/// Visits borrowed units in segmentation order; returning false stops before any later unit is staged.
+pub fn visit(kind: &str, text: &str, mut visitor: impl FnMut(Unit<'_>) -> bool) {
+    if kind == "rust" && rust(text, &mut visitor).is_some() {
+        return;
     }
-    let mut out = vec![];
-    paragraphs(text, 1, &mut out);
-    out
+    paragraphs(text, 1, &mut visitor);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::visit;
+
+    #[test]
+    fn visitor_can_stop_before_later_units_are_staged() {
+        let text = "first\n\nsecond\n\nthird";
+        let mut visited = Vec::new();
+        visit("paragraph", text, |unit| {
+            visited.push((unit.text.len(), unit.line_start, unit.line_end));
+            false
+        });
+        assert_eq!(visited, [(5, 1, 1)]);
+    }
 }
