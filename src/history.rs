@@ -16,6 +16,7 @@ const MAX_VECTOR_BYTES: usize = 256 * 1024 * 1024;
 // Bounds RepoDB-owned refresh preparation payloads, including Git tree records,
 // captured blob contents, staged units/vectors, and embedding subprocess output.
 const MAX_REFRESH_MEMORY_BYTES: usize = 256 * 1024 * 1024;
+const EMBEDDING_STDERR_BYTES: usize = 64 * 1024;
 
 fn memory_limit() -> Box<dyn std::error::Error> {
     "history refresh limit exceeded: preparation data exceeds 256 MiB; reduce indexed history and retry".into()
@@ -270,10 +271,17 @@ fn vectors<'a>(
     let mut out = vec![];
     let mut total_bytes = 0usize;
     for text in texts {
-        // During JSON decoding, stdout, decoded f32 values, and the encoded
-        // vector coexist. Reserve for all three plus the retained output row.
-        let remaining = max_bytes.map(|limit| limit.saturating_sub(total_bytes));
-        let output_limit = remaining.map(|bytes| bytes / 5);
+        // Each JSON number needs at least one byte, so stdout bytes bound the
+        // element count. Vec growth can reserve up to twice that many f32s
+        // (8 bytes/element), and the encoded Vec may reserve twice its 4-byte
+        // payload (8 bytes/element). Reserve stdout + both capacities (17 bytes/stdout byte),
+        // previously retained rows, and embed's bounded 64 KiB stderr capture.
+        let output_limit = max_bytes.map(|limit| {
+            limit
+                .saturating_sub(total_bytes)
+                .saturating_sub(EMBEDDING_STDERR_BYTES)
+                / 17
+        });
         let v = crate::embed_with_output_limit(command, model, text, output_limit)?;
         if dim != 0 && dim != v.len() {
             return Err("embedding dimension mismatch".into());
@@ -307,6 +315,33 @@ mod tests {
         assert!(stdout + stderr <= MAX_REFRESH_MEMORY_BYTES - used);
         assert!(
             git_capture_limits(MAX_REFRESH_MEMORY_BYTES, MAX_REFRESH_MEMORY_BYTES + 1).is_err()
+        );
+    }
+
+    #[test]
+    fn vectors_reserve_short_numeric_json_decoding_and_encoding_memory() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let embedder = dir.path().join("embedder");
+        std::fs::write(&embedder, "#!/bin/sh\ncat >/dev/null\nprintf '[0,0]'\n").unwrap();
+        std::fs::set_permissions(&embedder, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        // `[0,0]` is five stdout bytes for two elements. The decoded Vec may
+        // reserve four f32 slots (16 bytes), and the encoded Vec may reserve 16;
+        // with stdout and stderr that exceeds this remaining budget. The old
+        // stdout/5 cap admitted this output even though the combined bound is 37.
+        let limit = EMBEDDING_STDERR_BYTES + 36;
+        let result = vectors(
+            ["unit"].into_iter(),
+            embedder.to_str().unwrap(),
+            "model",
+            0,
+            Some(limit),
+        );
+        assert!(
+            result.is_err(),
+            "short numeric JSON must respect aggregate bound"
         );
     }
 

@@ -42,7 +42,7 @@ fn bounded_command_output_with_input(
     let stdout_limit = stdout_limit.min(remaining);
     let stderr_limit = (remaining - stdout_limit).min(MAX_COMMAND_STDERR_BYTES);
     let reservation = stdout_limit + stderr_limit;
-    charge_refresh_memory(used, reservation, "subprocess output capture")?;
+    used.charge(reservation, "subprocess output capture")?;
 
     let output = process::capture_with_input(child, input, stdout_limit, stderr_limit)?;
     if output.exceeded {
@@ -51,10 +51,6 @@ fn bounded_command_output_with_input(
     }
     used.release(reservation - output.stdout.len() - output.stderr.len());
     Ok((output.status, output.stdout, output.stderr))
-}
-
-fn charge_refresh_memory(used: &mut Budget, bytes: usize, description: &str) -> Result<()> {
-    used.charge(bytes, description)
 }
 
 fn import_embed(command: &str, model: &str, text: &str, used: &mut Budget) -> Result<Vec<f32>> {
@@ -83,7 +79,7 @@ fn import_embed(command: &str, model: &str, text: &str, used: &mut Budget) -> Re
         .len()
         .checked_mul(2 * std::mem::size_of::<f32>())
         .ok_or("embedding vector capacity exceeds refresh budget")?;
-    charge_refresh_memory(used, vector_reservation, "embedding vector capacity")?;
+    used.charge(vector_reservation, "embedding vector capacity")?;
     let vector: Vec<f32> = serde_json::from_slice(&stdout)?;
     let vector_bytes = vector.capacity() * std::mem::size_of::<f32>();
     used.release(vector_reservation - vector_bytes);
@@ -439,12 +435,9 @@ pub fn refresh(c: &Connection) -> Result<()> {
                     let Ok(text) = String::from_utf8(bytes) else {
                         continue;
                     };
-                    charge_refresh_memory(&mut refresh_memory_bytes, text.len(), "Git blob text")?;
-                    charge_refresh_memory(
-                        &mut refresh_memory_bytes,
-                        path.len() + text.len() + 2,
-                        "Git joined content",
-                    )?;
+                    refresh_memory_bytes.charge(text.len(), "Git blob text")?;
+                    refresh_memory_bytes
+                        .charge(path.len() + text.len() + 2, "Git joined content")?;
                     content.push_str(&path);
                     content.push('\n');
                     content.push_str(&text);
@@ -466,27 +459,15 @@ pub fn refresh(c: &Connection) -> Result<()> {
                         {
                             return Err("embedding dimension mismatch".into());
                         }
-                        charge_refresh_memory(
-                            &mut refresh_memory_bytes,
-                            line.len(),
-                            "Git indexed unit text",
-                        )?;
-                        charge_refresh_memory(
-                            &mut refresh_memory_bytes,
+                        refresh_memory_bytes.charge(line.len(), "Git indexed unit text")?;
+                        refresh_memory_bytes.charge(
                             std::mem::size_of::<(String, usize, String, Option<Vec<u8>>)>(),
                             "Git indexed unit metadata",
                         )?;
-                        charge_refresh_memory(
-                            &mut refresh_memory_bytes,
-                            path.len(),
-                            "Git unit path",
-                        )?;
+                        refresh_memory_bytes.charge(path.len(), "Git unit path")?;
                         if let Some(vector) = &vector {
-                            charge_refresh_memory(
-                                &mut refresh_memory_bytes,
-                                vector.len() * 4,
-                                "Git stored vector bytes",
-                            )?;
+                            refresh_memory_bytes
+                                .charge(vector.len() * 4, "Git stored vector bytes")?;
                         }
                         units.push((
                             path.clone(),
@@ -514,11 +495,7 @@ pub fn refresh(c: &Connection) -> Result<()> {
         }
         if kind == "file" {
             let size = fs::metadata(&locator)?.len();
-            charge_refresh_memory(
-                &mut refresh_memory_bytes,
-                size as usize,
-                "local import input",
-            )?;
+            refresh_memory_bytes.charge(size as usize, "local import input")?;
         }
         let source_bytes = if kind == "file" {
             read_bounded(
@@ -571,11 +548,7 @@ pub fn refresh(c: &Connection) -> Result<()> {
                 .and_then(|extension| extension.to_str())
                 .is_some_and(|extension| extension.eq_ignore_ascii_case("pdf"));
         if !is_pdf {
-            charge_refresh_memory(
-                &mut refresh_memory_bytes,
-                source_bytes.len(),
-                "decoded local import text",
-            )?;
+            refresh_memory_bytes.charge(source_bytes.len(), "decoded local import text")?;
         }
         let pages = if is_pdf {
             let source_version = checksum(&source_bytes);
@@ -584,11 +557,7 @@ pub fn refresh(c: &Connection) -> Result<()> {
                 &cache,
                 (refresh_memory_bytes.remaining() / 2).min(64 * 1024 * 1024),
             )? {
-                charge_refresh_memory(
-                    &mut refresh_memory_bytes,
-                    cache_bytes,
-                    "PDF cache representation",
-                )?;
+                refresh_memory_bytes.charge(cache_bytes, "PDF cache representation")?;
                 if pages.len() > MAX_PDF_PAGES {
                     return Err(format!(
                         "PDF {locator} exceeds the {MAX_PDF_PAGES}-page import limit"
@@ -622,11 +591,7 @@ pub fn refresh(c: &Connection) -> Result<()> {
                     .into());
                 }
                 let text = String::from_utf8(output.1)?;
-                charge_refresh_memory(
-                    &mut refresh_memory_bytes,
-                    text.len(),
-                    "PDF page text copies",
-                )?;
+                refresh_memory_bytes.charge(text.len(), "PDF page text copies")?;
                 if text.matches('\u{c}').count() >= MAX_PDF_PAGES {
                     return Err(format!(
                         "PDF {locator} exceeds the {MAX_PDF_PAGES}-page import limit"
@@ -640,18 +605,10 @@ pub fn refresh(c: &Connection) -> Result<()> {
         } else {
             vec![String::from_utf8(source_bytes.clone())?]
         };
-        charge_refresh_memory(
-            &mut refresh_memory_bytes,
-            pages.iter().map(String::len).sum(),
-            "PDF/cache pages",
-        )?;
+        refresh_memory_bytes.charge(pages.iter().map(String::len).sum(), "PDF/cache pages")?;
         let content_size =
             pages.iter().map(String::len).sum::<usize>() + pages.len().saturating_sub(1);
-        charge_refresh_memory(
-            &mut refresh_memory_bytes,
-            content_size,
-            "joined imported content",
-        )?;
+        refresh_memory_bytes.charge(content_size, "joined imported content")?;
         let content = if is_pdf {
             pages.join("\n")
         } else {
@@ -665,8 +622,7 @@ pub fn refresh(c: &Connection) -> Result<()> {
         } else {
             content.lines().count()
         };
-        charge_refresh_memory(
-            &mut refresh_memory_bytes,
+        refresh_memory_bytes.charge(
             line_count.saturating_mul(std::mem::size_of::<(usize, Option<usize>, &str)>()),
             "indexed unit references",
         )?;
@@ -705,18 +661,13 @@ pub fn refresh(c: &Connection) -> Result<()> {
                 }
                 dimension = Some(vector.len());
             }
-            charge_refresh_memory(&mut refresh_memory_bytes, text.len(), "indexed unit text")?;
-            charge_refresh_memory(
-                &mut refresh_memory_bytes,
+            refresh_memory_bytes.charge(text.len(), "indexed unit text")?;
+            refresh_memory_bytes.charge(
                 std::mem::size_of::<(usize, String, Option<Vec<u8>>, Option<usize>)>(),
                 "indexed unit metadata",
             )?;
             if let Some(vector) = &vector {
-                charge_refresh_memory(
-                    &mut refresh_memory_bytes,
-                    vector.len() * 4,
-                    "stored vector bytes",
-                )?;
+                refresh_memory_bytes.charge(vector.len() * 4, "stored vector bytes")?;
             }
             units.push((line, text.to_owned(), vector.map(|v| as_bytes(&v)), page));
         }
