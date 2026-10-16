@@ -15,11 +15,16 @@ fn git(repo: &Path, args: &[&str]) {
 }
 
 fn run(repo: &Path, args: &[&str]) -> (bool, String) {
-    let output = Command::new(env!("CARGO_BIN_EXE_repodb"))
-        .args(args)
-        .current_dir(repo)
-        .output()
-        .unwrap();
+    run_with_env(repo, args, &[])
+}
+
+fn run_with_env(repo: &Path, args: &[&str], vars: &[(&str, &str)]) -> (bool, String) {
+    let mut command = Command::new(env!("CARGO_BIN_EXE_repodb"));
+    command.args(args).current_dir(repo);
+    for (key, value) in vars {
+        command.env(key, value);
+    }
+    let output = command.output().unwrap();
     (
         output.status.success(),
         String::from_utf8(output.stdout).unwrap(),
@@ -62,12 +67,20 @@ fn init_refresh_search_and_json_are_repository_local_and_exact() {
     assert!(human.contains("2"), "{human}");
     assert!(!human.contains("ignored.bin"));
 
-    let (ok, json) = run(root, &["search", "[literal]", "--json"]);
+    let (ok, json) = run(root, &["search", "--json", "[literal]"]);
     assert!(ok);
     let results: serde_json::Value = serde_json::from_str(&json).unwrap();
     assert_eq!(results[0]["path"], "notes.txt");
     assert_eq!(results[0]["line_start"], 2);
     assert_eq!(results[0]["line_end"], 2);
+    let (ok, options_first) = run(root, &["search", "--json", "TARGET"]);
+    assert!(ok);
+    let (ok, legacy) = run(root, &["search", "TARGET", "--json"]);
+    assert!(ok);
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(&options_first).unwrap(),
+        serde_json::from_str::<serde_json::Value>(&legacy).unwrap()
+    );
 
     let (ok, output) = run(root, &["search", "[literal]"]);
     assert!(ok && output.contains("notes.txt"));
@@ -86,6 +99,182 @@ fn init_refresh_search_and_json_are_repository_local_and_exact() {
     assert!(ok && output.contains("notes.txt"), "{output}");
     let (ok, output) = run(root, &["search", "[literal]"]);
     assert!(ok && output.trim().is_empty(), "{output}");
+}
+
+#[test]
+fn semantic_search_uses_configured_fake_embeddings_and_precise_refs() {
+    let repo = repository();
+    let root = repo.path();
+    let fake = root.join("fake-embedder");
+    fs::write(&fake, "#!/bin/sh\ncat >/dev/null\nprintf '[1.0, 0.0]'\n").unwrap();
+    use std::os::unix::fs::PermissionsExt;
+    fs::set_permissions(&fake, fs::Permissions::from_mode(0o755)).unwrap();
+    assert!(run(root, &["init"]).0);
+
+    let (ok, output) = run(root, &["reembed", "--command", fake.to_str().unwrap()]);
+    assert!(ok, "{output}");
+    let (ok, output) = run(
+        root,
+        &["search", "unrelated wording", "--semantic", "--json"],
+    );
+    assert!(ok, "{output}");
+    let results: serde_json::Value = serde_json::from_str(&output).unwrap();
+    assert!(!results.as_array().unwrap().is_empty());
+    assert_eq!(results[0]["path"], "notes.txt");
+    assert_eq!(results[0]["line_start"], 1);
+    assert!(results[0]["commit_id"].as_str().is_some());
+    assert!(results[0]["distance"].as_f64().is_some());
+}
+
+#[test]
+fn embedding_model_selects_vectors_for_indexing_and_querying() {
+    let repo = repository();
+    let root = repo.path();
+    fs::write(
+        root.join("models.txt"),
+        "indexed alpha marker\nindexed beta marker\n",
+    )
+    .unwrap();
+    git(root, &["add", "models.txt"]);
+    git(root, &["commit", "-qm", "model fixtures"]);
+    let fake = root.join("model-embedder");
+    fs::write(
+        &fake,
+        r#"#!/bin/sh
+input=$(cat)
+case "$REPODB_EMBEDDING_MODEL:$input" in
+  alpha:*'indexed alpha marker'*|alpha:opaque\ query) printf '[1.0, 0.0]' ;;
+  beta:*'indexed beta marker'*|beta:opaque\ query) printf '[0.0, 1.0]' ;;
+  *) printf '[0.5, 0.5]' ;;
+esac
+"#,
+    )
+    .unwrap();
+    use std::os::unix::fs::PermissionsExt;
+    fs::set_permissions(&fake, fs::Permissions::from_mode(0o755)).unwrap();
+    assert!(run(root, &["init"]).0);
+    for (model, expected) in [
+        ("alpha", "indexed alpha marker"),
+        ("beta", "indexed beta marker"),
+    ] {
+        let (ok, output) = run(
+            root,
+            &[
+                "reembed",
+                "--command",
+                fake.to_str().unwrap(),
+                "--model",
+                model,
+            ],
+        );
+        assert!(ok, "{output}");
+        let (ok, output) = run(root, &["search", "--semantic", "--json", "opaque query"]);
+        assert!(ok, "{output}");
+        let results: serde_json::Value = serde_json::from_str(&output).unwrap();
+        assert_eq!(results[0]["text"], expected, "model {model}");
+    }
+}
+
+#[test]
+fn built_in_embedding_command_rejects_unsupported_model_before_execution() {
+    let repo = repository();
+    let root = repo.path();
+    let home = tempfile::tempdir().unwrap();
+    let bin = home.path().join("bin");
+    fs::create_dir(&bin).unwrap();
+    let builtin = bin.join("generate_embeddings");
+    fs::write(
+        &builtin,
+        "#!/bin/sh\nprintf called >> \"$HOME/called\"\nprintf '[1.0]'\n",
+    )
+    .unwrap();
+    use std::os::unix::fs::PermissionsExt;
+    fs::set_permissions(&builtin, fs::Permissions::from_mode(0o755)).unwrap();
+    assert!(run(root, &["init"]).0);
+    let home_string = home.path().to_str().unwrap();
+    let (ok, output) = run_with_env(
+        root,
+        &["reembed", "--model", "other"],
+        &[("HOME", home_string)],
+    );
+    assert!(!ok, "{output}");
+    assert!(!home.path().join("called").exists());
+    let (ok, output) = run_with_env(root, &["reembed"], &[("HOME", home_string)]);
+    assert!(ok, "{output}");
+    assert!(home.path().join("called").exists());
+}
+
+#[test]
+fn combined_search_ranks_exact_hits_by_their_stored_vectors() {
+    let repo = repository();
+    let root = repo.path();
+    let fake = root.join("fake-embedder");
+    fs::write(&fake, "#!/bin/sh\ninput=$(cat)\ncase \"$input\" in *'Exact [literal] TARGET'*) printf '[0.0, 1.0]' ;; *'fn main'*) printf '[0.9, 0.1]' ;; *) printf '[1.0, 0.0]' ;; esac\n").unwrap();
+    use std::os::unix::fs::PermissionsExt;
+    fs::set_permissions(&fake, fs::Permissions::from_mode(0o755)).unwrap();
+    assert!(run(root, &["init"]).0);
+    assert!(run(root, &["reembed", "--command", fake.to_str().unwrap()]).0);
+    let (ok, output) = run(
+        root,
+        &[
+            "search",
+            "TARGET",
+            "--combined",
+            "--semantic-limit",
+            "1",
+            "--json",
+        ],
+    );
+    assert!(ok, "{output}");
+    let results: serde_json::Value = serde_json::from_str(&output).unwrap();
+    assert_eq!(results.as_array().unwrap().len(), 2);
+    assert_eq!(results[0]["text"], "First line");
+    assert_eq!(results[1]["text"], "Exact [literal] TARGET");
+    assert!(results[0]["distance"].as_f64().unwrap() < results[1]["distance"].as_f64().unwrap());
+}
+
+#[test]
+fn failed_reembed_preserves_previous_vectors_and_configuration() {
+    let repo = repository();
+    let root = repo.path();
+    let old = root.join("old-embedder");
+    fs::write(&old, "#!/bin/sh\ncat >/dev/null\nprintf '[1.0, 0.0]'\n").unwrap();
+    use std::os::unix::fs::PermissionsExt;
+    fs::set_permissions(&old, fs::Permissions::from_mode(0o755)).unwrap();
+    assert!(run(root, &["init"]).0);
+    assert!(
+        run(
+            root,
+            &[
+                "reembed",
+                "--model",
+                "old-model",
+                "--command",
+                old.to_str().unwrap()
+            ]
+        )
+        .0
+    );
+    let bad = root.join("failing-embedder");
+    fs::write(&bad, "#!/bin/sh\nexit 1\n").unwrap();
+    fs::set_permissions(&bad, fs::Permissions::from_mode(0o755)).unwrap();
+    assert!(
+        !run(
+            root,
+            &[
+                "reembed",
+                "--model",
+                "new-model",
+                "--command",
+                bad.to_str().unwrap()
+            ]
+        )
+        .0
+    );
+    let (ok, output) = run(root, &["search", "still works", "--semantic", "--json"]);
+    assert!(ok, "{output}");
+    assert!(output.contains("notes.txt"), "{output}");
+    assert!(output.contains("First line"), "{output}");
 }
 
 #[test]
