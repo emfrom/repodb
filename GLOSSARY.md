@@ -8,6 +8,11 @@ A repository search context for finding source and documentation by exact text o
 A paragraph or syntactic source construct treated as one searchable piece of content.
 _Avoid_: chunk (when referring to the domain concept)
 
+**Segmentation kind**:
+The path-selected policy for dividing a blob into indexed units: document
+paragraphs, Rust syntax, or heuristic fallback. Search chooses one eligible
+occurrence before selecting that kind's units for the blob.
+
 **Source reference**:
 The identity and location of content in its source, such as a Git commit, file path, and line range, or an imported document and page number.
 _Avoid_: citation (when referring to the stored source identity and location)

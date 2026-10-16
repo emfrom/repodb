@@ -174,10 +174,12 @@ checksum = "f8dcc9c7d52a811697d2151c701e0d08956f92b0e24136cf4cf27b57a6a0d9bf"
 name = "repodb"
 version = "0.1.0"
 dependencies = [
+ "proc-macro2",
  "rusqlite",
  "serde",
  "serde_json",
  "sqlite-vec",
+ "syn 2.0.119",
  "tempfile",
 ]
 

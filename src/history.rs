@@ -1,7 +1,7 @@
-use crate::{Result, SearchResult, as_bytes, embed, git, query_vector};
+use crate::{Result, SearchResult, as_bytes, embed, git, query_vector, segmentation};
 use rusqlite::{Connection, Transaction, TransactionBehavior, params};
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     io::Write,
     process::{Command, Stdio},
 };
@@ -10,7 +10,7 @@ pub fn is_current(c: &Connection) -> Result<bool> {
     let version: i64 = c.query_row("PRAGMA user_version", [], |r| r.get(0))?;
     match version {
         0 => Ok(false),
-        2 => Ok(true),
+        2 | 3 => Ok(true),
         _ => Err(format!("unsupported database version {version}").into()),
     }
 }
@@ -36,13 +36,16 @@ struct Blob {
 struct Unit {
     id: usize,
     blob_id: String,
-    line: usize,
+    kind: &'static str,
+    line_start: usize,
+    line_end: usize,
     text: String,
 }
 struct Occurrence {
     commit_id: String,
     blob_id: String,
     path: Vec<u8>,
+    kind: &'static str,
 }
 
 fn head() -> Result<Option<String>> {
@@ -176,18 +179,25 @@ pub fn refresh(c: &mut Connection) -> Result<()> {
                 commit_id: commit_id.clone(),
                 blob_id,
                 path: record[tab + 1..].to_vec(),
+                kind: segmentation::kind(&record[tab + 1..]),
             });
         }
     }
     let mut units = vec![];
-    for (blob_id, blob) in &blobs {
-        if let Some(content) = &blob.content {
-            for (i, line) in content.lines().enumerate() {
+    let variants: BTreeSet<_> = occurrences
+        .iter()
+        .map(|o| (o.blob_id.as_str(), o.kind))
+        .collect();
+    for (blob_id, kind) in variants {
+        if let Some(content) = &blobs[blob_id].content {
+            for unit in segmentation::segment(kind, content) {
                 units.push(Unit {
                     id: units.len() + 1,
-                    blob_id: blob_id.clone(),
-                    line: i + 1,
-                    text: line.to_owned(),
+                    blob_id: blob_id.to_owned(),
+                    kind,
+                    line_start: unit.line_start,
+                    line_end: unit.line_end,
+                    text: unit.text,
                 });
             }
         }
@@ -212,9 +222,9 @@ pub fn refresh(c: &mut Connection) -> Result<()> {
         DROP TABLE IF EXISTS git_commits;
         CREATE TABLE git_commits(commit_id TEXT PRIMARY KEY NOT NULL, timestamp INTEGER NOT NULL);
         CREATE TABLE blob_contents(blob_id TEXT PRIMARY KEY NOT NULL, content TEXT, status TEXT NOT NULL);
-        CREATE TABLE git_occurrences(commit_id TEXT NOT NULL REFERENCES git_commits, blob_id TEXT NOT NULL REFERENCES blob_contents, path BLOB NOT NULL, PRIMARY KEY(commit_id,path));
+        CREATE TABLE git_occurrences(commit_id TEXT NOT NULL REFERENCES git_commits, blob_id TEXT NOT NULL REFERENCES blob_contents, path BLOB NOT NULL, segmentation_kind TEXT NOT NULL, PRIMARY KEY(commit_id,path));
         CREATE TABLE indexed_units(unit_id INTEGER PRIMARY KEY, text TEXT NOT NULL, line_start INTEGER NOT NULL, line_end INTEGER NOT NULL);
-        CREATE TABLE git_blob_units(blob_id TEXT NOT NULL REFERENCES blob_contents, unit_id INTEGER NOT NULL REFERENCES indexed_units, PRIMARY KEY(blob_id,unit_id));
+        CREATE TABLE git_blob_units(blob_id TEXT NOT NULL REFERENCES blob_contents, unit_id INTEGER NOT NULL REFERENCES indexed_units, segmentation_kind TEXT NOT NULL, PRIMARY KEY(blob_id,segmentation_kind,unit_id));
         CREATE TABLE unit_embeddings(unit_id INTEGER PRIMARY KEY REFERENCES indexed_units, vector BLOB NOT NULL);")?;
     for (id, timestamp) in commits {
         tx.execute(
@@ -230,18 +240,23 @@ pub fn refresh(c: &mut Connection) -> Result<()> {
     }
     for occurrence in occurrences {
         tx.execute(
-            "INSERT INTO git_occurrences VALUES(?1,?2,?3)",
-            params![occurrence.commit_id, occurrence.blob_id, occurrence.path],
+            "INSERT INTO git_occurrences VALUES(?1,?2,?3,?4)",
+            params![
+                occurrence.commit_id,
+                occurrence.blob_id,
+                occurrence.path,
+                occurrence.kind
+            ],
         )?;
     }
     for unit in &units {
         tx.execute(
-            "INSERT INTO indexed_units VALUES(?1,?2,?3,?3)",
-            params![unit.id, unit.text, unit.line],
+            "INSERT INTO indexed_units VALUES(?1,?2,?3,?4)",
+            params![unit.id, unit.text, unit.line_start, unit.line_end],
         )?;
         tx.execute(
-            "INSERT INTO git_blob_units VALUES(?1,?2)",
-            params![unit.blob_id, unit.id],
+            "INSERT INTO git_blob_units VALUES(?1,?2,?3)",
+            params![unit.blob_id, unit.id, unit.kind],
         )?;
     }
     if let Some((rows, dim)) = embedded {
@@ -256,7 +271,7 @@ pub fn refresh(c: &mut Connection) -> Result<()> {
             [dim.to_string()],
         )?;
     }
-    tx.execute_batch("DROP TABLE IF EXISTS indexed_files; DROP TABLE IF EXISTS embeddings; PRAGMA user_version=2;")?;
+    tx.execute_batch("DROP TABLE IF EXISTS indexed_files; DROP TABLE IF EXISTS embeddings; PRAGMA user_version=3;")?;
     tx.commit()?;
     Ok(())
 }
@@ -307,7 +322,14 @@ pub fn search(
     };
     // Filter occurrences first, then choose one reference per blob. Every indexed
     // unit of that blob shares the reference; duplicate occurrences never use top-N.
-    let mut s = c.prepare(
+    // Version 2 snapshots keep their original line units until explicit refresh.
+    let schema: i64 = c.query_row("PRAGMA user_version", [], |r| r.get(0))?;
+    let variant = if schema == 3 {
+        "AND b.segmentation_kind=o.segmentation_kind"
+    } else {
+        ""
+    };
+    let mut s = c.prepare(&format!(
         "WITH eligible AS (
         SELECT o.*, row_number() OVER (PARTITION BY blob_id
             ORDER BY timestamp DESC, o.commit_id DESC, path ASC) occurrence_rank
@@ -315,10 +337,10 @@ pub fn search(
         WHERE o.commit_id IN (SELECT value FROM json_each(?1)))
         SELECT o.path,u.line_start,u.line_end,u.text,o.commit_id,o.blob_id,
         CASE WHEN ?2 IS NULL THEN NULL ELSE vec_distance_cosine(e.vector,?2) END
-        FROM eligible o JOIN git_blob_units b USING(blob_id)
+        FROM eligible o JOIN git_blob_units b ON b.blob_id=o.blob_id {variant}
         JOIN indexed_units u USING(unit_id) LEFT JOIN unit_embeddings e USING(unit_id)
-        WHERE occurrence_rank=1 ORDER BY o.path,u.line_start,o.blob_id,o.commit_id",
-    )?;
+        WHERE occurrence_rank=1 ORDER BY o.path,u.line_start,o.blob_id,o.commit_id,u.unit_id",
+    ))?;
     let rows = s.query_map(
         params![
             serde_json::to_string(commits)?,

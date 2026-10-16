@@ -70,15 +70,15 @@ fn init_refresh_search_and_json_are_repository_local_and_exact() {
     let (ok, human) = run(root, &["search", "tArGeT"]);
     assert!(ok);
     assert!(human.contains("notes.txt"), "{human}");
-    assert!(human.contains("2"), "{human}");
+    assert!(human.contains("notes.txt:1-3"), "{human}");
     assert!(!human.contains("ignored.bin"));
 
     let (ok, json) = run(root, &["search", "--json", "[literal]"]);
     assert!(ok);
     let results: serde_json::Value = serde_json::from_str(&json).unwrap();
     assert_eq!(results[0]["path"], "notes.txt");
-    assert_eq!(results[0]["line_start"], 2);
-    assert_eq!(results[0]["line_end"], 2);
+    assert_eq!(results[0]["line_start"], 1);
+    assert_eq!(results[0]["line_end"], 3);
     let (ok, options_first) = run(root, &["search", "--json", "TARGET"]);
     assert!(ok);
     let (ok, legacy) = run(root, &["search", "TARGET", "--json"]);
@@ -176,7 +176,7 @@ fn embedding_model_selects_vectors_for_indexing_and_querying() {
     let root = repo.path();
     fs::write(
         root.join("models.txt"),
-        "indexed alpha marker\nindexed beta marker\n",
+        "indexed alpha marker\n\nindexed beta marker\n",
     )
     .unwrap();
     git(root, &["add", "models.txt"]);
@@ -253,7 +253,21 @@ fn combined_search_ranks_exact_hits_by_their_stored_vectors() {
     let repo = repository();
     let root = repo.path();
     let fake = root.join("fake-embedder");
-    fs::write(&fake, "#!/bin/sh\ninput=$(cat)\ncase \"$input\" in *'Exact [literal] TARGET'*) printf '[0.0, 1.0]' ;; *'fn main'*) printf '[0.9, 0.1]' ;; *) printf '[1.0, 0.0]' ;; esac\n").unwrap();
+    fs::write(
+        &fake,
+        r#"#!/bin/sh
+input=$(cat)
+case "$input" in
+  'First line
+Exact [literal] TARGET
+last line') printf '[0.0, 1.0]' ;;
+  'fn main() { println!("Rust phrase"); }') printf '[0.9, 0.1]' ;;
+  TARGET) printf '[1.0, 0.0]' ;;
+  *) echo 'expected a complete indexed unit or query' >&2; exit 1 ;;
+esac
+"#,
+    )
+    .unwrap();
     use std::os::unix::fs::PermissionsExt;
     fs::set_permissions(&fake, fs::Permissions::from_mode(0o755)).unwrap();
     assert!(run(root, &["init"]).0);
@@ -272,8 +286,20 @@ fn combined_search_ranks_exact_hits_by_their_stored_vectors() {
     assert!(ok, "{output}");
     let results: serde_json::Value = serde_json::from_str(&output).unwrap();
     assert_eq!(results.as_array().unwrap().len(), 2);
-    assert_eq!(results[0]["text"], "First line");
-    assert_eq!(results[1]["text"], "Exact [literal] TARGET");
+    assert_eq!(
+        results[0]["text"],
+        "fn main() { println!(\"Rust phrase\"); }"
+    );
+    assert_eq!(
+        results[1]["text"],
+        "First line\nExact [literal] TARGET\nlast line"
+    );
+    assert_eq!(results[1]["line_start"], 1);
+    assert_eq!(results[1]["line_end"], 3);
+    let exact = search_json(root, &["TARGET"]);
+    assert_eq!(exact[0]["text"], results[1]["text"]);
+    let semantic = search_json(root, &["TARGET", "--semantic", "--semantic-limit", "1"]);
+    assert_eq!(semantic[0], results[0]);
     assert!(results[0]["distance"].as_f64().unwrap() < results[1]["distance"].as_f64().unwrap());
 }
 
@@ -416,8 +442,8 @@ fn history_search_preserves_blob_and_line_references_without_broadening_default_
         .unwrap();
     assert_eq!(old["blob_id"], old_blob);
     assert_eq!(old["path"], "notes.txt");
-    assert_eq!(old["line_start"], 2);
-    assert_eq!(old["line_end"], 2);
+    assert_eq!(old["line_start"], 1);
+    assert_eq!(old["line_end"], 3);
     git(root, &["checkout", "-q", &old_commit]);
     let current = search_json(root, &["TARGET"]);
     assert_eq!(current.len(), 1);
@@ -464,7 +490,7 @@ fn exact_commit_inclusion_and_exclusion_select_before_all_search_modes() {
             assert!(
                 history
                     .iter()
-                    .all(|r| r["path"] == "notes.txt" && r["line_start"] == 2)
+                    .all(|r| r["path"] == "notes.txt" && r["line_start"] == 1)
             );
             assert_ne!(history[0]["blob_id"], history[1]["blob_id"]);
         }
@@ -473,7 +499,10 @@ fn exact_commit_inclusion_and_exclusion_select_before_all_search_modes() {
         let result = search_json(root, &selected);
         assert_eq!(result.len(), 1, "{mode}");
         assert_eq!(result[0]["commit_id"], old);
-        assert_eq!(result[0]["text"], "Exact [literal] TARGET");
+        assert_eq!(
+            result[0]["text"],
+            "First line\nExact [literal] TARGET\nlast line"
+        );
         let mut included = args.clone();
         included.extend([
             "--include-commit",
@@ -754,7 +783,7 @@ fn history_human_output_identifies_commit_blob_and_line_range() {
     assert!(run(root, &["init"]).0);
     let (ok, human) = run(root, &["search", "TARGET", "--all-history"]);
     assert!(ok);
-    assert!(human.contains("notes.txt:2-2"), "{human}");
+    assert!(human.contains("notes.txt:1-3"), "{human}");
     assert!(human.contains(&commit), "{human}");
     assert!(human.contains(&blob), "{human}");
 }
@@ -782,19 +811,19 @@ fn newest_reference_uses_timestamp_then_commit_id_then_path_including_detached_h
     let expected = std::cmp::max(&first, &detached);
     assert!(run(root, &["init"]).0);
     let results = search_json(root, &["tie marker", "--all-history"]);
-    assert_eq!(results.len(), 2);
-    for (i, result) in results.iter().enumerate() {
+    assert_eq!(results.len(), 1);
+    for result in &results {
         assert_eq!(result["commit_id"], *expected);
         assert_eq!(result["path"], path);
-        assert_eq!(result["line_start"], i + 1);
-        assert_eq!(result["line_end"], i + 1);
+        assert_eq!(result["line_start"], 1);
+        assert_eq!(result["line_end"], 2);
     }
     assert!(search_json(root, &["hidden", "--all-history"]).is_empty());
     // Moving away from detached HEAD does not prune its captured occurrence.
     git(root, &["checkout", "-q", &first]);
     assert_eq!(
         search_json(root, &["tie marker", "--commit", &detached]).len(),
-        2
+        1
     );
     assert!(run(root, &["refresh"]).0);
     let results = search_json(root, &["tie marker", "--all-history"]);
@@ -811,7 +840,7 @@ fn refresh_does_not_publish_vectors_over_a_concurrently_changed_model() {
     assert!(run(root, &["init"]).0);
     let old = fake_embedder(
         root,
-        "if [ -f pause ] && [ \"$input\" = 'First line' ]; then touch prepared; while [ ! -f release ]; do sleep 0.01; done; fi\nprintf '[1,0]'",
+        "if [ -f pause ] && [ \"$input\" = 'First line\nExact [literal] TARGET\nlast line' ]; then touch prepared; while [ ! -f release ]; do sleep 0.01; done; fi\nprintf '[1,0]'",
     );
     assert!(
         run(
@@ -862,6 +891,391 @@ fn refresh_does_not_publish_vectors_over_a_concurrently_changed_model() {
         "stale refresh must not overwrite a newer model"
     );
     let results = search_json(root, &["question", "--semantic"]);
-    assert_eq!(results.len(), 4);
+    assert_eq!(results.len(), 2);
     assert!(results.iter().all(|r| r["distance"] == 0.0));
+}
+
+#[test]
+fn document_paragraph_units_preserve_literal_text_and_inclusive_source_ranges() {
+    let repo = repository();
+    let root = repo.path();
+    let text = "\n \t\nFirst [literal] paragraph\ncontinues with café.\n\t\nSecond paragraph\nlast line\n\n";
+    for path in ["paragraph.md", "paragraph.markdown", "paragraph.txt"] {
+        fs::write(root.join(path), text).unwrap();
+    }
+    git(root, &["add", "."]);
+    git(root, &["commit", "-qm", "paragraphs"]);
+    assert!(run(root, &["init"]).0);
+    let first = search_json(root, &["First [literal] paragraph\ncontinues"]);
+    assert_eq!(first.len(), 1, "identical blobs collapse");
+    assert_eq!(first[0]["path"], "paragraph.markdown");
+    assert_eq!(
+        first[0]["text"],
+        "First [literal] paragraph\ncontinues with café."
+    );
+    assert_eq!(first[0]["line_start"], 3);
+    assert_eq!(first[0]["line_end"], 4);
+    let second = search_json(root, &["Second paragraph"]);
+    assert_eq!(second.len(), 1);
+    assert_eq!(second[0]["text"], "Second paragraph\nlast line");
+    assert_eq!(second[0]["line_start"], 6);
+    assert_eq!(second[0]["line_end"], 7);
+    assert!(search_json(root, &["First .* paragraph"]).is_empty());
+}
+
+#[test]
+fn long_document_units_are_bounded_lossless_and_use_unicode_safe_source_ranges() {
+    let repo = repository();
+    let root = repo.path();
+    let multiline = format!("{}\n{}", "a".repeat(3000), "b".repeat(3000));
+    let unicode = "é🦀".repeat(1500);
+    fs::write(root.join("long.md"), &multiline).unwrap();
+    fs::write(root.join("unicode.txt"), &unicode).unwrap();
+    fs::write(
+        root.join("windows.txt"),
+        "\r\nfirst\r\nsecond\r\n \t\r\nthird\r\n",
+    )
+    .unwrap();
+    git(root, &["add", "."]);
+    git(root, &["commit", "-qm", "long paragraphs"]);
+    assert!(run(root, &["init"]).0);
+    let all = search_json(root, &[""]);
+    for (path, source, expected_ranges) in [
+        ("long.md", multiline, vec![(1, 1), (2, 2)]),
+        ("unicode.txt", unicode, vec![(1, 1), (1, 1), (1, 1)]),
+    ] {
+        let units: Vec<_> = all.iter().filter(|r| r["path"] == path).collect();
+        assert_eq!(units.len(), expected_ranges.len(), "{path}");
+        let reconstructed: String = units.iter().map(|r| r["text"].as_str().unwrap()).collect();
+        assert_eq!(reconstructed, source);
+        for (unit, (start, end)) in units.iter().zip(expected_ranges) {
+            assert!(unit["text"].as_str().unwrap().len() <= 4096);
+            assert_eq!(unit["line_start"], start);
+            assert_eq!(unit["line_end"], end);
+        }
+    }
+    let windows = search_json(root, &["first\r\nsecond"]);
+    assert_eq!(windows[0]["text"], "first\r\nsecond");
+    assert_eq!(windows[0]["line_start"], 2);
+    assert_eq!(windows[0]["line_end"], 3);
+    assert_eq!(search_json(root, &["third"])[0]["line_start"], 5);
+}
+
+#[test]
+fn rust_top_level_syntax_preserves_nested_items_attributes_comments_and_source_gaps() {
+    let repo = repository();
+    let root = repo.path();
+    let source = concat!(
+        "//! crate documentation\n",
+        "#![allow(dead_code)]\n",
+        "// leading comment\n",
+        "use std::fmt;\n",
+        "\n",
+        "/// α function docs\n",
+        "#[inline]\n",
+        "fn alpha() {\n",
+        "    let braces = \"} { 🦀\";\n",
+        "\n",
+        "    if true { /* nested comment */ println!(\"{braces}\"); }\n",
+        "}\n",
+        "// gap marker\n",
+        "fn beta() {\n",
+        "    fn nested() {}\n",
+        "    nested();\n",
+        "}\n",
+        "// tail marker\n",
+        "fn café() {} fn same_line() {} // same line tail\n",
+    );
+    fs::write(root.join("syntax.rs"), source).unwrap();
+    git(root, &["add", "syntax.rs"]);
+    git(root, &["commit", "-qm", "syntax"]);
+    assert!(run(root, &["init"]).0);
+    let alpha = search_json(root, &["fn alpha"]);
+    assert_eq!(alpha.len(), 1);
+    assert_eq!(
+        alpha[0]["text"],
+        "/// α function docs\n#[inline]\nfn alpha() {\n    let braces = \"} { 🦀\";\n\n    if true { /* nested comment */ println!(\"{braces}\"); }\n}"
+    );
+    assert_eq!(alpha[0]["line_start"], 6);
+    assert_eq!(alpha[0]["line_end"], 12);
+    let beta = search_json(root, &["fn nested"]);
+    assert_eq!(
+        beta[0]["text"],
+        "fn beta() {\n    fn nested() {}\n    nested();\n}"
+    );
+    assert_eq!(beta[0]["line_start"], 14);
+    assert_eq!(beta[0]["line_end"], 17);
+    for (query, start, end) in [
+        ("crate documentation", 1, 3),
+        ("gap marker", 13, 13),
+        ("tail marker", 18, 18),
+        ("use std::fmt", 4, 4),
+    ] {
+        let results = search_json(root, &[query]);
+        assert_eq!(results.len(), 1, "{query} must not duplicate gaps");
+        assert_eq!(results[0]["line_start"], start);
+        assert_eq!(results[0]["line_end"], end);
+    }
+    for query in ["fn café() {}", "fn same_line() {}"] {
+        let results = search_json(root, &[query]);
+        assert_eq!(
+            results[0]["text"], query,
+            "slice original spans, not entire lines"
+        );
+        assert_eq!(results[0]["line_start"], 19);
+        assert_eq!(results[0]["line_end"], 19);
+    }
+    let tail = search_json(root, &["same line tail"]);
+    assert_eq!(tail[0]["line_start"], 19);
+    assert_eq!(tail[0]["line_end"], 19);
+}
+
+#[test]
+fn malformed_rust_and_unsupported_source_keep_comments_imports_and_unparsed_text() {
+    let repo = repository();
+    let root = repo.path();
+    for (path, source) in [
+        (
+            "broken.rs",
+            "// malformed header\nuse std::fmt;\n\nfn unfinished( {\n    unparsed_marker\n",
+        ),
+        (
+            "fallback.py",
+            "# unsupported header\nimport os\n\ndef unfinished(:\n    unparsed_marker\n",
+        ),
+    ] {
+        fs::write(root.join(path), source).unwrap();
+    }
+    fs::write(
+        root.join("large.js"),
+        format!("// {}\n{}", "x".repeat(5000), "y".repeat(5000)),
+    )
+    .unwrap();
+    fs::write(root.join("empty.rs"), " \n\t\n").unwrap();
+    git(root, &["add", "."]);
+    git(root, &["commit", "-qm", "fallbacks"]);
+    assert!(run(root, &["init"]).0);
+    let results = search_json(root, &["unparsed_marker"]);
+    assert_eq!(results.len(), 2);
+    assert_eq!(results[0]["text"], "fn unfinished( {\n    unparsed_marker");
+    assert_eq!(results[1]["text"], "def unfinished(:\n    unparsed_marker");
+    for result in results {
+        assert_eq!(result["line_start"], 4);
+        assert_eq!(result["line_end"], 5);
+    }
+    for query in [
+        "malformed header\nuse std::fmt;",
+        "unsupported header\nimport os",
+    ] {
+        let results = search_json(root, &[query]);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0]["line_start"], 1);
+        assert_eq!(results[0]["line_end"], 2);
+    }
+    let all = search_json(root, &[""]);
+    assert!(!all.iter().any(|r| r["path"] == "empty.rs"));
+    let large: Vec<_> = all.iter().filter(|r| r["path"] == "large.js").collect();
+    assert_eq!(large.len(), 4);
+    assert!(
+        large
+            .iter()
+            .all(|r| r["text"].as_str().unwrap().len() <= 4096)
+    );
+    assert_eq!(
+        large
+            .iter()
+            .map(|r| r["text"].as_str().unwrap())
+            .collect::<String>(),
+        fs::read_to_string(root.join("large.js")).unwrap()
+    );
+}
+
+#[test]
+fn rust_spans_handle_bom_shebang_and_bound_large_constructs_without_text_loss() {
+    let repo = repository();
+    let root = repo.path();
+    let large = format!(
+        "fn large() {{\n    let text = \"{}\";\n}}",
+        "é".repeat(3000)
+    );
+    fs::write(root.join("large.rs"), &large).unwrap();
+    fs::write(
+        root.join("script.rs"),
+        "\u{feff}#!/usr/bin/env rust-script\nfn one() {} fn two() {}\n",
+    )
+    .unwrap();
+    git(root, &["add", "."]);
+    git(root, &["commit", "-qm", "rust boundaries"]);
+    assert!(run(root, &["init"]).0);
+    for query in ["fn one() {}", "fn two() {}"] {
+        let result = search_json(root, &[query]);
+        assert_eq!(result[0]["text"], query);
+        assert_eq!(result[0]["line_start"], 2);
+        assert_eq!(result[0]["line_end"], 2);
+    }
+    assert_eq!(search_json(root, &["rust-script"])[0]["line_start"], 1);
+    let all = search_json(root, &[""]);
+    let units: Vec<_> = all.iter().filter(|r| r["path"] == "large.rs").collect();
+    assert!(units.len() > 1);
+    assert!(
+        units
+            .iter()
+            .all(|r| r["text"].as_str().unwrap().len() <= 4096)
+    );
+    assert_eq!(
+        units
+            .iter()
+            .map(|r| r["text"].as_str().unwrap())
+            .collect::<String>(),
+        large
+    );
+    assert_eq!(units.first().unwrap()["line_start"], 1);
+    assert_eq!(units.last().unwrap()["line_end"], 3);
+}
+
+#[test]
+fn occurrence_path_kind_is_selected_after_filters_before_units_top_n_and_combined_union() {
+    let repo = repository();
+    let root = repo.path();
+    let source = "fn variant_alpha() {}\nfn variant_beta() {}\n";
+    fs::write(root.join("a.md"), source).unwrap();
+    git(root, &["add", "a.md"]);
+    let document = commit_at(root, "document occurrence", "2001-01-01T00:00:00Z");
+    git(root, &["mv", "a.md", "z.rs"]);
+    let rust = commit_at(root, "rust occurrence", "2002-01-01T00:00:00Z");
+    fs::write(root.join("a.md"), source).unwrap();
+    git(root, &["add", "a.md"]);
+    let tied = commit_at(root, "same commit path tie", "2003-01-01T00:00:00Z");
+    let blob = git_text(root, &["rev-parse", "HEAD:a.md"]);
+    assert!(run(root, &["init"]).0);
+    let fake = fake_embedder(
+        root,
+        "case \"$input\" in 'fn variant'|'fn variant_alpha() {}') printf '[1,0]' ;; 'fn variant_beta() {}') printf '[0.8,0.2]' ;; *) printf '[0,1]' ;; esac",
+    );
+    assert!(run(root, &["reembed", "--command", fake.to_str().unwrap()]).0);
+    for mode in ["exact", "--semantic", "--combined"] {
+        for (scope, commit, path, count) in [
+            (vec!["--all-history"], &tied, "a.md", 1),
+            (
+                vec!["--all-history", "--exclude-commit", &tied],
+                &rust,
+                "z.rs",
+                if mode == "--semantic" { 1 } else { 2 },
+            ),
+            (vec!["--commit", &document], &document, "a.md", 1),
+            (
+                vec!["--include-commit", &document, "--include-commit", &rust],
+                &rust,
+                "z.rs",
+                if mode == "--semantic" { 1 } else { 2 },
+            ),
+        ] {
+            let mut args = vec!["fn variant", "--semantic-limit", "1"];
+            if mode != "exact" {
+                args.push(mode);
+            }
+            args.extend(scope);
+            let results = search_json(root, &args);
+            assert_eq!(results.len(), count, "{args:?}");
+            for result in &results {
+                assert_eq!(result["path"], path);
+                assert_eq!(result["commit_id"], *commit);
+                assert_eq!(result["blob_id"], blob);
+            }
+            assert_eq!(
+                results[0]["text"],
+                if path == "a.md" {
+                    "fn variant_alpha() {}\nfn variant_beta() {}"
+                } else {
+                    "fn variant_alpha() {}"
+                }
+            );
+            assert_eq!(results[0]["line_end"], if path == "a.md" { 2 } else { 1 });
+            if mode != "exact" {
+                assert!(
+                    (results[0]["distance"].as_f64().unwrap()
+                        - if path == "a.md" { 1.0 } else { 0.0 })
+                    .abs()
+                        < 0.0001
+                );
+            }
+            if count == 2 {
+                assert_eq!(results[1]["text"], "fn variant_beta() {}");
+                assert_eq!(results[1]["line_start"], 2);
+                assert_eq!(results[1]["line_end"], 2);
+            }
+        }
+    }
+}
+
+#[test]
+fn v2_cli_snapshot_keeps_line_units_until_successful_atomic_segmentation_refresh() {
+    use std::os::unix::fs::PermissionsExt;
+    let repo = tempfile::tempdir().unwrap();
+    let root = repo.path();
+    git(root, &["init", "-q", "--object-format=sha1"]);
+    git(root, &["config", "user.email", "test@example.com"]);
+    git(root, &["config", "user.name", "Test"]);
+    fs::write(root.join("v2.txt"), "v2 first\nv2 marker\nv2 last\n").unwrap();
+    git(root, &["add", "v2.txt"]);
+    let commit = commit_at(root, "v2", "2000-01-01T00:00:00Z");
+    assert_eq!(commit, "0c729620cba6ed31c8f6ef1384e8bb34631eab98");
+    let blob = git_text(root, &["rev-parse", "HEAD:v2.txt"]);
+    fs::write(
+        root.join(".git/repodb.sqlite"),
+        include_bytes!("fixtures/v2.sqlite"),
+    )
+    .unwrap();
+    fs::write(
+        root.join("v2-embedder"),
+        r#"#!/bin/sh
+input=$(cat)
+[ "$REPODB_EMBEDDING_MODEL" = v2-model ] || exit 2
+case "$input" in
+  'v2 first
+v2 marker
+v2 last')
+    [ ! -f fail-refresh ] || exit 1
+    if [ -f wrong-dimension ]; then printf '[1,0,0]'; else printf '[0,1]'; fi ;;
+  *) printf '[1,0]' ;;
+esac
+"#,
+    )
+    .unwrap();
+    fs::set_permissions(root.join("v2-embedder"), fs::Permissions::from_mode(0o755)).unwrap();
+    let exact = search_json(root, &["v2 marker"]);
+    let semantic = search_json(root, &["v2 marker", "--semantic"]);
+    let combined = search_json(root, &["v2 marker", "--combined"]);
+    assert_eq!(exact.len(), 1);
+    assert_eq!(exact[0]["text"], "v2 marker");
+    assert_eq!(exact[0]["line_start"], 2);
+    assert_eq!(exact[0]["line_end"], 2);
+    assert_eq!(exact[0]["blob_id"], blob);
+    assert_eq!(semantic.len(), 3);
+    assert!(semantic.iter().all(|r| r["distance"] == 0.0));
+    for sentinel in ["fail-refresh", "wrong-dimension"] {
+        fs::write(root.join(sentinel), "").unwrap();
+        assert!(!run(root, &["refresh"]).0, "{sentinel}");
+        fs::remove_file(root.join(sentinel)).unwrap();
+        assert_eq!(search_json(root, &["v2 marker"]), exact);
+        assert_eq!(search_json(root, &["v2 marker", "--semantic"]), semantic);
+        assert_eq!(search_json(root, &["v2 marker", "--combined"]), combined);
+    }
+    assert!(run(root, &["refresh"]).0);
+    for mode in ["exact", "--semantic", "--combined"] {
+        let mut args = vec!["v2 marker"];
+        if mode != "exact" {
+            args.push(mode);
+        }
+        let results = search_json(root, &args);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0]["text"], "v2 first\nv2 marker\nv2 last");
+        assert_eq!(results[0]["line_start"], 1);
+        assert_eq!(results[0]["line_end"], 3);
+        assert_eq!(results[0]["commit_id"], commit);
+        assert_eq!(results[0]["blob_id"], blob);
+        if mode != "exact" {
+            assert_eq!(results[0]["distance"], 1.0);
+        }
+    }
 }
