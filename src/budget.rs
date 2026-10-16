@@ -48,23 +48,24 @@ impl Budget {
             .ok_or_else(|| -> Box<dyn std::error::Error> {
                 format!("{purpose} capacity overflow").into()
             })?;
+        // Reserve the full requested capacity delta before asking the allocator.
+        // Exact reserve avoids Vec's geometric growth and keeps the charged bound
+        // equal to the maximum capacity this operation is allowed to retain.
         self.charge(reservation, purpose)?;
         if let Err(error) = values.try_reserve_exact(additional) {
             self.release(reservation);
             return Err(error.into());
         }
-        let actual = values
-            .capacity()
-            .saturating_sub(old_capacity)
-            .checked_mul(std::mem::size_of::<T>())
-            .ok_or_else(|| -> Box<dyn std::error::Error> {
-                format!("{purpose} capacity overflow").into()
-            })?;
-        if actual < reservation {
-            self.release(reservation - actual);
-        } else if actual > reservation {
-            self.charge(actual - reservation, purpose)?;
+        let actual_capacity = values.capacity().saturating_sub(old_capacity);
+        if actual_capacity > requested_capacity {
+            // The allocator may over-allocate despite `try_reserve_exact`; do not
+            // retain an allocation that is outside the pre-reserved budget.
+            return Err(format!("{purpose} allocator exceeded exact capacity bound").into());
         }
+        let actual = actual_capacity
+            .checked_mul(std::mem::size_of::<T>())
+            .expect("capacity delta was checked before allocation");
+        self.release(reservation - actual);
         Ok(())
     }
 
@@ -73,5 +74,27 @@ impl Budget {
     }
     pub(crate) fn used(&self) -> usize {
         self.used
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn reserve_vec_charges_capacity_and_rolls_back_rejected_growth() {
+        let mut budget = Budget::new(4, "test");
+        let mut values = Vec::<u8>::new();
+        budget.reserve_vec(&mut values, 4, "values").unwrap();
+        assert_eq!(budget.used(), values.capacity());
+        values.resize(4, 0);
+
+        let capacity = values.capacity();
+        assert!(budget.reserve_vec(&mut values, 1, "values").is_err());
+        assert_eq!(values.capacity(), capacity);
+        assert_eq!(budget.used(), capacity);
+
+        budget.release(values.capacity());
+        assert_eq!(budget.used(), 0);
     }
 }

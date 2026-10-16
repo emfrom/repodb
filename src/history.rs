@@ -89,34 +89,40 @@ fn for_each_tree_record(
     let result = (|| -> Result<()> {
         loop {
             let mut record = Vec::new();
-            loop {
-                let available = stdout.fill_buf()?;
-                if available.is_empty() {
-                    break;
+            let record_result = (|| -> Result<bool> {
+                loop {
+                    let available = stdout.fill_buf()?;
+                    if available.is_empty() {
+                        break;
+                    }
+                    let end = available
+                        .iter()
+                        .position(|byte| *byte == 0)
+                        .map_or(available.len(), |n| n + 1);
+                    let record_bytes = end - usize::from(available[end - 1] == 0);
+                    preparation_bytes.reserve_vec(
+                        &mut record,
+                        record_bytes,
+                        "Git tree record capacity",
+                    )?;
+                    record.extend_from_slice(&available[..record_bytes]);
+                    let terminated = end > record_bytes;
+                    stdout.consume(end);
+                    if terminated {
+                        break;
+                    }
                 }
-                let end = available
-                    .iter()
-                    .position(|byte| *byte == 0)
-                    .map_or(available.len(), |n| n + 1);
-                let record_bytes = end - usize::from(available[end - 1] == 0);
-                preparation_bytes.reserve_vec(
-                    &mut record,
-                    record_bytes,
-                    "Git tree record capacity",
-                )?;
-                record.extend_from_slice(&available[..record_bytes]);
-                let terminated = end > record_bytes;
-                stdout.consume(end);
-                if terminated {
-                    break;
+                if record.is_empty() {
+                    Ok(false)
+                } else {
+                    visit(&record, preparation_bytes)?;
+                    Ok(true)
                 }
-            }
-            if record.is_empty() {
+            })();
+            preparation_bytes.release(record.capacity());
+            if !record_result? {
                 break;
             }
-            let visit_result = visit(&record, preparation_bytes);
-            preparation_bytes.release(record.capacity());
-            visit_result?;
         }
         Ok(())
     })();
@@ -191,9 +197,7 @@ struct Occurrence {
     kind: &'static str,
 }
 
-fn head() -> Result<Option<String>> {
-    let mut preparation_bytes =
-        Budget::new(MAX_REFRESH_MEMORY_BYTES, "history refresh limit exceeded");
+fn head(preparation_bytes: &mut Budget) -> Result<Option<String>> {
     let (stdout_limit, stderr_limit) = git_capture_limits(128, preparation_bytes.used())?;
     let mut child = Command::new("git")
         .args(["rev-parse", "--verify", "--quiet", "HEAD"])
@@ -208,8 +212,10 @@ fn head() -> Result<Option<String>> {
     let stderr_capacity = output.stderr.capacity();
     preparation_bytes.charge(stdout_capacity, "HEAD stdout capacity")?;
     preparation_bytes.charge(stderr_capacity, "HEAD stderr capacity")?;
-    if output.status.success() {
-        Ok(Some(String::from_utf8(output.stdout)?.trim().to_owned()))
+    let result = if output.status.success() {
+        let id = std::str::from_utf8(&output.stdout)?.trim();
+        preparation_bytes.charge(id.len(), "retained HEAD identifier")?;
+        Ok(Some(id.to_owned()))
     } else if output.status.code() == Some(1) {
         Ok(None)
     } else {
@@ -218,7 +224,10 @@ fn head() -> Result<Option<String>> {
             String::from_utf8_lossy(&output.stderr)
         )
         .into())
-    }
+    };
+    drop(output);
+    preparation_bytes.release(stdout_capacity + stderr_capacity);
+    result
 }
 
 fn reachable_commits(preparation_bytes: &mut Budget) -> Result<Vec<(String, i64)>> {
@@ -229,12 +238,28 @@ fn reachable_commits(preparation_bytes: &mut Budget) -> Result<Vec<(String, i64)
         preparation_bytes,
     )?;
     let mut roots_bytes = roots.capacity();
-    if let Some(head) = head()? {
+    if let Some(head) = head(preparation_bytes)? {
+        let retained_head_bytes = head.len();
         let head = format!("{head}\n");
-        preparation_bytes.charge(head.len(), "Git roots")?;
-        roots.try_reserve_exact(head.len())?;
+        let old_capacity = roots.capacity();
+        let requested = roots
+            .len()
+            .checked_add(head.len())
+            .ok_or("Git roots capacity overflow")?;
+        let delta = requested.saturating_sub(old_capacity);
+        preparation_bytes.charge(delta, "Git roots capacity")?;
+        if let Err(error) = roots.try_reserve_exact(head.len()) {
+            preparation_bytes.release(delta);
+            return Err(error.into());
+        }
+        let actual_delta = roots.capacity().saturating_sub(old_capacity);
+        if actual_delta > delta {
+            return Err("Git roots allocator exceeded exact capacity bound".into());
+        }
+        preparation_bytes.release(delta - actual_delta);
         roots.extend_from_slice(head.as_bytes());
-        roots_bytes += head.len();
+        roots_bytes += actual_delta;
+        preparation_bytes.release(retained_head_bytes);
     }
     if roots.is_empty() {
         return Ok(vec![]);
@@ -814,10 +839,14 @@ impl Scope {
                 .map(|id| resolve(id))
                 .collect::<Result<Vec<_>>>()?
         } else {
-            head()?
-                .into_iter()
-                .filter(|id| known.contains(id))
-                .collect()
+            {
+                let mut budget =
+                    Budget::new(MAX_REFRESH_MEMORY_BYTES, "history query limit exceeded");
+                head(&mut budget)?
+            }
+            .into_iter()
+            .filter(|id| known.contains(id))
+            .collect()
         };
         for excluded in &self.exclude {
             let id = resolve(excluded)?;
