@@ -67,10 +67,10 @@ fn checksum(bytes: &[u8]) -> String {
         padded.push(0);
     }
     padded.extend_from_slice(&bit_len.to_be_bytes());
-    for block in padded.chunks_exact(64) {
+    for block in padded.as_chunks::<64>().0 {
         let mut w = [0u32; 64];
-        for (i, word) in block.chunks_exact(4).enumerate() {
-            w[i] = u32::from_be_bytes(word.try_into().unwrap());
+        for (i, word) in block.as_chunks::<4>().0.iter().enumerate() {
+            w[i] = u32::from_be_bytes(*word);
         }
         for i in 16..64 {
             let s0 = w[i - 15].rotate_right(7) ^ w[i - 15].rotate_right(18) ^ (w[i - 15] >> 3);
@@ -417,24 +417,6 @@ pub fn reembed(c: &Connection, command: &str, model: &str) -> Result<Option<usiz
     Ok(dimension)
 }
 
-#[cfg(test)]
-mod tests {
-    use super::checksum;
-
-    #[test]
-    fn checksum_is_sha256_and_distinguishes_cache_inputs() {
-        assert_eq!(
-            checksum(b"abc"),
-            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
-        );
-        assert_ne!(checksum(b"source one"), checksum(b"source two"));
-        assert_eq!(
-            checksum(b""),
-            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
-        );
-    }
-}
-
 pub fn search(c: &Connection, query: &str, mode: &str, limit: usize) -> Result<Vec<SearchResult>> {
     init(c)?;
     let semantic = mode != "exact";
@@ -521,4 +503,22 @@ pub fn search(c: &Connection, query: &str, mode: &str, limit: usize) -> Result<V
         }
     }
     Ok(out.into_iter().map(|x| x.1).collect())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::checksum;
+
+    #[test]
+    fn checksum_is_sha256_and_distinguishes_cache_inputs() {
+        assert_eq!(
+            checksum(b"abc"),
+            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+        );
+        assert_ne!(checksum(b"source one"), checksum(b"source two"));
+        assert_eq!(
+            checksum(b""),
+            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        );
+    }
 }
