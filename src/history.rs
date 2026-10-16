@@ -364,6 +364,7 @@ pub fn search(
                     commit_id: Some(r.get(4)?),
                     blob_id: Some(r.get(5)?),
                     distance: r.get(6)?,
+                    page: None,
                 },
             ))
         },

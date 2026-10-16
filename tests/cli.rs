@@ -104,6 +104,55 @@ fn imported_files_refresh_with_references_and_both_retention_policies() {
 }
 
 #[test]
+fn imported_pdfs_preserve_pages_cache_conversions_and_refresh_versions() {
+    use std::os::unix::fs::PermissionsExt;
+    let repo = repository();
+    let root = repo.path();
+    assert!(run(root, &["init"]).0);
+    let bin = root.join("bin");
+    fs::create_dir(&bin).unwrap();
+    let calls = root.join("converter-calls");
+    let converter = bin.join("pdftotext");
+    fs::write(
+        &converter,
+        "#!/bin/sh\nprintf called >> \"$PDF_CALLS\"\nprintf '%s' \"$(cat \"$PDF_TEXT\")\"\n",
+    )
+    .unwrap();
+    fs::set_permissions(&converter, fs::Permissions::from_mode(0o755)).unwrap();
+    let pdf = root.join("manual.pdf");
+    fs::write(&pdf, b"%PDF-test first source").unwrap();
+    let pdf_string = pdf.to_string_lossy().into_owned();
+    assert!(run(root, &["import", &pdf_string]).0);
+    let path = format!("{}:{}", bin.display(), std::env::var("PATH").unwrap());
+    let text = root.join("converter-text");
+    fs::write(&text, "first page text\x0csecond page marker\x0c").unwrap();
+    let env = [
+        ("PATH", path.as_str()),
+        ("PDF_CALLS", calls.to_str().unwrap()),
+        ("PDF_TEXT", text.to_str().unwrap()),
+    ];
+    assert!(run_with_env(root, &["refresh"], &env).0);
+    assert!(run_with_env(root, &["refresh"], &env).0);
+    assert_eq!(fs::read_to_string(&calls).unwrap(), "called");
+    assert!(root.join(".git/repodb-cache").is_dir());
+    let page_two = search_json(root, &["second page marker"]);
+    assert_eq!(page_two[0]["path"], pdf_string);
+    assert_eq!(page_two[0]["page"], 2);
+    assert_eq!(page_two[0]["line_start"], 2);
+
+    assert!(run(root, &["retention", "all"]).0);
+    fs::write(&pdf, b"%PDF-test changed source").unwrap();
+    fs::write(&text, "updated page marker\x0c").unwrap();
+    assert!(run_with_env(root, &["refresh"], &env).0);
+    assert_eq!(fs::read_to_string(&calls).unwrap(), "calledcalled");
+    assert!(!search_json(root, &["first page text"]).is_empty());
+    assert!(!search_json(root, &["updated page marker"]).is_empty());
+    assert!(run(root, &["retention", "latest"]).0);
+    assert!(search_json(root, &["first page text"]).is_empty());
+    assert!(!search_json(root, &["updated page marker"]).is_empty());
+}
+
+#[test]
 fn imports_retain_latest_fetch_and_reembed_backfills_and_refreshes_vectors() {
     let repo = repository();
     let root = repo.path();

@@ -2,7 +2,7 @@ use crate::{Result, SearchResult, as_bytes, embed};
 use rusqlite::{Connection, params};
 use std::{
     fs,
-    io::Read,
+    io::{Read, Write},
     path::Path,
     process::{Command, Stdio},
 };
@@ -10,7 +10,10 @@ use std::{
 const MAX_URL_BYTES: usize = 10 * 1024 * 1024;
 
 fn init(c: &Connection) -> Result<()> {
-    c.execute_batch("CREATE TABLE IF NOT EXISTS imported_sources(id TEXT PRIMARY KEY, locator TEXT NOT NULL UNIQUE, kind TEXT NOT NULL); CREATE TABLE IF NOT EXISTS imported_versions(source_id TEXT NOT NULL, version TEXT NOT NULL, content TEXT NOT NULL, fetched_order INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(source_id,version)); CREATE TABLE IF NOT EXISTS imported_units(source_id TEXT NOT NULL, version TEXT NOT NULL, line INTEGER NOT NULL, text TEXT NOT NULL, vector BLOB, PRIMARY KEY(source_id,version,line)); CREATE TABLE IF NOT EXISTS import_config(key TEXT PRIMARY KEY,value TEXT NOT NULL);")?;
+    c.execute_batch("CREATE TABLE IF NOT EXISTS imported_sources(id TEXT PRIMARY KEY, locator TEXT NOT NULL UNIQUE, kind TEXT NOT NULL); CREATE TABLE IF NOT EXISTS imported_versions(source_id TEXT NOT NULL, version TEXT NOT NULL, content TEXT NOT NULL, fetched_order INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(source_id,version)); CREATE TABLE IF NOT EXISTS imported_units(source_id TEXT NOT NULL, version TEXT NOT NULL, line INTEGER NOT NULL, text TEXT NOT NULL, vector BLOB, page INTEGER, PRIMARY KEY(source_id,version,line)); CREATE TABLE IF NOT EXISTS import_config(key TEXT PRIMARY KEY,value TEXT NOT NULL);")?;
+    if !column_exists(c, "imported_units", "page")? {
+        c.execute("ALTER TABLE imported_units ADD COLUMN page INTEGER", [])?;
+    }
     if !column_exists(c, "imported_versions", "fetched_order")? {
         c.execute(
             "ALTER TABLE imported_versions ADD COLUMN fetched_order INTEGER NOT NULL DEFAULT 0",
@@ -32,6 +35,15 @@ fn column_exists(c: &Connection, table: &str, column: &str) -> Result<bool> {
         .collect::<std::result::Result<Vec<_>, _>>()?
         .iter()
         .any(|name| name == column))
+}
+
+fn checksum(bytes: &[u8]) -> String {
+    format!(
+        "{:x}",
+        bytes.iter().fold(14695981039346656037u64, |h, b| {
+            (h ^ *b as u64).wrapping_mul(1099511628211)
+        })
+    )
 }
 
 fn identity(locator: &str) -> String {
@@ -107,10 +119,15 @@ pub fn refresh(c: &Connection) -> Result<()> {
         [],
         |r| r.get(0),
     )?;
+    let cache_dir: String = c.query_row("PRAGMA database_list", [], |r| r.get(2))?;
+    let cache_dir = Path::new(&cache_dir)
+        .parent()
+        .ok_or("database has no parent directory")?
+        .join("repodb-cache");
     let tx = c.unchecked_transaction()?;
     for (id, locator, kind) in sources {
-        let content = if kind == "file" {
-            fs::read_to_string(&locator)?
+        let source_bytes = if kind == "file" {
+            fs::read(&locator)?
         } else {
             let mut child = Command::new("curl")
                 .args([
@@ -153,22 +170,74 @@ pub fn refresh(c: &Connection) -> Result<()> {
                 )
                 .into());
             }
-            String::from_utf8(response)?
+            response
         };
-        let version = format!(
-            "{:x}",
-            content
-                .as_bytes()
-                .iter()
-                .fold(14695981039346656037u64, |h, b| (h ^ *b as u64)
-                    .wrapping_mul(1099511628211))
-        );
+        let is_pdf = source_bytes
+            .windows(5)
+            .take(1024)
+            .any(|window| window == b"%PDF-")
+            || Path::new(&locator)
+                .extension()
+                .and_then(|extension| extension.to_str())
+                .is_some_and(|extension| extension.eq_ignore_ascii_case("pdf"));
+        let pages = if is_pdf {
+            let source_version = checksum(&source_bytes);
+            let cache = cache_dir.join(format!("{source_version}.json"));
+            if cache.is_file() {
+                serde_json::from_slice::<Vec<String>>(&fs::read(cache)?)?
+            } else {
+                let mut child = Command::new("pdftotext")
+                    .args(["-layout", "-enc", "UTF-8", "-", "-"])
+                    .stdin(Stdio::piped())
+                    .stdout(Stdio::piped())
+                    .stderr(Stdio::piped())
+                    .spawn()?;
+                child.stdin.take().unwrap().write_all(&source_bytes)?;
+                let output = child.wait_with_output()?;
+                if !output.status.success() {
+                    return Err(format!(
+                        "PDF conversion failed for {locator}: {}",
+                        String::from_utf8_lossy(&output.stderr)
+                    )
+                    .into());
+                }
+                let text = String::from_utf8(output.stdout)?;
+                let pages = text.split('\u{c}').map(str::to_owned).collect::<Vec<_>>();
+                fs::create_dir_all(&cache_dir)?;
+                fs::write(cache, serde_json::to_vec(&pages)?)?;
+                pages
+            }
+        } else {
+            vec![String::from_utf8(source_bytes.clone())?]
+        };
+        let content = if is_pdf {
+            pages.join("\n")
+        } else {
+            pages[0].clone()
+        };
+        let version = checksum(content.as_bytes());
         let mut units = Vec::new();
         let mut dimension = None;
-        for (i, line) in content.lines().enumerate() {
+        let lines = if is_pdf {
+            pages
+                .iter()
+                .enumerate()
+                .map(|(page, text)| (page + 1, Some(page + 1), text.as_str()))
+                .collect::<Vec<_>>()
+        } else {
+            content
+                .lines()
+                .enumerate()
+                .map(|(line, text)| (line + 1, None, text))
+                .collect::<Vec<_>>()
+        };
+        for (line, page, text) in lines {
+            if text.trim().is_empty() {
+                continue;
+            }
             let vector = cfg
                 .as_ref()
-                .map(|(cmd, model)| embed(cmd, model, line))
+                .map(|(cmd, model)| embed(cmd, model, text))
                 .transpose()?;
             if let Some(vector) = &vector {
                 if dimension.is_some_and(|d| d != vector.len())
@@ -178,7 +247,7 @@ pub fn refresh(c: &Connection) -> Result<()> {
                 }
                 dimension = Some(vector.len());
             }
-            units.push((i + 1, line.to_owned(), vector.map(|v| as_bytes(&v))));
+            units.push((line, text.to_owned(), vector.map(|v| as_bytes(&v)), page));
         }
         let fetched_order: i64 = tx.query_row(
             "SELECT COALESCE(MAX(fetched_order),0)+1 FROM imported_versions",
@@ -189,10 +258,10 @@ pub fn refresh(c: &Connection) -> Result<()> {
             "INSERT INTO imported_versions(source_id,version,content,fetched_order) VALUES(?1,?2,?3,?4) ON CONFLICT(source_id,version) DO UPDATE SET content=excluded.content,fetched_order=excluded.fetched_order",
             params![id, version, content, fetched_order],
         )?;
-        for (line, text, vector) in units {
+        for (line, text, vector, page) in units {
             tx.execute(
-                "INSERT OR REPLACE INTO imported_units VALUES(?1,?2,?3,?4,?5)",
-                params![id, version, line, text, vector],
+                "INSERT OR REPLACE INTO imported_units(source_id,version,line,text,vector,page) VALUES(?1,?2,?3,?4,?5,?6)",
+                params![id, version, line, text, vector, page],
             )?;
         }
         if retention == "latest" {
@@ -261,7 +330,7 @@ pub fn search(c: &Connection, query: &str, mode: &str, limit: usize) -> Result<V
             return Err("query embedding dimension mismatch".into());
         }
     }
-    let mut st = c.prepare("SELECT s.locator,u.line,u.text,u.version,u.vector FROM imported_units u JOIN imported_sources s ON s.id=u.source_id")?;
+    let mut st = c.prepare("SELECT s.locator,u.line,u.text,u.version,u.vector,u.page FROM imported_units u JOIN imported_sources s ON s.id=u.source_id")?;
     let rows = st.query_map([], |r| {
         Ok((
             r.get::<_, String>(0)?,
@@ -269,11 +338,12 @@ pub fn search(c: &Connection, query: &str, mode: &str, limit: usize) -> Result<V
             r.get::<_, String>(2)?,
             r.get::<_, String>(3)?,
             r.get::<_, Option<Vec<u8>>>(4)?,
+            r.get::<_, Option<usize>>(5)?,
         ))
     })?;
     let mut out = Vec::new();
     for row in rows {
-        let (locator, line, text, version, stored) = row?;
+        let (locator, line, text, version, stored, page) = row?;
         if semantic {
             if let (Some(v), Some(q)) = (stored.as_deref(), vector.as_deref()) {
                 if v.len() != q.len() {
@@ -293,6 +363,7 @@ pub fn search(c: &Connection, query: &str, mode: &str, limit: usize) -> Result<V
                         commit_id: None,
                         distance: Some(d),
                         blob_id: Some(version),
+                        page,
                     },
                 ));
             }
@@ -307,6 +378,7 @@ pub fn search(c: &Connection, query: &str, mode: &str, limit: usize) -> Result<V
                     commit_id: None,
                     distance: None,
                     blob_id: Some(version),
+                    page,
                 },
             ));
         }

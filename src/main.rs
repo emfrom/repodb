@@ -26,6 +26,8 @@ struct SearchResult {
     distance: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     blob_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    page: Option<usize>,
 }
 fn git(args: &[&str]) -> Result<Vec<u8>> {
     let o = Command::new("git").args(args).output()?;
@@ -200,6 +202,7 @@ fn exact(c: &Connection, q: &str, commits: &[String]) -> Result<Vec<SearchResult
                     commit_id: Some(id.clone()),
                     distance: None,
                     blob_id: None,
+                    page: None,
                 })
             }
         }
@@ -251,6 +254,7 @@ fn semantic_with_vector(
                 commit_id: Some(r.get(3)?),
                 distance: Some(r.get(4)?),
                 blob_id: None,
+                page: None,
             })
         },
     )?;
@@ -411,10 +415,14 @@ fn execute() -> Result<()> {
                     if let Some(blob) = x.blob_id {
                         reference.push_str(&format!(" [blob {blob}]"));
                     }
-                    println!(
-                        "{}:{}-{}{}: {}",
-                        x.path, x.line_start, x.line_end, reference, x.text
-                    )
+                    if let Some(page) = x.page {
+                        println!("{}:page {}{}: {}", x.path, page, reference, x.text);
+                    } else {
+                        println!(
+                            "{}:{}-{}{}: {}",
+                            x.path, x.line_start, x.line_end, reference, x.text
+                        );
+                    }
                 }
             }
         }
