@@ -1,4 +1,6 @@
-use crate::{Result, SearchResult, as_bytes, git, query_vector, segmentation};
+use crate::{
+    Result, SearchResult, as_bytes, git, query_vector, read_bounded_command_output, segmentation,
+};
 use rusqlite::{Connection, Transaction, TransactionBehavior, params};
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -35,8 +37,8 @@ fn git_output(
         .spawn()?;
     let stdout = child.stdout.take().unwrap();
     let stderr = child.stderr.take().unwrap();
-    let out = std::thread::spawn(move || read_bounded_output(stdout, stdout_limit));
-    let err = std::thread::spawn(move || read_bounded_output(stderr, MAX_GIT_STDERR_BYTES));
+    let out = std::thread::spawn(move || read_bounded_command_output(stdout, stdout_limit));
+    let err = std::thread::spawn(move || read_bounded_command_output(stderr, MAX_GIT_STDERR_BYTES));
     let status = child.wait()?;
     let (stdout, stdout_exceeded) = out.join().map_err(|_| "git stdout reader panicked")??;
     let (stderr, stderr_exceeded) = err.join().map_err(|_| "git stderr reader panicked")??;
@@ -59,25 +61,6 @@ fn git_output(
     Ok(stdout)
 }
 
-fn read_bounded_output(
-    mut reader: impl std::io::Read,
-    limit: usize,
-) -> std::io::Result<(Vec<u8>, bool)> {
-    let mut bytes = Vec::with_capacity(limit.min(8192));
-    let mut buffer = [0u8; 8192];
-    let mut exceeded = false;
-    loop {
-        let count = reader.read(&mut buffer)?;
-        if count == 0 {
-            break;
-        }
-        let keep = limit.saturating_sub(bytes.len()).min(count);
-        bytes.extend_from_slice(&buffer[..keep]);
-        exceeded |= keep != count;
-    }
-    Ok((bytes, exceeded))
-}
-
 fn for_each_tree_record(
     commit_id: &str,
     mut visit: impl FnMut(&[u8]) -> Result<()>,
@@ -89,7 +72,8 @@ fn for_each_tree_record(
         .spawn()?;
     let mut stdout = BufReader::new(child.stdout.take().unwrap());
     let stderr = child.stderr.take().unwrap();
-    let stderr = std::thread::spawn(move || read_bounded_output(stderr, MAX_GIT_STDERR_BYTES));
+    let stderr =
+        std::thread::spawn(move || read_bounded_command_output(stderr, MAX_GIT_STDERR_BYTES));
     let mut record_bytes = 0usize;
     loop {
         let mut record = Vec::new();

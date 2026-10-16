@@ -1,4 +1,4 @@
-use crate::{Result, SearchResult, as_bytes, embed};
+use crate::{Result, SearchResult, as_bytes, embed, read_bounded_command_output};
 use rusqlite::{Connection, params};
 use std::{
     fs,
@@ -24,22 +24,6 @@ fn read_bounded(reader: impl Read, limit: usize, description: &str) -> Result<Ve
     Ok(bytes)
 }
 
-fn drain_bounded(mut reader: impl Read, limit: usize) -> std::io::Result<(Vec<u8>, bool)> {
-    let mut bytes = Vec::with_capacity(limit.min(8192));
-    let mut buffer = [0u8; 8192];
-    let mut exceeded = false;
-    loop {
-        let count = reader.read(&mut buffer)?;
-        if count == 0 {
-            break;
-        }
-        let keep = limit.saturating_sub(bytes.len()).min(count);
-        bytes.extend_from_slice(&buffer[..keep]);
-        exceeded |= keep != count;
-    }
-    Ok((bytes, exceeded))
-}
-
 fn bounded_command_output(
     child: &mut std::process::Child,
     stdout_limit: usize,
@@ -53,8 +37,9 @@ fn bounded_command_output(
         .stderr
         .take()
         .ok_or("command stderr was not captured")?;
-    let stdout = std::thread::spawn(move || drain_bounded(stdout, stdout_limit));
-    let stderr = std::thread::spawn(move || drain_bounded(stderr, MAX_COMMAND_STDERR_BYTES));
+    let stdout = std::thread::spawn(move || read_bounded_command_output(stdout, stdout_limit));
+    let stderr =
+        std::thread::spawn(move || read_bounded_command_output(stderr, MAX_COMMAND_STDERR_BYTES));
     let status = child.wait()?;
     let (out, out_exceeded) = stdout.join().map_err(|_| "stdout reader panicked")??;
     let (err, err_exceeded) = stderr.join().map_err(|_| "stderr reader panicked")??;

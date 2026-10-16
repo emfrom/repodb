@@ -59,7 +59,7 @@ fn git(args: &[&str]) -> Result<Vec<u8>> {
     Ok(stdout)
 }
 
-fn read_bounded_command_output(
+pub(crate) fn read_bounded_command_output(
     mut reader: impl std::io::Read,
     limit: usize,
 ) -> std::io::Result<(Vec<u8>, bool)> {
