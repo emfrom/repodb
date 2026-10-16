@@ -32,16 +32,50 @@ struct SearchResult {
     repo_id: Option<String>,
 }
 fn git(args: &[&str]) -> Result<Vec<u8>> {
-    let o = Command::new("git").args(args).output()?;
-    if !o.status.success() {
+    const MAX_STDERR_BYTES: usize = 64 * 1024;
+    let mut child = Command::new("git")
+        .args(args)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()?;
+    let stdout = child.stdout.take().unwrap();
+    let stderr = child.stderr.take().unwrap();
+    let stdout = std::thread::spawn(move || read_bounded_command_output(stdout, 256 * 1024 * 1024));
+    let stderr = std::thread::spawn(move || read_bounded_command_output(stderr, MAX_STDERR_BYTES));
+    let status = child.wait()?;
+    let (stdout, stdout_exceeded) = stdout.join().map_err(|_| "git stdout reader panicked")??;
+    let (stderr, stderr_exceeded) = stderr.join().map_err(|_| "git stderr reader panicked")??;
+    if stdout_exceeded || stderr_exceeded {
+        return Err("git command output exceeded its bounded capture".into());
+    }
+    if !status.success() {
         return Err(format!(
             "git {} failed: {}",
             args.join(" "),
-            String::from_utf8_lossy(&o.stderr)
+            String::from_utf8_lossy(&stderr)
         )
         .into());
     }
-    Ok(o.stdout)
+    Ok(stdout)
+}
+
+fn read_bounded_command_output(
+    mut reader: impl std::io::Read,
+    limit: usize,
+) -> std::io::Result<(Vec<u8>, bool)> {
+    let mut output = Vec::with_capacity(limit.min(8192));
+    let mut buffer = [0u8; 8192];
+    let mut exceeded = false;
+    loop {
+        let count = reader.read(&mut buffer)?;
+        if count == 0 {
+            break;
+        }
+        let keep = limit.saturating_sub(output.len()).min(count);
+        output.extend_from_slice(&buffer[..keep]);
+        exceeded |= keep != count;
+    }
+    Ok((output, exceeded))
 }
 fn root() -> Result<PathBuf> {
     Ok(PathBuf::from(

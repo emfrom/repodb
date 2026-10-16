@@ -1155,6 +1155,41 @@ fn deleted_refs_are_pruned_only_on_refresh_while_shared_reachable_blobs_survive(
 }
 
 #[test]
+fn noisy_history_git_stderr_is_bounded_and_preserves_the_snapshot() {
+    use std::os::unix::fs::PermissionsExt;
+    let repo = repository();
+    let root = repo.path();
+    assert!(run(root, &["init"]).0);
+    git(root, &["init", "-q"]);
+    git(root, &["config", "user.email", "test@example.com"]);
+    git(root, &["config", "user.name", "Test"]);
+    fs::write(root.join("source.txt"), "previous history marker\n").unwrap();
+    git(root, &["add", "source.txt"]);
+    git(root, &["commit", "-qm", "initial"]);
+    assert!(run(root, &["refresh"]).0);
+
+    fs::write(root.join("source.txt"), "replacement history marker\n").unwrap();
+    git(root, &["commit", "-qam", "replacement"]);
+    let bin = root.join("bin");
+    fs::create_dir(&bin).unwrap();
+    let wrapper = bin.join("git");
+    fs::write(
+        &wrapper,
+        "#!/bin/sh\nif [ \"$1\" = ls-tree ]; then head -c 1048576 /dev/zero >&2; fi\nexec /usr/bin/git \"$@\"\n",
+    )
+    .unwrap();
+    fs::set_permissions(&wrapper, fs::Permissions::from_mode(0o755)).unwrap();
+    let path = format!("{}:{}", bin.display(), std::env::var("PATH").unwrap());
+    let (success, _) = run_with_env(root, &["refresh"], &[("PATH", path.as_str())]);
+    assert!(!success, "oversized Git stderr must fail refresh");
+    assert_eq!(
+        search_json(root, &["previous history marker", "--all-history"]).len(),
+        1
+    );
+    assert!(search_json(root, &["replacement history marker", "--all-history"]).is_empty());
+}
+
+#[test]
 fn large_history_tree_refreshes_incrementally_and_keeps_the_snapshot_atomic() {
     let repo = repository();
     let root = repo.path();

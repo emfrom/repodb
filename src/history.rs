@@ -21,34 +21,104 @@ fn memory_limit() -> Box<dyn std::error::Error> {
     "history refresh limit exceeded: preparation data exceeds 256 MiB; reduce indexed history and retry".into()
 }
 
-fn for_each_tree_record(commit_id: &str, mut visit: impl FnMut(&[u8]) -> Result<()>) -> Result<()> {
+const MAX_GIT_STDERR_BYTES: usize = 64 * 1024;
+
+fn git_output(
+    args: &[&str],
+    stdout_limit: usize,
+    preparation_bytes: &mut usize,
+) -> Result<Vec<u8>> {
+    let mut child = Command::new("git")
+        .args(args)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()?;
+    let stdout = child.stdout.take().unwrap();
+    let stderr = child.stderr.take().unwrap();
+    let out = std::thread::spawn(move || read_bounded_output(stdout, stdout_limit));
+    let err = std::thread::spawn(move || read_bounded_output(stderr, MAX_GIT_STDERR_BYTES));
+    let status = child.wait()?;
+    let (stdout, stdout_exceeded) = out.join().map_err(|_| "git stdout reader panicked")??;
+    let (stderr, stderr_exceeded) = err.join().map_err(|_| "git stderr reader panicked")??;
+    if stdout_exceeded || stderr_exceeded {
+        return Err(memory_limit());
+    }
+    *preparation_bytes = preparation_bytes
+        .checked_add(stdout.len())
+        .and_then(|bytes| bytes.checked_add(stderr.len()))
+        .filter(|bytes| *bytes <= MAX_REFRESH_MEMORY_BYTES)
+        .ok_or_else(memory_limit)?;
+    if !status.success() {
+        return Err(format!(
+            "git {} failed: {}",
+            args.join(" "),
+            String::from_utf8_lossy(&stderr)
+        )
+        .into());
+    }
+    Ok(stdout)
+}
+
+fn read_bounded_output(
+    mut reader: impl std::io::Read,
+    limit: usize,
+) -> std::io::Result<(Vec<u8>, bool)> {
+    let mut bytes = Vec::with_capacity(limit.min(8192));
+    let mut buffer = [0u8; 8192];
+    let mut exceeded = false;
+    loop {
+        let count = reader.read(&mut buffer)?;
+        if count == 0 {
+            break;
+        }
+        let keep = limit.saturating_sub(bytes.len()).min(count);
+        bytes.extend_from_slice(&buffer[..keep]);
+        exceeded |= keep != count;
+    }
+    Ok((bytes, exceeded))
+}
+
+fn for_each_tree_record(
+    commit_id: &str,
+    mut visit: impl FnMut(&[u8]) -> Result<()>,
+) -> Result<usize> {
     let mut child = Command::new("git")
         .args(["ls-tree", "-r", "-z", "--full-tree", commit_id])
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()?;
     let mut stdout = BufReader::new(child.stdout.take().unwrap());
+    let stderr = child.stderr.take().unwrap();
+    let stderr = std::thread::spawn(move || read_bounded_output(stderr, MAX_GIT_STDERR_BYTES));
+    let mut record_bytes = 0usize;
     loop {
         let mut record = Vec::new();
         if stdout.read_until(0, &mut record)? == 0 {
             break;
         }
         record.pop();
+        record_bytes = record_bytes.saturating_add(record.len());
+        if record_bytes > MAX_REFRESH_MEMORY_BYTES {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(memory_limit());
+        }
         if let Err(error) = visit(&record) {
             let _ = child.kill();
             let _ = child.wait();
             return Err(error);
         }
     }
-    let output = child.wait_with_output()?;
-    if !output.status.success() {
-        return Err(format!(
-            "git ls-tree failed: {}",
-            String::from_utf8_lossy(&output.stderr)
-        )
-        .into());
+    let status = child.wait()?;
+    let (stderr, exceeded) = stderr.join().map_err(|_| "git stderr reader panicked")??;
+    record_bytes = record_bytes.saturating_add(stderr.len());
+    if record_bytes > MAX_REFRESH_MEMORY_BYTES || exceeded {
+        return Err(memory_limit());
     }
-    Ok(())
+    if !status.success() {
+        return Err(format!("git ls-tree failed: {}", String::from_utf8_lossy(&stderr)).into());
+    }
+    Ok(record_bytes.saturating_add(stderr.len()))
 }
 
 pub fn is_current(c: &Connection) -> Result<bool> {
@@ -206,7 +276,7 @@ pub fn refresh(c: &mut Connection) -> Result<()> {
         return Err(memory_limit());
     }
     for (commit_id, _) in &commits {
-        for_each_tree_record(commit_id, |record| {
+        let tree_bytes = for_each_tree_record(commit_id, |record| {
             let tab = record
                 .iter()
                 .position(|b| *b == b'\t')
@@ -221,9 +291,13 @@ pub fn refresh(c: &mut Connection) -> Result<()> {
             }
             let blob_id = fields[2].to_owned();
             if !blobs.contains_key(&blob_id) {
-                let size: u64 = String::from_utf8(git(&["cat-file", "-s", &blob_id])?)?
-                    .trim()
-                    .parse()?;
+                let size: u64 = String::from_utf8(git_output(
+                    &["cat-file", "-s", &blob_id],
+                    64,
+                    &mut preparation_bytes,
+                )?)?
+                .trim()
+                .parse()?;
                 if size > MAX_BLOB_BYTES {
                     return Err(format!("history refresh limit exceeded: blob {blob_id} is {size} bytes (maximum {MAX_BLOB_BYTES}); reduce the blob or exclude its commit and retry").into());
                 }
@@ -242,7 +316,11 @@ pub fn refresh(c: &mut Connection) -> Result<()> {
                 {
                     return Err(memory_limit());
                 }
-                let bytes = git(&["cat-file", "blob", &blob_id])?;
+                let bytes = git_output(
+                    &["cat-file", "blob", &blob_id],
+                    blob_bytes,
+                    &mut preparation_bytes,
+                )?;
                 preparation_bytes = preparation_bytes
                     .saturating_add(blob_bytes)
                     .saturating_add(blob_overhead);
@@ -283,6 +361,10 @@ pub fn refresh(c: &mut Connection) -> Result<()> {
             });
             Ok(())
         })?;
+        preparation_bytes = preparation_bytes.saturating_add(tree_bytes);
+        if preparation_bytes > MAX_REFRESH_MEMORY_BYTES {
+            return Err(memory_limit());
+        }
     }
     let mut units = vec![];
     let variants: BTreeSet<_> = occurrences
