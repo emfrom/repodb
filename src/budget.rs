@@ -1,5 +1,8 @@
 use crate::Result;
 
+// Bounds RepoDB-owned refresh preparation payloads across history and imports.
+pub(crate) const MAX_REFRESH_MEMORY_BYTES: usize = 256 * 1024 * 1024;
+
 pub(crate) struct Budget {
     limit: usize,
     used: usize,

@@ -1,4 +1,8 @@
-use crate::{Result, SearchResult, as_bytes, budget::Budget, process, query_vector, segmentation};
+use crate::{
+    Result, SearchResult, as_bytes,
+    budget::{Budget, MAX_REFRESH_MEMORY_BYTES},
+    process, query_vector, segmentation,
+};
 use rusqlite::{Connection, Transaction, TransactionBehavior, params};
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -13,9 +17,6 @@ const MAX_TOTAL_BLOB_BYTES: u64 = 256 * 1024 * 1024;
 const MAX_UNITS: usize = 500_000;
 const MAX_UNIT_TEXT_BYTES: usize = 256 * 1024 * 1024;
 const MAX_VECTOR_BYTES: usize = 256 * 1024 * 1024;
-// Bounds RepoDB-owned refresh preparation payloads, including Git tree records,
-// captured blob contents, staged units/vectors, and embedding subprocess output.
-const MAX_REFRESH_MEMORY_BYTES: usize = 256 * 1024 * 1024;
 const EMBEDDING_STDERR_BYTES: usize = 64 * 1024;
 
 fn memory_limit() -> Box<dyn std::error::Error> {

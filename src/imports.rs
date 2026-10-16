@@ -1,4 +1,8 @@
-use crate::{Result, SearchResult, as_bytes, budget::Budget, embed, process};
+use crate::{
+    Result, SearchResult, as_bytes,
+    budget::{Budget, MAX_REFRESH_MEMORY_BYTES},
+    embed, process,
+};
 use rusqlite::{Connection, params};
 use std::{
     fs,
@@ -9,7 +13,6 @@ use std::{
 
 const MAX_IMPORT_BYTES: usize = 10 * 1024 * 1024;
 const MAX_PDF_TEXT_BYTES: usize = 10 * 1024 * 1024;
-const MAX_REFRESH_MEMORY_BYTES: usize = 256 * 1024 * 1024;
 const MAX_COMMAND_STDERR_BYTES: usize = 64 * 1024;
 const MAX_EMBEDDING_OUTPUT_BYTES: usize = 1024 * 1024;
 const MAX_IMPORTED_UNITS: usize = 100_000;
