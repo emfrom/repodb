@@ -21,7 +21,14 @@ pub(crate) fn drain_bounded(reader: impl Read, limit: usize) -> std::io::Result<
             break;
         }
         let keep = limit.saturating_sub(output.len()).min(count);
+        // Exact growth keeps retained allocation within the caller's byte budget.
+        if keep > output.capacity() - output.len() {
+            output
+                .try_reserve_exact(keep)
+                .map_err(std::io::Error::other)?;
+        }
         output.extend_from_slice(&buffer[..keep]);
+        debug_assert!(output.capacity() <= limit);
         exceeded |= keep != count;
     }
     Ok((output, exceeded))
@@ -73,6 +80,17 @@ pub(crate) fn capture_with_input(
 mod tests {
     use super::*;
     use std::process::{Command, Stdio};
+
+    #[test]
+    fn bounded_drain_capacity_never_exceeds_limit() {
+        for limit in [0usize, 1, 8191, 8192, 8193, 16 * 1024 + 3] {
+            let input = vec![b'x'; limit.saturating_add(4096)];
+            let (output, exceeded) = drain_bounded(input.as_slice(), limit).unwrap();
+            assert_eq!(output.len(), limit);
+            assert!(output.capacity() <= limit);
+            assert_eq!(exceeded, input.len() > limit);
+        }
+    }
 
     #[test]
     fn drains_output_while_feeding_large_stdin() {

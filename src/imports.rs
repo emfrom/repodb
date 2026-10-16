@@ -44,12 +44,20 @@ fn bounded_command_output_with_input(
     let reservation = stdout_limit + stderr_limit;
     used.charge(reservation, "subprocess output capture")?;
 
-    let output = process::capture_with_input(child, input, stdout_limit, stderr_limit)?;
+    let output = match process::capture_with_input(child, input, stdout_limit, stderr_limit) {
+        Ok(output) => output,
+        Err(error) => {
+            used.release(reservation);
+            return Err(error.into());
+        }
+    };
     if output.exceeded {
+        drop(output);
         used.release(reservation);
         return Err(format!("subprocess output exceeded its bounded capture (stdout: {stdout_limit} bytes, stderr: {stderr_limit} bytes)").into());
     }
-    used.release(reservation - output.stdout.len() - output.stderr.len());
+    let retained = output.stdout.capacity() + output.stderr.capacity();
+    used.release(reservation - retained);
     Ok((output.status, output.stdout, output.stderr))
 }
 
@@ -905,7 +913,15 @@ mod tests {
         assert!(status.success());
         assert_eq!(stdout, b"1234");
         assert_eq!(stderr, b"abc");
-        assert_eq!(budget.used(), 10, "combined capture fits exactly");
+        assert_eq!(
+            budget.used(),
+            3 + stdout.capacity() + stderr.capacity(),
+            "aggregate accounting retains capture capacities"
+        );
+        assert!(
+            budget.used() <= 10,
+            "capture capacities fit the aggregate limit"
+        );
     }
 
     #[test]

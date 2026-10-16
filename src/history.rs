@@ -48,15 +48,22 @@ fn git_output(
     if output.exceeded {
         return Err(memory_limit());
     }
-    preparation_bytes.charge(output.stdout.len(), "Git output")?;
+    let stdout_capacity = output.stdout.capacity();
+    let stderr_capacity = output.stderr.capacity();
+    preparation_bytes.charge(stdout_capacity, "Git output capacity")?;
+    preparation_bytes.charge(stderr_capacity, "Git stderr capacity")?;
     if !output.status.success() {
-        return Err(format!(
+        let error = format!(
             "git {} failed: {}",
             args.join(" "),
             String::from_utf8_lossy(&output.stderr)
-        )
-        .into());
+        );
+        drop(output);
+        preparation_bytes.release(stdout_capacity + stderr_capacity);
+        return Err(error.into());
     }
+    drop(output.stderr);
+    preparation_bytes.release(stderr_capacity);
     Ok(output.stdout)
 }
 
@@ -117,15 +124,27 @@ fn for_each_tree_record(
     }
     let status = child.wait()?;
     let (stderr, exceeded) = stderr.join().map_err(|_| "git stderr reader panicked")??;
+    let stderr_capacity = stderr.capacity();
+    preparation_bytes.release(MAX_GIT_STDERR_BYTES - stderr_capacity);
     preparation_bytes.release(TREE_READ_BUFFER_BYTES);
-    preparation_bytes.release(MAX_GIT_STDERR_BYTES);
-    result?;
+    if let Err(error) = result {
+        drop(stderr);
+        preparation_bytes.release(stderr_capacity);
+        return Err(error);
+    }
     if exceeded {
+        drop(stderr);
+        preparation_bytes.release(stderr_capacity);
         return Err(memory_limit());
     }
     if !status.success() {
-        return Err(format!("git ls-tree failed: {}", String::from_utf8_lossy(&stderr)).into());
+        let error = format!("git ls-tree failed: {}", String::from_utf8_lossy(&stderr));
+        drop(stderr);
+        preparation_bytes.release(stderr_capacity);
+        return Err(error.into());
     }
+    drop(stderr);
+    preparation_bytes.release(stderr_capacity);
     Ok(())
 }
 
@@ -191,10 +210,13 @@ fn reachable_commits(preparation_bytes: &mut Budget) -> Result<Vec<(String, i64)
         MAX_REFRESH_MEMORY_BYTES,
         preparation_bytes,
     )?;
+    let mut roots_bytes = roots.capacity();
     if let Some(head) = head()? {
         let head = format!("{head}\n");
         preparation_bytes.charge(head.len(), "Git roots")?;
+        roots.try_reserve_exact(head.len())?;
         roots.extend_from_slice(head.as_bytes());
+        roots_bytes += head.len();
     }
     if roots.is_empty() {
         return Ok(vec![]);
@@ -208,8 +230,10 @@ fn reachable_commits(preparation_bytes: &mut Budget) -> Result<Vec<(String, i64)
     let (stdout_limit, stderr_limit) =
         git_capture_limits(MAX_REFRESH_MEMORY_BYTES, preparation_bytes.used())?;
     let output = process::capture_with_input(&mut child, &roots, stdout_limit, stderr_limit)?;
-    preparation_bytes.charge(output.stdout.len(), "Git commit output")?;
-    preparation_bytes.charge(output.stderr.len(), "Git stderr")?;
+    let stdout_capacity = output.stdout.capacity();
+    let stderr_capacity = output.stderr.capacity();
+    preparation_bytes.charge(stdout_capacity, "Git commit output capacity")?;
+    preparation_bytes.charge(stderr_capacity, "Git stderr capacity")?;
     if output.exceeded {
         return Err(memory_limit());
     }
@@ -220,8 +244,7 @@ fn reachable_commits(preparation_bytes: &mut Budget) -> Result<Vec<(String, i64)
         )
         .into());
     }
-    let output_bytes = output.stdout.len() + output.stderr.len();
-    let roots_bytes = roots.len();
+    let output_bytes = stdout_capacity + stderr_capacity;
     let stdout = String::from_utf8(output.stdout)?;
     let mut commits = Vec::new();
     for line in stdout.lines() {
