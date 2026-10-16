@@ -373,16 +373,7 @@ fn git_output(repo: &str, args: &[&str], limit: usize, used: &mut Budget) -> Res
 pub fn refresh(c: &Connection) -> Result<()> {
     init(c)?;
     let mut st = c.prepare("SELECT id,locator,kind FROM imported_sources ORDER BY id")?;
-    let sources = st
-        .query_map([], |r| {
-            Ok((
-                r.get::<_, String>(0)?,
-                r.get::<_, String>(1)?,
-                r.get::<_, String>(2)?,
-            ))
-        })?
-        .collect::<std::result::Result<Vec<_>, _>>()?;
-    drop(st);
+    let mut source_rows = st.query([])?;
     let cfg: Option<(String,String)> = c.query_row("SELECT (SELECT value FROM embedding_config WHERE key='command'),(SELECT value FROM embedding_config WHERE key='model')", [], |r| Ok((r.get(0)?,r.get(1)?))).ok();
     let configured_dimension = c
         .query_row(
@@ -409,7 +400,10 @@ pub fn refresh(c: &Connection) -> Result<()> {
         MAX_REFRESH_MEMORY_BYTES,
         "import refresh exceeds the aggregate preparation-memory budget",
     );
-    for (id, locator, kind) in sources {
+    while let Some(row) = source_rows.next()? {
+        let id: String = row.get(0)?;
+        let locator: String = row.get(1)?;
+        let kind: String = row.get(2)?;
         if kind == "git" {
             let repository = if Path::new(&locator).is_dir() {
                 locator.clone()
@@ -468,7 +462,6 @@ pub fn refresh(c: &Connection) -> Result<()> {
                     &mut refresh_memory_bytes,
                 )?;
                 let mut content = String::new();
-                let mut units = Vec::new();
                 for path in paths.split(|b| *b == 0).filter(|p| !p.is_empty()) {
                     let path = String::from_utf8(path.to_vec())?;
                     let spec = format!("{commit}:{path}");
@@ -508,26 +501,16 @@ pub fn refresh(c: &Connection) -> Result<()> {
                             return Err("embedding dimension mismatch".into());
                         }
                         refresh_memory_bytes.charge(line.len(), "Git indexed unit text")?;
-                        refresh_memory_bytes.charge(
-                            std::mem::size_of::<(String, usize, String, Option<Vec<u8>>)>(),
-                            "Git indexed unit metadata",
-                        )?;
                         refresh_memory_bytes.charge(path.len(), "Git unit path")?;
-                        refresh_memory_bytes.reserve_vec(
-                            &mut units,
-                            1,
-                            "Git indexed-unit vector",
-                        )?;
-                        if let Some(vector) = &vector {
-                            refresh_memory_bytes
-                                .charge(vector.len() * 4, "Git stored vector bytes")?;
+                        let vector_bytes = vector.as_ref().map_or(0, |v| v.len() * 4);
+                        if vector_bytes > 0 {
+                            refresh_memory_bytes.charge(vector_bytes, "Git stored vector bytes")?;
                         }
-                        units.push((
-                            path.clone(),
-                            index + 1,
-                            line.to_owned(),
-                            vector.map(|v| as_bytes(&v)),
-                        ));
+                        tx.execute(
+                            "INSERT OR REPLACE INTO imported_git_units(source_id,commit_id,path,line,text,vector) VALUES(?1,?2,?3,?4,?5,?6)",
+                            params![id, commit, path, index + 1, line, vector.map(|v| as_bytes(&v))],
+                        )?;
+                        refresh_memory_bytes.release(line.len() + path.len() + vector_bytes);
                     }
                 }
                 let fetched_order: i64 = tx.query_row(
@@ -536,9 +519,6 @@ pub fn refresh(c: &Connection) -> Result<()> {
                     |r| r.get(0),
                 )?;
                 tx.execute("INSERT INTO imported_versions(source_id,version,content,fetched_order) VALUES(?1,?2,?3,?4) ON CONFLICT(source_id,version) DO UPDATE SET content=excluded.content,fetched_order=excluded.fetched_order", params![id, commit, content, fetched_order])?;
-                for (path, line, text, vector) in units {
-                    tx.execute("INSERT OR REPLACE INTO imported_git_units(source_id,commit_id,path,line,text,vector) VALUES(?1,?2,?3,?4,?5,?6)", params![id, commit, path, line, text, vector])?;
-                }
             }
             if retention == "latest" {
                 tx.execute("DELETE FROM imported_versions WHERE source_id=?1 AND version NOT IN (SELECT version FROM imported_versions WHERE source_id=?1 ORDER BY fetched_order DESC LIMIT 1)", [&id])?;
@@ -642,29 +622,30 @@ pub fn refresh(c: &Connection) -> Result<()> {
             pages[0].clone()
         };
         let version = checksum(content.as_bytes());
-        let mut units = Vec::new();
-        let mut dimension = None;
-        let line_count = if is_pdf {
-            pages.len()
-        } else {
-            content.lines().count()
-        };
-        refresh_memory_bytes.charge(
-            line_count.saturating_mul(std::mem::size_of::<(usize, Option<usize>, &str)>()),
-            "indexed unit references",
+        let fetched_order: i64 = tx.query_row(
+            "SELECT COALESCE(MAX(fetched_order),0)+1 FROM imported_versions",
+            [],
+            |r| r.get(0),
         )?;
-        let lines = if is_pdf {
-            pages
-                .iter()
-                .enumerate()
-                .map(|(page, text)| (page + 1, Some(page + 1), text.as_str()))
-                .collect::<Vec<_>>()
+        tx.execute(
+            "INSERT INTO imported_versions(source_id,version,content,fetched_order) VALUES(?1,?2,?3,?4) ON CONFLICT(source_id,version) DO UPDATE SET content=excluded.content,fetched_order=excluded.fetched_order",
+            params![id, version, content, fetched_order],
+        )?;
+        let mut dimension = None;
+        let lines: Box<dyn Iterator<Item = (usize, Option<usize>, &str)>> = if is_pdf {
+            Box::new(
+                pages
+                    .iter()
+                    .enumerate()
+                    .map(|(page, text)| (page + 1, Some(page + 1), text.as_str())),
+            )
         } else {
-            content
-                .lines()
-                .enumerate()
-                .map(|(line, text)| (line + 1, None, text))
-                .collect::<Vec<_>>()
+            Box::new(
+                content
+                    .lines()
+                    .enumerate()
+                    .map(|(line, text)| (line + 1, None, text)),
+            )
         };
         for (line, page, text) in lines {
             if text.trim().is_empty() {
@@ -683,30 +664,15 @@ pub fn refresh(c: &Connection) -> Result<()> {
                 dimension = Some(vector.len());
             }
             refresh_memory_bytes.charge(text.len(), "indexed unit text")?;
-            refresh_memory_bytes.charge(
-                std::mem::size_of::<(usize, String, Option<Vec<u8>>, Option<usize>)>(),
-                "indexed unit metadata",
-            )?;
-            if let Some(vector) = &vector {
-                refresh_memory_bytes.charge(vector.len() * 4, "stored vector bytes")?;
+            let vector_bytes = vector.as_ref().map_or(0, |v| v.len() * 4);
+            if vector_bytes > 0 {
+                refresh_memory_bytes.charge(vector_bytes, "stored vector bytes")?;
             }
-            refresh_memory_bytes.reserve_vec(&mut units, 1, "indexed-unit vector")?;
-            units.push((line, text.to_owned(), vector.map(|v| as_bytes(&v)), page));
-        }
-        let fetched_order: i64 = tx.query_row(
-            "SELECT COALESCE(MAX(fetched_order),0)+1 FROM imported_versions",
-            [],
-            |r| r.get(0),
-        )?;
-        tx.execute(
-            "INSERT INTO imported_versions(source_id,version,content,fetched_order) VALUES(?1,?2,?3,?4) ON CONFLICT(source_id,version) DO UPDATE SET content=excluded.content,fetched_order=excluded.fetched_order",
-            params![id, version, content, fetched_order],
-        )?;
-        for (line, text, vector, page) in units {
             tx.execute(
                 "INSERT OR REPLACE INTO imported_units(source_id,version,line,text,vector,page) VALUES(?1,?2,?3,?4,?5,?6)",
-                params![id, version, line, text, vector, page],
+                params![id, version, line, text, vector.map(|v| as_bytes(&v)), page],
             )?;
+            refresh_memory_bytes.release(text.len() + vector_bytes);
         }
         if retention == "latest" {
             tx.execute(
@@ -719,6 +685,8 @@ pub fn refresh(c: &Connection) -> Result<()> {
             )?;
         }
     }
+    drop(source_rows);
+    drop(st);
     tx.commit()?;
     Ok(())
 }

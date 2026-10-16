@@ -106,6 +106,25 @@ fn imported_files_refresh_with_references_and_both_retention_policies() {
 }
 
 #[test]
+fn imported_files_keep_line_references_for_many_incrementally_inserted_units() {
+    let repo = repository();
+    let root = repo.path();
+    let file = root.join("many-lines.txt");
+    let input = (1..=256)
+        .map(|line| format!("stream marker line {line}\n"))
+        .collect::<String>();
+    fs::write(&file, input).unwrap();
+    let locator = file.to_string_lossy().into_owned();
+    assert!(run(root, &["import", &locator]).0);
+    assert!(run(root, &["refresh"]).0);
+
+    let results = search_json(root, &["marker"]);
+    assert_eq!(results.len(), 256);
+    assert!(results.iter().any(|result| result["line_start"] == 1));
+    assert!(results.iter().any(|result| result["line_start"] == 256));
+}
+
+#[test]
 fn local_file_larger_than_previous_limit_refreshes() {
     let repo = repository();
     let root = repo.path();
