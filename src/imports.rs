@@ -202,23 +202,65 @@ fn checksum(bytes: &[u8]) -> String {
     state.iter().map(|word| format!("{word:08x}")).collect()
 }
 
-fn cache_pages(cache: &Path, max_bytes: usize) -> Result<Option<(Vec<String>, usize)>> {
-    match fs::File::open(cache) {
-        Ok(file) => match read_bounded(file, max_bytes, "PDF conversion cache") {
-            Ok(bytes) => match serde_json::from_slice(&bytes) {
-                Ok(pages) => Ok(Some((pages, bytes.len()))),
-                Err(_) => {
-                    fs::remove_file(cache)?;
-                    Ok(None)
-                }
-            },
-            Err(_) => {
-                fs::remove_file(cache)?;
-                Ok(None)
-            }
-        },
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
-        Err(error) => Err(error.into()),
+fn cache_pages(cache: &Path, max_bytes: usize, used: &mut Budget) -> Result<Option<Vec<String>>> {
+    let file = match fs::File::open(cache) {
+        Ok(file) => file,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error.into()),
+    };
+    let file_size = file.metadata()?.len() as usize;
+    if file_size > max_bytes {
+        return Err("PDF cache input exceeds the remaining refresh-memory budget; reduce indexed data and retry".into());
+    }
+    let input_reservation = max_bytes.min(file_size.max(64 * 1024));
+    used.charge(input_reservation, "PDF cache input reservation")?;
+    let bytes = match read_bounded(file, max_bytes, "PDF conversion cache") {
+        Ok(bytes) => bytes,
+        Err(_) => {
+            used.release(input_reservation);
+            fs::remove_file(cache)?;
+            return Ok(None);
+        }
+    };
+    let input_capacity = bytes.capacity();
+    if input_capacity > input_reservation {
+        return Err("PDF cache input capacity exceeded its reservation".into());
+    }
+    used.release(input_reservation - input_capacity);
+
+    // Each JSON string needs at least two bytes, and Vec growth may reserve
+    // nearly twice the number of decoded pages. Reserve before serde allocates.
+    let page_bound = bytes.len() / 2 + 1;
+    let page_reservation = page_bound
+        .checked_mul(2)
+        .and_then(|count| count.checked_mul(std::mem::size_of::<String>()))
+        .ok_or("PDF cache page capacity exceeds refresh budget")?;
+    let string_reservation = bytes
+        .len()
+        .checked_mul(2)
+        .ok_or("PDF cache string capacity exceeds refresh budget")?;
+    let reservation = page_reservation
+        .checked_add(string_reservation)
+        .ok_or("PDF cache decoded capacity exceeds refresh budget")?;
+    if let Err(error) = used.charge(reservation, "PDF cache decoded capacity") {
+        used.release(input_capacity);
+        return Err(error);
+    }
+    match serde_json::from_slice::<Vec<String>>(&bytes) {
+        Ok(pages) => {
+            let actual = pages.capacity() * std::mem::size_of::<String>()
+                + pages.iter().map(String::capacity).sum::<usize>();
+            used.release(reservation - actual);
+            let bytes_capacity = bytes.capacity();
+            drop(bytes);
+            used.release(bytes_capacity);
+            Ok(Some(pages))
+        }
+        Err(_) => {
+            used.release(reservation + input_capacity);
+            fs::remove_file(cache)?;
+            Ok(None)
+        }
     }
 }
 
@@ -572,11 +614,11 @@ pub fn refresh(c: &Connection) -> Result<()> {
         let pages = if is_pdf {
             let source_version = checksum(&source_bytes);
             let cache = cache_dir.join(format!("{source_version}.json"));
-            if let Some((pages, cache_bytes)) = cache_pages(
+            if let Some(pages) = cache_pages(
                 &cache,
-                (refresh_memory_bytes.remaining() / 2).min(64 * 1024 * 1024),
+                refresh_memory_bytes.remaining().min(64 * 1024 * 1024),
+                &mut refresh_memory_bytes,
             )? {
-                refresh_memory_bytes.charge(cache_bytes, "PDF cache representation")?;
                 if pages.len() > MAX_PDF_PAGES {
                     return Err(format!(
                         "PDF {locator} exceeds the {MAX_PDF_PAGES}-page import limit"
@@ -904,7 +946,7 @@ pub fn search(c: &Connection, query: &str, mode: &str, limit: usize) -> Result<V
 
 #[cfg(test)]
 mod tests {
-    use super::{bounded_command_output_with_input, checksum};
+    use super::{bounded_command_output_with_input, cache_pages, checksum};
     use crate::budget::Budget;
     use std::process::{Command, Stdio};
 
@@ -958,6 +1000,26 @@ mod tests {
             7,
             "rejected output must release its bounded capture reservation"
         );
+    }
+
+    #[test]
+    fn many_empty_cached_pages_are_rejected_before_deserialization_and_preserved() {
+        let path =
+            std::env::temp_dir().join(format!("repodb-cache-budget-{}.json", std::process::id()));
+        let json = format!("[{}]", vec!["\"\""; 1000].join(","));
+        std::fs::write(&path, &json).unwrap();
+        let mut budget = Budget::new(70_000, "refresh limit exceeded");
+
+        let error = cache_pages(&path, 64 * 1024, &mut budget).unwrap_err();
+
+        assert!(
+            error
+                .to_string()
+                .contains("aggregate preparation-memory budget")
+        );
+        assert!(path.exists(), "a valid over-budget cache must be preserved");
+        assert_eq!(budget.used(), 0, "failed reservations must be released");
+        std::fs::remove_file(path).unwrap();
     }
 
     #[test]
