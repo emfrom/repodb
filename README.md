@@ -16,6 +16,11 @@ repodb search 'question' --semantic --include-commit ID1 --include-commit ID2
 repodb search 'question' --combined --all-history --exclude-commit ID3
 ```
 
+Search does not refresh the index. Run `repodb refresh` on demand after ref
+changes or when indexed content may be stale. An optional post-commit hook is
+provided in `hooks/post-commit`; enable it only by explicitly configuring
+this repository's `core.hooksPath` to `hooks`.
+
 `--current-worktree` explicitly selects the default scope: the checked-out
 **commit**, never staged, unstaged, or untracked content. Checking out an already
 indexed commit changes that scope without rebuilding. A HEAD not in the snapshot
