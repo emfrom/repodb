@@ -50,6 +50,10 @@ Exact search remains a case-insensitive literal substring search. Embedding
 search requires `reembed [--command PATH] [--model ID]`; `--semantic-limit N`
 (default 20) limits semantic candidates, not exact matches in combined search.
 
+### Imported sources
+
+Register one local file or an HTTP(S) URL at a time with `repodb import PATH_OR_URL`; directories are rejected. `repodb retention latest` (the default) keeps only the newest fetched version per source, while `repodb retention all` retains prior versions. `repodb refresh` explicitly reads registered files and fetches registered URLs; searches never fetch. Imported results identify the original path or URL and a one-based line range. Semantic imported search uses the repository's configured embedding command.
+
 ### References, duplicates, and ordering
 
 JSON results contain `commit_id`, `blob_id`, `path`, `line_start`, `line_end`,

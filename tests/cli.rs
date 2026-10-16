@@ -60,6 +60,85 @@ fn repository() -> tempfile::TempDir {
 }
 
 #[test]
+fn imported_files_refresh_with_references_and_both_retention_policies() {
+    let repo = repository();
+    let root = repo.path();
+    assert!(run(root, &["init"]).0);
+    let file = root.join("external.txt");
+    fs::write(&file, "imported first marker\n").unwrap();
+    let file_string = file.to_string_lossy().into_owned();
+    assert!(run(root, &["import", &file_string]).0);
+    assert!(run(root, &["refresh"]).0);
+    let first = search_json(root, &["marker"]);
+    assert!(
+        first
+            .iter()
+            .any(|x| x["path"] == file_string && x["line_start"] == 1),
+        "{first:?}"
+    );
+    fs::write(&file, "imported second marker\n").unwrap();
+    assert!(
+        search_json(root, &["second"]).is_empty(),
+        "search must not fetch sources"
+    );
+    assert!(run(root, &["retention", "all"]).0);
+    assert!(run(root, &["refresh"]).0);
+    assert!(!search_json(root, &["first"]).is_empty());
+    assert!(!search_json(root, &["second"]).is_empty());
+    fs::write(&file, "imported third marker\n").unwrap();
+    assert!(run(root, &["refresh"]).0);
+    assert!(run(root, &["retention", "latest"]).0);
+    assert!(
+        !search_json(root, &["first"])
+            .iter()
+            .any(|x| x["path"] == file_string)
+    );
+    assert!(
+        !search_json(root, &["second"])
+            .iter()
+            .any(|x| x["path"] == file_string)
+    );
+    assert!(!search_json(root, &["third"]).is_empty());
+    let directory = root.to_string_lossy().into_owned();
+    assert!(!run(root, &["import", &directory]).0);
+}
+
+#[test]
+fn imported_url_and_semantic_search_use_loopback_and_fake_embeddings() {
+    use std::{
+        io::{Read, Write},
+        net::TcpListener,
+    };
+    let repo = repository();
+    let root = repo.path();
+    let fake = root.join("fake-import-embedder");
+    fs::write(&fake, "#!/bin/sh\ncat >/dev/null\nprintf '[1.0, 0.0]'\n").unwrap();
+    use std::os::unix::fs::PermissionsExt;
+    fs::set_permissions(&fake, fs::Permissions::from_mode(0o755)).unwrap();
+    assert!(run(root, &["init"]).0);
+    assert!(run(root, &["reembed", "--command", fake.to_str().unwrap()]).0);
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = std::thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        let mut request = [0; 1024];
+        let _ = stream.read(&mut request);
+        stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 23\r\nConnection: close\r\n\r\nurl imported semantic!\n").unwrap();
+    });
+    let url = format!("http://{address}/source.txt");
+    assert!(run(root, &["import", &url]).0);
+    assert!(run(root, &["refresh"]).0);
+    server.join().unwrap();
+    let results = search_json(root, &["semantic", "--semantic"]);
+    assert!(
+        results
+            .iter()
+            .any(|x| x["path"] == url && x["line_start"] == 1),
+        "{results:?}"
+    );
+}
+
+#[test]
 fn init_refresh_search_and_json_are_repository_local_and_exact() {
     let repo = repository();
     let root = repo.path();

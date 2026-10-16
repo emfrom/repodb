@@ -9,6 +9,7 @@ use std::{
 };
 
 mod history;
+mod imports;
 mod segmentation;
 
 type Result<T> = std::result::Result<T, Box<dyn Error>>;
@@ -267,7 +268,23 @@ fn execute() -> Result<()> {
             if a.next().is_some() {
                 return Err("unexpected arguments".into());
             }
-            history::refresh(&mut open_db()?)?
+            let mut db = open_db()?;
+            history::refresh(&mut db)?;
+            imports::refresh(&db)?;
+        }
+        "import" => {
+            let locator = a.next().ok_or("import requires one local file or URL")?;
+            if a.next().is_some() {
+                return Err("import accepts one file or URL; directories are not supported".into());
+            }
+            imports::register(&open_db()?, &locator)?;
+        }
+        "retention" => {
+            let value = a.next().ok_or("retention requires latest or all")?;
+            if a.next().is_some() {
+                return Err("unexpected arguments".into());
+            }
+            imports::set_retention(&open_db()?, &value)?;
         }
         "reembed" => {
             let mut command = env::var("HOME").map(|h| format!("{h}/bin/generate_embeddings"))?;
@@ -322,7 +339,7 @@ fn execute() -> Result<()> {
             // Scope, model configuration and results belong to one read snapshot.
             let c = connection.transaction()?;
             let commits = scope.resolve(&c)?;
-            let result = if history::is_current(&c)? {
+            let mut result = if history::is_current(&c)? {
                 history::search(&c, &q, mode, limit, &commits)?
             } else if mode == "exact" {
                 exact(&c, &q, &commits)?
@@ -354,6 +371,9 @@ fn execute() -> Result<()> {
             } else {
                 semantic(&c, &q, limit, &commits)?
             };
+            if mode == "exact" || mode == "semantic" {
+                result.extend(imports::search(&c, &q, mode, limit)?);
+            }
             if json {
                 println!("{}", serde_json::to_string_pretty(&result)?)
             } else {
