@@ -99,10 +99,11 @@ fn for_each_tree_record(
                     .position(|byte| *byte == 0)
                     .map_or(available.len(), |n| n + 1);
                 let record_bytes = end - usize::from(available[end - 1] == 0);
-                if record_bytes > preparation_bytes.remaining() {
-                    return Err(memory_limit());
-                }
-                preparation_bytes.charge(record_bytes, "Git tree record")?;
+                preparation_bytes.reserve_vec(
+                    &mut record,
+                    record_bytes,
+                    "Git tree record capacity",
+                )?;
                 record.extend_from_slice(&available[..record_bytes]);
                 let terminated = end > record_bytes;
                 stdout.consume(end);
@@ -114,7 +115,7 @@ fn for_each_tree_record(
                 break;
             }
             let visit_result = visit(&record, preparation_bytes);
-            preparation_bytes.release(record.len());
+            preparation_bytes.release(record.capacity());
             visit_result?;
         }
         Ok(())
@@ -191,15 +192,32 @@ struct Occurrence {
 }
 
 fn head() -> Result<Option<String>> {
-    let o = Command::new("git")
+    let mut preparation_bytes =
+        Budget::new(MAX_REFRESH_MEMORY_BYTES, "history refresh limit exceeded");
+    let (stdout_limit, stderr_limit) = git_capture_limits(128, preparation_bytes.used())?;
+    let mut child = Command::new("git")
         .args(["rev-parse", "--verify", "--quiet", "HEAD"])
-        .output()?;
-    if o.status.success() {
-        Ok(Some(String::from_utf8(o.stdout)?.trim().to_owned()))
-    } else if o.status.code() == Some(1) {
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()?;
+    let output = process::capture(&mut child, stdout_limit, stderr_limit)?;
+    if output.exceeded {
+        return Err(memory_limit());
+    }
+    let stdout_capacity = output.stdout.capacity();
+    let stderr_capacity = output.stderr.capacity();
+    preparation_bytes.charge(stdout_capacity, "HEAD stdout capacity")?;
+    preparation_bytes.charge(stderr_capacity, "HEAD stderr capacity")?;
+    if output.status.success() {
+        Ok(Some(String::from_utf8(output.stdout)?.trim().to_owned()))
+    } else if output.status.code() == Some(1) {
         Ok(None)
     } else {
-        Err(format!("cannot read HEAD: {}", String::from_utf8_lossy(&o.stderr)).into())
+        Err(format!(
+            "cannot read HEAD: {}",
+            String::from_utf8_lossy(&output.stderr)
+        )
+        .into())
     }
 }
 
@@ -249,8 +267,8 @@ fn reachable_commits(preparation_bytes: &mut Budget) -> Result<Vec<(String, i64)
     let mut commits = Vec::new();
     for line in stdout.lines() {
         let (timestamp, id) = line.split_once(' ').ok_or("invalid git commit record")?;
-        let commit_bytes = id.len() + std::mem::size_of::<(String, i64)>();
-        preparation_bytes.charge(commit_bytes, "parsed commit records")?;
+        preparation_bytes.charge(id.len(), "parsed commit identifiers")?;
+        preparation_bytes.reserve_vec(&mut commits, 1, "parsed commit vector")?;
         commits.push((id.to_owned(), timestamp.parse()?));
     }
     // The captured bytes and parsed records coexist during parsing. Retain the
@@ -368,6 +386,21 @@ mod tests {
     }
 
     #[test]
+    fn tree_record_vector_capacity_is_charged_before_growth_and_released() {
+        let mut budget = Budget::new(8, "history refresh limit exceeded");
+        let mut record = Vec::<u8>::new();
+        budget.reserve_vec(&mut record, 5, "tree record").unwrap();
+        assert!(record.capacity() >= 5);
+        assert_eq!(budget.used(), record.capacity());
+        record.resize(5, 0);
+        let used = budget.used();
+        assert!(budget.reserve_vec(&mut record, 4, "tree record").is_err());
+        assert_eq!(budget.used(), used, "failed growth rolls back reservation");
+        budget.release(record.capacity());
+        assert_eq!(budget.used(), 0);
+    }
+
+    #[test]
     fn tree_record_budget_caps_append_and_rolls_back_after_visit() {
         let mut budget = Budget::new(5, "history refresh limit exceeded");
         budget.charge(3, "tree record").unwrap();
@@ -468,12 +501,10 @@ pub fn refresh(c: &mut Connection) -> Result<()> {
                 }
                 let path = &record[tab + 1..];
                 preparation_bytes.charge(
-                    path.len()
-                        + commit_id.len()
-                        + blob_id.len()
-                        + std::mem::size_of::<Occurrence>(),
-                    "Git occurrence records",
+                    path.len() + commit_id.len() + blob_id.len(),
+                    "Git occurrence payloads",
                 )?;
+                preparation_bytes.reserve_vec(&mut occurrences, 1, "Git occurrence vector")?;
                 occurrences.push(Occurrence {
                     commit_id: commit_id.clone(),
                     blob_id,
@@ -500,8 +531,16 @@ pub fn refresh(c: &mut Connection) -> Result<()> {
                     staging_error = Some(format!("history refresh limit exceeded: indexed units must fit within {MAX_UNITS} units and {MAX_UNIT_TEXT_BYTES} text bytes; reduce indexed history and retry").into());
                     return false;
                 }
-                let charge = unit.text.len() + blob_id.len() + std::mem::size_of::<Unit>();
-                if let Err(error) = preparation_bytes.charge(charge, "staged history units") {
+                let charge = unit.text.len() + blob_id.len();
+                if let Err(error) = preparation_bytes.charge(charge, "staged history unit payloads")
+                {
+                    staging_error = Some(error);
+                    return false;
+                }
+                if let Err(error) =
+                    preparation_bytes.reserve_vec(&mut units, 1, "staged history unit vector")
+                {
+                    preparation_bytes.release(charge);
                     staging_error = Some(error);
                     return false;
                 }

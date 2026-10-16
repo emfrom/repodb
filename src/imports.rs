@@ -411,7 +411,13 @@ pub fn refresh(c: &Connection) -> Result<()> {
                 &mut refresh_memory_bytes,
             )?;
             let commits = String::from_utf8(commits_bytes)?;
-            let mut commits = commits.lines().map(str::to_owned).collect::<Vec<_>>();
+            let mut commit_ids = Vec::new();
+            for line in commits.lines() {
+                refresh_memory_bytes.charge(line.len(), "Git commit identifiers")?;
+                refresh_memory_bytes.reserve_vec(&mut commit_ids, 1, "Git commit vector")?;
+                commit_ids.push(line.to_owned());
+            }
+            let mut commits = commit_ids;
             let selected = if retention == "latest" {
                 commits.into_iter().take(1).collect()
             } else {
@@ -473,6 +479,11 @@ pub fn refresh(c: &Connection) -> Result<()> {
                             "Git indexed unit metadata",
                         )?;
                         refresh_memory_bytes.charge(path.len(), "Git unit path")?;
+                        refresh_memory_bytes.reserve_vec(
+                            &mut units,
+                            1,
+                            "Git indexed-unit vector",
+                        )?;
                         if let Some(vector) = &vector {
                             refresh_memory_bytes
                                 .charge(vector.len() * 4, "Git stored vector bytes")?;
@@ -677,6 +688,7 @@ pub fn refresh(c: &Connection) -> Result<()> {
             if let Some(vector) = &vector {
                 refresh_memory_bytes.charge(vector.len() * 4, "stored vector bytes")?;
             }
+            refresh_memory_bytes.reserve_vec(&mut units, 1, "indexed-unit vector")?;
             units.push((line, text.to_owned(), vector.map(|v| as_bytes(&v)), page));
         }
         let fetched_order: i64 = tx.query_row(
