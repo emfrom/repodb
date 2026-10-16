@@ -134,7 +134,20 @@ fn imported_pdfs_preserve_pages_cache_conversions_and_refresh_versions() {
     assert!(run_with_env(root, &["refresh"], &env).0);
     assert!(run_with_env(root, &["refresh"], &env).0);
     assert_eq!(fs::read_to_string(&calls).unwrap(), "called");
-    assert!(root.join(".git/repodb-cache").is_dir());
+    let cache_dir = root.join(".git/repodb-cache");
+    assert!(cache_dir.is_dir());
+    let cache = fs::read_dir(&cache_dir)
+        .unwrap()
+        .next()
+        .unwrap()
+        .unwrap()
+        .path();
+    fs::write(&cache, b"{partial").unwrap();
+    assert!(run_with_env(root, &["refresh"], &env).0);
+    assert_eq!(fs::read_to_string(&calls).unwrap(), "calledcalled");
+    assert!(run_with_env(root, &["refresh"], &env).0);
+    assert_eq!(fs::read_to_string(&calls).unwrap(), "calledcalled");
+    assert!(serde_json::from_slice::<Vec<String>>(&fs::read(&cache).unwrap()).is_ok());
     let page_two = search_json(root, &["second page marker"]);
     assert_eq!(page_two[0]["path"], pdf_string);
     assert_eq!(page_two[0]["page"], 2);
@@ -144,7 +157,7 @@ fn imported_pdfs_preserve_pages_cache_conversions_and_refresh_versions() {
     fs::write(&pdf, b"%PDF-test changed source").unwrap();
     fs::write(&text, "updated page marker\x0c").unwrap();
     assert!(run_with_env(root, &["refresh"], &env).0);
-    assert_eq!(fs::read_to_string(&calls).unwrap(), "calledcalled");
+    assert_eq!(fs::read_to_string(&calls).unwrap(), "calledcalledcalled");
     assert!(!search_json(root, &["first page text"]).is_empty());
     assert!(!search_json(root, &["updated page marker"]).is_empty());
     assert!(run(root, &["retention", "latest"]).0);
