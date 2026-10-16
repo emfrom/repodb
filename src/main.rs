@@ -58,8 +58,30 @@ fn open_db() -> Result<Connection> {
     c.execute_batch("CREATE TABLE IF NOT EXISTS indexed_files(path TEXT PRIMARY KEY NOT NULL,commit_id TEXT NOT NULL,content TEXT NOT NULL); CREATE TABLE IF NOT EXISTS embeddings(path TEXT NOT NULL,line INTEGER NOT NULL,text TEXT NOT NULL,commit_id TEXT NOT NULL,vector BLOB NOT NULL,PRIMARY KEY(path,line)); CREATE TABLE IF NOT EXISTS embedding_config(key TEXT PRIMARY KEY,value TEXT NOT NULL);")?;
     Ok(c)
 }
+fn resolved_executable(command: &str) -> Option<PathBuf> {
+    let path = PathBuf::from(command);
+    if path.components().count() > 1 {
+        return path.canonicalize().ok();
+    }
+    env::split_paths(&env::var_os("PATH")?).find_map(|dir| {
+        let candidate = dir.join(&path);
+        candidate
+            .is_file()
+            .then(|| candidate.canonicalize().ok())
+            .flatten()
+    })
+}
+
+fn is_builtin_embedding_command(command: &str) -> bool {
+    let Ok(home) = env::var("HOME") else {
+        return false;
+    };
+    let builtin = PathBuf::from(home).join("bin/generate_embeddings");
+    matches!((builtin.canonicalize().ok(), resolved_executable(command)), (Some(a), Some(b)) if a == b)
+}
+
 fn embed(command: &str, model: &str, text: &str) -> Result<Vec<f32>> {
-    if command.ends_with("/generate_embeddings") && model != "all-MiniLM-L6-v2" {
+    if is_builtin_embedding_command(command) && model != "all-MiniLM-L6-v2" {
         return Err(
             "the built-in generate_embeddings command only supports all-MiniLM-L6-v2".into(),
         );
