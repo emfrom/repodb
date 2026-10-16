@@ -106,6 +106,70 @@ fn imported_files_refresh_with_references_and_both_retention_policies() {
 }
 
 #[test]
+fn oversized_local_file_is_rejected_without_replacing_imported_snapshot() {
+    let repo = repository();
+    let root = repo.path();
+    assert!(run(root, &["init"]).0);
+    let file = root.join("bounded.txt");
+    fs::write(&file, "preserved snapshot marker\n").unwrap();
+    let locator = file.to_string_lossy().into_owned();
+    assert!(run(root, &["import", &locator]).0);
+    assert!(run(root, &["refresh"]).0);
+    fs::File::options()
+        .write(true)
+        .open(&file)
+        .unwrap()
+        .set_len(10 * 1024 * 1024 + 1)
+        .unwrap();
+
+    let (success, _) = run(root, &["refresh"]);
+    assert!(!success, "oversized local files must fail refresh");
+    assert_eq!(search_json(root, &["preserved snapshot marker"]).len(), 1);
+}
+
+#[test]
+fn oversized_pdf_conversion_does_not_replace_imported_snapshot() {
+    use std::os::unix::fs::PermissionsExt;
+    let repo = repository();
+    let root = repo.path();
+    assert!(run(root, &["init"]).0);
+    let text = root.join("version.txt");
+    fs::write(&text, "previous atomic version marker\n").unwrap();
+    let text_locator = text.to_string_lossy().into_owned();
+    let pdf = root.join("oversized.pdf");
+    fs::write(&pdf, b"%PDF-test").unwrap();
+    let pdf_locator = pdf.to_string_lossy().into_owned();
+    assert!(run(root, &["import", &text_locator]).0);
+    assert!(run(root, &["import", &pdf_locator]).0);
+
+    let bin = root.join("bin");
+    fs::create_dir(&bin).unwrap();
+    let converter = bin.join("pdftotext");
+    fs::write(
+        &converter,
+        "#!/bin/sh\ncat >/dev/null\nif [ \"$PDF_BIG\" = 1 ]; then dd if=/dev/zero bs=1048576 count=11 2>/dev/null; else printf 'cached page'; fi\n",
+    )
+    .unwrap();
+    fs::set_permissions(&converter, fs::Permissions::from_mode(0o755)).unwrap();
+    let path = format!("{}:{}", bin.display(), std::env::var("PATH").unwrap());
+    assert!(run_with_env(root, &["refresh"], &[("PATH", path.as_str())]).0);
+    fs::write(&pdf, b"%PDF-changed input").unwrap();
+    fs::write(&text, "uncommitted replacement marker\n").unwrap();
+
+    let (success, _) = run_with_env(
+        root,
+        &["refresh"],
+        &[("PATH", path.as_str()), ("PDF_BIG", "1")],
+    );
+    assert!(!success, "oversized PDF output must fail refresh");
+    assert_eq!(
+        search_json(root, &["previous atomic version marker"]).len(),
+        1
+    );
+    assert!(search_json(root, &["uncommitted replacement marker"]).is_empty());
+}
+
+#[test]
 fn imported_git_repository_refreshes_with_identity_commit_path_and_line_refs() {
     let repo = repository();
     let root = repo.path();
@@ -986,6 +1050,32 @@ fn deleted_refs_are_pruned_only_on_refresh_while_shared_reachable_blobs_survive(
     let semantic = search_json(root, &["anything", "--semantic", "--all-history"]);
     assert!(semantic.iter().all(|r| r["commit_id"] == main));
     assert!(semantic.iter().any(|r| r["blob_id"] == shared_blob));
+}
+
+#[test]
+fn oversized_history_blob_is_rejected_without_replacing_searchable_snapshot() {
+    let repo = repository();
+    let root = repo.path();
+    assert!(run(root, &["init"]).0);
+    let before = search_json(root, &["TARGET", "--all-history"]);
+
+    fs::write(root.join("oversized.txt"), vec![b'x'; 32 * 1024 * 1024 + 1]).unwrap();
+    git(root, &["add", "oversized.txt"]);
+    git(root, &["commit", "-qm", "oversized blob"]);
+
+    let output = Command::new(env!("CARGO_BIN_EXE_repodb"))
+        .arg("refresh")
+        .current_dir(root)
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert!(
+        stderr.contains("history refresh limit exceeded"),
+        "{stderr}"
+    );
+    assert_eq!(search_json(root, &["TARGET", "--all-history"]), before);
+    assert!(search_json(root, &["oversized", "--all-history"]).is_empty());
 }
 
 #[test]

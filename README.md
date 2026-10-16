@@ -54,7 +54,7 @@ search requires `reembed [--command PATH] [--model ID]`; `--semantic-limit N`
 
 Register one local file, HTTP(S) URL, local Git repository, or remote Git URL at a time with `repodb import PATH_OR_URL`. Git remotes can use SSH, Git, `file://`, or HTTP(S) URLs ending in `.git`; ordinary directories are rejected. `repodb retention latest` (the default) keeps only the newest fetched version per source, while `repodb retention all` retains prior versions. `repodb refresh` explicitly reads registered files, fetches registered URLs, and updates registered Git repositories; searches never fetch. Imported Git results include the repository locator, commit ID, repository-relative path, and one-based line reference. Semantic imported search uses the repository's configured embedding command.
 
-Importing PDF files requires the `pdftotext` executable (from Poppler) to be installed and available on `PATH` when `repodb refresh` converts a PDF. Extracted PDF text is indexed one unit per page; JSON search results include the one-based `page` number, and human-readable results include the page reference.
+Local imported files and fetched URLs are limited to 10 MiB each. PDF conversion is limited to 10 MiB of extracted UTF-8 text, 100,000 pages, and imports are limited to 100,000 indexed units; exceeding a limit fails refresh with an error and preserves the previously searchable imported snapshot. PDF conversion caches are reused when available. Importing PDF files requires the `pdftotext` executable (from Poppler) to be installed and available on `PATH` when `repodb refresh` converts a PDF; a missing converter is reported with an installation requirement. Extracted PDF text is indexed one unit per page; JSON search results include the one-based `page` number, and human-readable results include the page reference.
 
 ### References, duplicates, and ordering
 
@@ -125,7 +125,12 @@ occurrences of the same blob/kind do not cause repeated embeddings within one
 refresh/reembed. Different kinds may require
 different units and embeddings for the same blob. Refresh currently traverses
 every reachable commit's tree and regenerates vectors for distinct units when a
-model is configured; very large histories can be expensive.
+model is configured. To bound refresh preparation resources, refresh rejects more
+than 100,000 reachable commits, 1,000,000 commit/path occurrences, any individual
+blob over 32 MiB, or distinct Git blobs totaling over 256 MiB. It also rejects
+more than 500,000 indexed units, 256 MiB of unit text, or 256 MiB of generated
+vectors. These limits are checked before publication; reduce indexed history or
+large blobs and retry. A rejected refresh leaves the previous snapshot searchable.
 
 Existing #3 databases (without blob IDs) and version 2/#4 databases (line units)
 remain searchable in their original representation until a successful explicit

@@ -7,7 +7,19 @@ use std::{
     process::{Command, Stdio},
 };
 
-const MAX_URL_BYTES: usize = 10 * 1024 * 1024;
+const MAX_IMPORT_BYTES: usize = 10 * 1024 * 1024;
+const MAX_PDF_TEXT_BYTES: usize = 10 * 1024 * 1024;
+const MAX_IMPORTED_UNITS: usize = 100_000;
+const MAX_PDF_PAGES: usize = 100_000;
+
+fn read_bounded(reader: impl Read, limit: usize, description: &str) -> Result<Vec<u8>> {
+    let mut bytes = Vec::with_capacity(limit.min(64 * 1024));
+    reader.take((limit + 1) as u64).read_to_end(&mut bytes)?;
+    if bytes.len() > limit {
+        return Err(format!("{description} exceeds the {limit}-byte import limit").into());
+    }
+    Ok(bytes)
+}
 
 fn init(c: &Connection) -> Result<()> {
     c.execute_batch("CREATE TABLE IF NOT EXISTS imported_sources(id TEXT PRIMARY KEY, locator TEXT NOT NULL UNIQUE, kind TEXT NOT NULL); CREATE TABLE IF NOT EXISTS imported_versions(source_id TEXT NOT NULL, version TEXT NOT NULL, content TEXT NOT NULL, fetched_order INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(source_id,version)); CREATE TABLE IF NOT EXISTS imported_units(source_id TEXT NOT NULL, version TEXT NOT NULL, line INTEGER NOT NULL, text TEXT NOT NULL, vector BLOB, page INTEGER, PRIMARY KEY(source_id,version,line)); CREATE TABLE IF NOT EXISTS import_config(key TEXT PRIMARY KEY,value TEXT NOT NULL); CREATE TABLE IF NOT EXISTS imported_git_units(source_id TEXT NOT NULL,commit_id TEXT NOT NULL,path TEXT NOT NULL,line INTEGER NOT NULL,text TEXT NOT NULL,vector BLOB,PRIMARY KEY(source_id,commit_id,path,line));")?;
@@ -109,9 +121,15 @@ fn checksum(bytes: &[u8]) -> String {
 }
 
 fn cache_pages(cache: &Path) -> Result<Option<Vec<String>>> {
-    match fs::read(cache) {
-        Ok(bytes) => match serde_json::from_slice(&bytes) {
-            Ok(pages) => Ok(Some(pages)),
+    match fs::File::open(cache) {
+        Ok(file) => match read_bounded(file, 64 * 1024 * 1024, "PDF conversion cache") {
+            Ok(bytes) => match serde_json::from_slice(&bytes) {
+                Ok(pages) => Ok(Some(pages)),
+                Err(_) => {
+                    fs::remove_file(cache)?;
+                    Ok(None)
+                }
+            },
             Err(_) => {
                 fs::remove_file(cache)?;
                 Ok(None)
@@ -360,7 +378,11 @@ pub fn refresh(c: &Connection) -> Result<()> {
             continue;
         }
         let source_bytes = if kind == "file" {
-            fs::read(&locator)?
+            read_bounded(
+                fs::File::open(&locator)?,
+                MAX_IMPORT_BYTES,
+                &format!("local file {locator}"),
+            )?
         } else {
             let mut child = Command::new("curl")
                 .args([
@@ -379,23 +401,17 @@ pub fn refresh(c: &Connection) -> Result<()> {
                 .stdout(Stdio::piped())
                 .stderr(Stdio::piped())
                 .spawn()?;
-            let mut response = Vec::with_capacity(MAX_URL_BYTES.min(64 * 1024));
-            child
-                .stdout
-                .take()
-                .unwrap()
-                .take((MAX_URL_BYTES + 1) as u64)
-                .read_to_end(&mut response)?;
-            let too_large = response.len() > MAX_URL_BYTES;
+            let response = read_bounded(
+                child.stdout.take().unwrap(),
+                MAX_IMPORT_BYTES,
+                &format!("URL response from {locator}"),
+            );
+            let too_large = response.is_err();
             if too_large {
                 let _ = child.kill();
             }
             let output = child.wait_with_output()?;
-            if too_large {
-                return Err(
-                    format!("URL response exceeds {MAX_URL_BYTES} bytes: {locator}").into(),
-                );
-            }
+            let response = response?;
             if !output.status.success() {
                 return Err(format!(
                     "URL fetch failed for {locator}: {}",
@@ -417,6 +433,12 @@ pub fn refresh(c: &Connection) -> Result<()> {
             let source_version = checksum(&source_bytes);
             let cache = cache_dir.join(format!("{source_version}.json"));
             if let Some(pages) = cache_pages(&cache)? {
+                if pages.len() > MAX_PDF_PAGES {
+                    return Err(format!(
+                        "PDF {locator} exceeds the {MAX_PDF_PAGES}-page import limit"
+                    )
+                    .into());
+                }
                 pages
             } else {
                 let mut child = Command::new("pdftotext")
@@ -424,9 +446,19 @@ pub fn refresh(c: &Connection) -> Result<()> {
                     .stdin(Stdio::piped())
                     .stdout(Stdio::piped())
                     .stderr(Stdio::piped())
-                    .spawn()?;
+                    .spawn()
+                    .map_err(|error| format!("PDF imports require pdftotext on PATH: {error}"))?;
                 child.stdin.take().unwrap().write_all(&source_bytes)?;
+                let text_bytes = read_bounded(
+                    child.stdout.take().unwrap(),
+                    MAX_PDF_TEXT_BYTES,
+                    &format!("PDF text extracted from {locator}"),
+                );
+                if text_bytes.is_err() {
+                    let _ = child.kill();
+                }
                 let output = child.wait_with_output()?;
+                let text_bytes = text_bytes?;
                 if !output.status.success() {
                     return Err(format!(
                         "PDF conversion failed for {locator}: {}",
@@ -434,7 +466,13 @@ pub fn refresh(c: &Connection) -> Result<()> {
                     )
                     .into());
                 }
-                let text = String::from_utf8(output.stdout)?;
+                let text = String::from_utf8(text_bytes)?;
+                if text.matches('\u{c}').count() >= MAX_PDF_PAGES {
+                    return Err(format!(
+                        "PDF {locator} exceeds the {MAX_PDF_PAGES}-page import limit"
+                    )
+                    .into());
+                }
                 let pages = text.split('\u{c}').map(str::to_owned).collect::<Vec<_>>();
                 write_cache(&cache, &pages)?;
                 pages
@@ -466,6 +504,12 @@ pub fn refresh(c: &Connection) -> Result<()> {
         for (line, page, text) in lines {
             if text.trim().is_empty() {
                 continue;
+            }
+            if units.len() == MAX_IMPORTED_UNITS {
+                return Err(format!(
+                    "import {locator} exceeds the {MAX_IMPORTED_UNITS}-unit limit"
+                )
+                .into());
             }
             let vector = cfg
                 .as_ref()

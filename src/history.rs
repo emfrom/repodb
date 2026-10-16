@@ -6,6 +6,14 @@ use std::{
     process::{Command, Stdio},
 };
 
+const MAX_COMMITS: usize = 100_000;
+const MAX_OCCURRENCES: usize = 1_000_000;
+const MAX_BLOB_BYTES: u64 = 32 * 1024 * 1024;
+const MAX_TOTAL_BLOB_BYTES: u64 = 256 * 1024 * 1024;
+const MAX_UNITS: usize = 500_000;
+const MAX_UNIT_TEXT_BYTES: usize = 256 * 1024 * 1024;
+const MAX_VECTOR_BYTES: usize = 256 * 1024 * 1024;
+
 pub fn is_current(c: &Connection) -> Result<bool> {
     let version: i64 = c.query_row("PRAGMA user_version", [], |r| r.get(0))?;
     match version {
@@ -71,7 +79,7 @@ fn reachable_commits() -> Result<Vec<(String, i64)>> {
         return Ok(vec![]);
     }
     let mut child = Command::new("git")
-        .args(["rev-list", "--timestamp", "--stdin"])
+        .args(["rev-list", "--timestamp", "--max-count=100001", "--stdin"])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -118,16 +126,23 @@ fn vectors<'a>(
     command: &str,
     model: &str,
     dimension: usize,
+    max_bytes: Option<usize>,
 ) -> Result<(Vec<Vec<u8>>, usize)> {
     let mut dim = dimension;
     let mut out = vec![];
+    let mut total_bytes = 0usize;
     for text in texts {
         let v = embed(command, model, text)?;
         if dim != 0 && dim != v.len() {
             return Err("embedding dimension mismatch".into());
         }
         dim = v.len();
-        out.push(as_bytes(&v));
+        let encoded = as_bytes(&v);
+        total_bytes += encoded.len();
+        if max_bytes.is_some_and(|limit| total_bytes > limit) {
+            return Err(format!("history refresh limit exceeded: embedding vectors exceed {} bytes; reduce indexed history and retry", max_bytes.unwrap()).into());
+        }
+        out.push(encoded);
     }
     Ok((out, dim))
 }
@@ -136,7 +151,11 @@ pub fn refresh(c: &mut Connection) -> Result<()> {
     let version = snapshot_version(c)?;
     is_current(c)?;
     let commits = reachable_commits()?;
+    if commits.len() > MAX_COMMITS {
+        return Err(format!("history refresh limit exceeded: at most {MAX_COMMITS} reachable commits; narrow repository refs and retry").into());
+    }
     let mut blobs = BTreeMap::new();
+    let mut total_blob_bytes = 0u64;
     let mut occurrences = vec![];
     for (commit_id, _) in &commits {
         let tree = git(&["ls-tree", "-r", "-z", "--full-tree", commit_id])?;
@@ -155,6 +174,16 @@ pub fn refresh(c: &mut Connection) -> Result<()> {
             }
             let blob_id = fields[2].to_owned();
             if !blobs.contains_key(&blob_id) {
+                let size: u64 = String::from_utf8(git(&["cat-file", "-s", &blob_id])?)?
+                    .trim()
+                    .parse()?;
+                if size > MAX_BLOB_BYTES {
+                    return Err(format!("history refresh limit exceeded: blob {blob_id} is {size} bytes (maximum {MAX_BLOB_BYTES}); reduce the blob or exclude its commit and retry").into());
+                }
+                total_blob_bytes = total_blob_bytes.saturating_add(size);
+                if total_blob_bytes > MAX_TOTAL_BLOB_BYTES {
+                    return Err(format!("history refresh limit exceeded: distinct Git blobs exceed {MAX_TOTAL_BLOB_BYTES} total bytes; reduce indexed history and retry").into());
+                }
                 let bytes = git(&["cat-file", "blob", &blob_id])?;
                 let blob = if bytes.contains(&0) {
                     Blob {
@@ -174,6 +203,9 @@ pub fn refresh(c: &mut Connection) -> Result<()> {
                     }
                 };
                 blobs.insert(blob_id.clone(), blob);
+            }
+            if occurrences.len() == MAX_OCCURRENCES {
+                return Err(format!("history refresh limit exceeded: at most {MAX_OCCURRENCES} commit/path occurrences; narrow repository refs and retry").into());
             }
             occurrences.push(Occurrence {
                 commit_id: commit_id.clone(),
@@ -202,16 +234,22 @@ pub fn refresh(c: &mut Connection) -> Result<()> {
             }
         }
     }
+    let unit_text_bytes: usize = units.iter().map(|unit| unit.text.len()).sum();
+    if units.len() > MAX_UNITS || unit_text_bytes > MAX_UNIT_TEXT_BYTES {
+        return Err(format!("history refresh limit exceeded: indexed units must fit within {MAX_UNITS} units and {MAX_UNIT_TEXT_BYTES} text bytes; reduce indexed history and retry").into());
+    }
     let cfg = configuration(c)?;
     let embedded = cfg
         .as_ref()
         .map(|(command, model, dim)| {
-            vectors(
+            let (rows, dimension) = vectors(
                 units.iter().map(|unit| unit.text.as_str()),
                 command,
                 model,
                 *dim,
-            )
+                Some(MAX_VECTOR_BYTES),
+            )?;
+            Ok::<_, Box<dyn std::error::Error>>((rows, dimension))
         })
         .transpose()?;
     // Nothing published until Git reads and all embedding generation succeed.
@@ -288,6 +326,7 @@ pub fn reembed(c: &mut Connection, command: &str, model: &str) -> Result<()> {
         command,
         model,
         0,
+        None,
     )?;
     let tx = publish_transaction(c, version)?;
     tx.execute("DELETE FROM unit_embeddings", [])?;
