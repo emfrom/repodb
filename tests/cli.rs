@@ -108,6 +108,44 @@ fn init_refresh_search_and_json_are_repository_local_and_exact() {
 }
 
 #[test]
+fn post_commit_hook_refreshes_and_missing_hook_guidance_is_explicit() {
+    let repo = repository();
+    let root = repo.path();
+    let (ok, _) = run(root, &["init"]);
+    assert!(ok);
+    let hook_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("hooks");
+    git(
+        root,
+        &["config", "core.hooksPath", hook_dir.to_str().unwrap()],
+    );
+    let binary = Path::new(env!("CARGO_BIN_EXE_repodb"));
+    let path = format!(
+        "{}:{}",
+        binary.parent().unwrap().display(),
+        std::env::var("PATH").unwrap()
+    );
+    fs::write(root.join("notes.txt"), "brandnewhookphrase\n").unwrap();
+    git(root, &["add", "notes.txt"]);
+    let output = Command::new("git")
+        .args(["commit", "-qm", "hook update"])
+        .current_dir(root)
+        .env("PATH", path)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let (ok, output) = run(root, &["search", "brandnewhookphrase"]);
+    assert!(ok && output.contains("notes.txt"), "{output}");
+    let guidance =
+        fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("AGENTS.md")).unwrap();
+    assert!(guidance.contains("If the hook or its configuration is missing"));
+    assert!(guidance.contains("ask the user what to do"));
+}
+
+#[test]
 fn semantic_search_uses_configured_fake_embeddings_and_precise_refs() {
     let repo = repository();
     let root = repo.path();
