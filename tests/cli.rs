@@ -87,3 +87,54 @@ fn init_refresh_search_and_json_are_repository_local_and_exact() {
     let (ok, output) = run(root, &["search", "[literal]"]);
     assert!(ok && output.trim().is_empty(), "{output}");
 }
+
+#[test]
+fn uncommitted_phrase_is_not_searchable() {
+    let repo = repository();
+    let root = repo.path();
+
+    let (ok, _) = run(root, &["init"]);
+    assert!(ok);
+    let (ok, _) = run(root, &["refresh"]);
+    assert!(ok);
+
+    // 1. Untracked file
+    let phrase = "UNCOMMITTED_PHRASE";
+    fs::write(root.join("uncommitted.txt"), phrase).unwrap();
+
+    let (ok, output) = run(root, &["search", phrase]);
+    assert!(ok);
+    assert!(
+        output.trim().is_empty(),
+        "Untracked phrase should not be searchable: {output}"
+    );
+
+    // 2. Staged file
+    git(root, &["add", "uncommitted.txt"]);
+    let (ok, output) = run(root, &["search", phrase]);
+    assert!(ok);
+    assert!(
+        output.trim().is_empty(),
+        "Staged phrase should not be searchable: {output}"
+    );
+
+    // 3. Unstaged change
+    fs::write(root.join("notes.txt"), "Unstaged change\n").unwrap();
+    let (ok, output) = run(root, &["search", "Unstaged change"]);
+    assert!(ok);
+    assert!(
+        output.trim().is_empty(),
+        "Unstaged change should not be searchable: {output}"
+    );
+
+    // 4. Committed file
+    git(root, &["commit", "-qm", "add uncommitted"]);
+    let (ok, _) = run(root, &["refresh"]);
+    assert!(ok);
+    let (ok, output) = run(root, &["search", phrase]);
+    assert!(ok);
+    assert!(
+        output.contains("uncommitted.txt"),
+        "Committed phrase should be searchable: {output}"
+    );
+}
