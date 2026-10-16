@@ -106,57 +106,33 @@ fn imported_files_refresh_with_references_and_both_retention_policies() {
 }
 
 #[test]
-fn oversized_local_file_is_rejected_without_replacing_imported_snapshot() {
+fn local_file_larger_than_previous_limit_refreshes() {
     let repo = repository();
     let root = repo.path();
     assert!(run(root, &["init"]).0);
-    let file = root.join("bounded.txt");
-    fs::write(&file, "preserved snapshot marker\n").unwrap();
+    let file = root.join("large.txt");
+    fs::write(&file, "previous searchable marker\n").unwrap();
     let locator = file.to_string_lossy().into_owned();
     assert!(run(root, &["import", &locator]).0);
     assert!(run(root, &["refresh"]).0);
-    fs::File::options()
-        .write(true)
-        .open(&file)
-        .unwrap()
-        .set_len(10 * 1024 * 1024 + 1)
-        .unwrap();
 
+    // Sparse padding exceeds the former 10 MiB input ceiling while keeping the
+    // fixture fast and leaving the searchable marker easy to assert.
+    fs::write(
+        &file,
+        format!("larger file marker\\n{}", "x".repeat(10 * 1024 * 1024)),
+    )
+    .unwrap();
     let (success, _) = run(root, &["refresh"]);
-    assert!(!success, "oversized local files must fail refresh");
-    assert_eq!(search_json(root, &["preserved snapshot marker"]).len(), 1);
-}
-
-#[test]
-fn aggregate_import_inputs_over_budget_do_not_replace_imported_snapshot() {
-    let repo = repository();
-    let root = repo.path();
-    assert!(run(root, &["init"]).0);
-    let preserved = root.join("preserved.txt");
-    fs::write(&preserved, "previous aggregate snapshot marker\n").unwrap();
-    let preserved_locator = preserved.to_string_lossy().into_owned();
-    assert!(run(root, &["import", &preserved_locator]).0);
-    assert!(run(root, &["refresh"]).0);
-
-    for index in 0..26 {
-        let file = root.join(format!("large-{index}.txt"));
-        fs::File::create(&file)
-            .unwrap()
-            .set_len(10 * 1024 * 1024)
-            .unwrap();
-        let locator = file.to_string_lossy().into_owned();
-        assert!(run(root, &["import", &locator]).0);
-    }
-    let (success, _) = run(root, &["refresh"]);
-    assert!(!success, "aggregate imported input must be bounded");
-    assert_eq!(
-        search_json(root, &["previous aggregate snapshot marker"]).len(),
-        1
+    assert!(
+        success,
+        "valid files above the former ceiling should refresh"
     );
+    assert_eq!(search_json(root, &["larger file marker"]).len(), 1);
 }
 
 #[test]
-fn oversized_pdf_conversion_does_not_replace_imported_snapshot() {
+fn pdf_conversion_larger_than_previous_limit_refreshes() {
     use std::os::unix::fs::PermissionsExt;
     let repo = repository();
     let root = repo.path();
@@ -189,16 +165,19 @@ fn oversized_pdf_conversion_does_not_replace_imported_snapshot() {
         &["refresh"],
         &[("PATH", path.as_str()), ("PDF_BIG", "1")],
     );
-    assert!(!success, "oversized PDF output must fail refresh");
+    assert!(
+        success,
+        "valid PDF output above the former ceiling should refresh"
+    );
+    assert!(search_json(root, &["previous atomic version marker"]).is_empty());
     assert_eq!(
-        search_json(root, &["previous atomic version marker"]).len(),
+        search_json(root, &["uncommitted replacement marker"]).len(),
         1
     );
-    assert!(search_json(root, &["uncommitted replacement marker"]).is_empty());
 }
 
 #[test]
-fn noisy_pdf_converter_stderr_is_bounded_and_preserves_imported_snapshot() {
+fn noisy_pdf_converter_stderr_is_drained_without_rejecting_output() {
     use std::os::unix::fs::PermissionsExt;
     let repo = repository();
     let root = repo.path();
@@ -231,12 +210,12 @@ fn noisy_pdf_converter_stderr_is_bounded_and_preserves_imported_snapshot() {
     fs::write(&pdf, b"%PDF-changed source").unwrap();
     fs::write(&preserved, "replacement searchable snapshot marker\n").unwrap();
     let (success, _) = run_with_env(root, &["refresh"], &[("PATH", path.as_str())]);
-    assert!(!success, "oversized converter stderr must fail refresh");
+    assert!(success, "stderr volume should not reject valid PDF output");
+    assert!(search_json(root, &["previous searchable snapshot marker"]).is_empty());
     assert_eq!(
-        search_json(root, &["previous searchable snapshot marker"]).len(),
+        search_json(root, &["replacement searchable snapshot marker"]).len(),
         1
     );
-    assert!(search_json(root, &["replacement searchable snapshot marker"]).is_empty());
 }
 
 #[test]
@@ -498,7 +477,7 @@ fn combined_search_merges_imported_candidates_before_global_limit() {
 }
 
 #[test]
-fn imported_url_fetch_is_bounded_and_restricts_redirect_protocols() {
+fn imported_url_fetch_accepts_data_above_old_limit_and_restricts_redirect_protocols() {
     use std::os::unix::fs::PermissionsExt;
     let repo = repository();
     let root = repo.path();
@@ -516,7 +495,7 @@ fn imported_url_fetch_is_bounded_and_restricts_redirect_protocols() {
     assert!(run(root, &["import", "https://example.invalid/source.txt"]).0);
     let path = format!("{}:{}", bin.display(), std::env::var("PATH").unwrap());
     assert!(
-        !run_with_env(
+        run_with_env(
             root,
             &["refresh"],
             &[("PATH", &path), ("CAPTURE", capture.to_str().unwrap())]
@@ -524,11 +503,7 @@ fn imported_url_fetch_is_bounded_and_restricts_redirect_protocols() {
         .0
     );
     let args = fs::read_to_string(capture).unwrap();
-    for expected in [
-        "--max-time\n30",
-        "--max-filesize\n10485760",
-        "--proto-redir\n=http,https",
-    ] {
+    for expected in ["--max-time\n30", "--proto-redir\n=http,https"] {
         assert!(args.contains(expected), "missing {expected:?} in {args:?}");
     }
 }
@@ -1155,7 +1130,7 @@ fn deleted_refs_are_pruned_only_on_refresh_while_shared_reachable_blobs_survive(
 }
 
 #[test]
-fn noisy_history_git_stderr_is_bounded_and_preserves_the_snapshot() {
+fn noisy_history_git_stderr_is_drained_without_rejecting_output() {
     use std::os::unix::fs::PermissionsExt;
     let repo = repository();
     let root = repo.path();
@@ -1181,12 +1156,15 @@ fn noisy_history_git_stderr_is_bounded_and_preserves_the_snapshot() {
     fs::set_permissions(&wrapper, fs::Permissions::from_mode(0o755)).unwrap();
     let path = format!("{}:{}", bin.display(), std::env::var("PATH").unwrap());
     let (success, _) = run_with_env(root, &["refresh"], &[("PATH", path.as_str())]);
-    assert!(!success, "oversized Git stderr must fail refresh");
+    assert!(success, "stderr volume should not reject valid Git output");
     assert_eq!(
         search_json(root, &["previous history marker", "--all-history"]).len(),
         1
     );
-    assert!(search_json(root, &["replacement history marker", "--all-history"]).is_empty());
+    assert_eq!(
+        search_json(root, &["replacement history marker", "--all-history"]).len(),
+        1
+    );
 }
 
 #[test]
@@ -1219,13 +1197,15 @@ fn large_history_tree_refreshes_incrementally_and_keeps_the_snapshot_atomic() {
 }
 
 #[test]
-fn oversized_history_blob_is_rejected_without_replacing_searchable_snapshot() {
+fn history_blob_larger_than_previous_limit_refreshes() {
     let repo = repository();
     let root = repo.path();
     assert!(run(root, &["init"]).0);
     let before = search_json(root, &["TARGET", "--all-history"]);
 
-    fs::write(root.join("oversized.txt"), vec![b'x'; 32 * 1024 * 1024 + 1]).unwrap();
+    let mut large_blob = b"oversized searchable marker\\n".to_vec();
+    large_blob.extend(std::iter::repeat_n(b'x', 32 * 1024 * 1024 + 1));
+    fs::write(root.join("oversized.txt"), large_blob).unwrap();
     git(root, &["add", "oversized.txt"]);
     git(root, &["commit", "-qm", "oversized blob"]);
 
@@ -1234,14 +1214,14 @@ fn oversized_history_blob_is_rejected_without_replacing_searchable_snapshot() {
         .current_dir(root)
         .output()
         .unwrap();
-    assert!(!output.status.success());
-    let stderr = String::from_utf8(output.stderr).unwrap();
-    assert!(
-        stderr.contains("history refresh limit exceeded"),
-        "{stderr}"
+    assert!(output.status.success(), "large valid blob should refresh");
+    let after = search_json(root, &["TARGET", "--all-history"]);
+    assert_eq!(after.len(), before.len());
+    assert_eq!(after[0]["text"], before[0]["text"]);
+    assert_eq!(
+        search_json(root, &["oversized searchable marker", "--all-history"]).len(),
+        1
     );
-    assert_eq!(search_json(root, &["TARGET", "--all-history"]), before);
-    assert!(search_json(root, &["oversized", "--all-history"]).is_empty());
 }
 
 #[test]

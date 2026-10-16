@@ -1,7 +1,7 @@
 use crate::Result;
 
-// Bounds RepoDB-owned refresh preparation payloads across history and imports.
-pub(crate) const MAX_REFRESH_MEMORY_BYTES: usize = 256 * 1024 * 1024;
+// Accounts retained preparation allocations without imposing an application-level size cap.
+pub(crate) const MAX_REFRESH_MEMORY_BYTES: usize = usize::MAX;
 
 pub(crate) struct Budget {
     limit: usize,
@@ -19,8 +19,17 @@ impl Budget {
     }
 
     pub(crate) fn charge(&mut self, bytes: usize, purpose: &str) -> Result<()> {
-        self.used = self.used.checked_add(bytes).filter(|used| *used <= self.limit)
-            .ok_or_else(|| -> Box<dyn std::error::Error> { format!("{} exceeds the {}-byte aggregate preparation-memory budget while preparing {purpose}; reduce indexed data and retry", self.description, self.limit).into() })?;
+        self.used = self
+            .used
+            .checked_add(bytes)
+            .filter(|used| *used <= self.limit)
+            .ok_or_else(|| -> Box<dyn std::error::Error> {
+                format!(
+                    "{} size overflow while preparing {purpose}",
+                    self.description
+                )
+                .into()
+            })?;
         Ok(())
     }
 

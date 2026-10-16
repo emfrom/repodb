@@ -54,7 +54,7 @@ search requires `reembed [--command PATH] [--model ID]`; `--semantic-limit N`
 
 Register one local file, HTTP(S) URL, local Git repository, or remote Git URL at a time with `repodb import PATH_OR_URL`. Git remotes can use SSH, Git, `file://`, or HTTP(S) URLs ending in `.git`; ordinary directories are rejected. `repodb retention latest` (the default) keeps only the newest fetched version per source, while `repodb retention all` retains prior versions. `repodb refresh` explicitly reads registered files, fetches registered URLs, and updates registered Git repositories; searches never fetch. Imported Git results include the repository locator, commit ID, repository-relative path, and one-based line reference. Semantic imported search uses the repository's configured embedding command.
 
-Local imported files and fetched URLs are limited to 10 MiB each. One refresh has a 256 MiB aggregate preparation-memory budget across all registered imports, including files, URLs, and Git repositories. It accounts for import input and subprocess output buffers, Git commit/path/blob data, PDF cached/extracted page text, joined content, indexed unit text, and embedding vectors. Fetch, Git, PDF-converter, and import-embedding subprocess stdout/stderr captures are bounded; excess output fails refresh. PDF conversion is limited to 10 MiB of extracted UTF-8 text, 100,000 pages, and imports are limited to 100,000 indexed units. Exceeding a limit fails refresh and preserves the previously searchable imported snapshot. PDF conversion caches are reused when available. Importing PDF files requires the `pdftotext` executable (from Poppler) to be installed and available on `PATH` when `repodb refresh` converts a PDF; a missing converter is reported with an installation requirement. Extracted PDF text is indexed one unit per page; JSON search results include the one-based `page` number, and human-readable results include the page reference.
+Refresh does not impose fixed per-file, URL, PDF-text, page-count, unit-count, or aggregate preparation-byte ceilings. Subprocess stderr is drained while retaining only a bounded diagnostic excerpt; large stderr streams do not reject otherwise valid output. Git tree records are processed incrementally, and failed reads/conversions still leave the prior searchable snapshot intact. PDF conversion caches are reused when available. Importing PDF files requires the `pdftotext` executable (from Poppler) to be installed and available on `PATH` when `repodb refresh` converts a PDF; a missing converter is reported with an installation requirement. Extracted PDF text is indexed one unit per page; JSON search results include the one-based `page` number, and human-readable results include the page reference.
 
 ### References, duplicates, and ordering
 
@@ -125,18 +125,10 @@ occurrences of the same blob/kind do not cause repeated embeddings within one
 refresh/reembed. Different kinds may require
 different units and embeddings for the same blob. Refresh currently traverses
 every reachable commit's tree and regenerates vectors for distinct units when a
-model is configured. To bound refresh preparation resources, refresh rejects more
-than 100,000 reachable commits, 1,000,000 commit/path occurrences, any individual
-blob over 32 MiB, or distinct Git blobs totaling over 256 MiB. It also rejects
-more than 500,000 indexed units, 256 MiB of unit text, or 256 MiB of generated
-vectors. In addition, one hard 256 MiB aggregate memory budget covers RepoDB-owned
-history-refresh preparation payloads: retained Git blob contents, occurrence and
-unit staging (including text and paths), generated vectors, and each temporary
-Git/embedding stdout buffer. Git tree records are consumed incrementally rather
-than captured as a complete tree. The aggregate budget does not include memory
-owned by Git/the embedding child, SQLite's internal caches, allocator overhead, or
-the already-open searchable database. These limits are checked before publication;
-reduce indexed history or large blobs and retry. A rejected refresh leaves the
+model is configured. Refresh no longer rejects reachable history based on fixed commit, occurrence,
+blob-size, unit-count, vector-count, or aggregate byte ceilings. Git tree records
+are consumed incrementally rather than captured as a complete tree. All Git reads
+and embedding generation finish before publication, and failures leave the
 previous snapshot searchable.
 
 Existing #3 databases (without blob IDs) and version 2/#4 databases (line units)

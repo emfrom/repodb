@@ -92,14 +92,16 @@ fn capture_streams(
     let (stdout, stdout_exceeded) = stdout
         .join()
         .map_err(|_| std::io::Error::other("stdout reader panicked"))??;
-    let (stderr, stderr_exceeded) = stderr
+    let (stderr, _stderr_exceeded) = stderr
         .join()
         .map_err(|_| std::io::Error::other("stderr reader panicked"))??;
+    // Stderr is always drained but only an excerpt is retained for diagnostics;
+    // excess diagnostic output must not reject otherwise valid command output.
     Ok(Output {
         status,
         stdout,
         stderr,
-        exceeded: stdout_exceeded || stderr_exceeded,
+        exceeded: stdout_exceeded,
     })
 }
 

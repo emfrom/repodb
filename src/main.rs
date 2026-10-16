@@ -129,7 +129,10 @@ pub(crate) fn embed_with_output_limit(
     };
     if output.exceeded {
         let limit = output_limit.expect("bounded capture has a limit");
-        return Err(format!("history refresh limit exceeded: embedding output exceeds {limit} bytes; reduce indexed history and retry").into());
+        return Err(format!(
+            "embedding command output could not be captured completely (limit {limit})"
+        )
+        .into());
     }
     if !output.status.success() {
         return Err("embedding command failed".into());

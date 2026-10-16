@@ -10,17 +10,10 @@ use std::{
     process::{Command, Stdio},
 };
 
-const MAX_COMMITS: usize = 100_000;
-const MAX_OCCURRENCES: usize = 1_000_000;
-const MAX_BLOB_BYTES: u64 = 32 * 1024 * 1024;
-const MAX_TOTAL_BLOB_BYTES: u64 = 256 * 1024 * 1024;
-const MAX_UNITS: usize = 500_000;
-const MAX_UNIT_TEXT_BYTES: usize = 256 * 1024 * 1024;
-const MAX_VECTOR_BYTES: usize = 256 * 1024 * 1024;
 const EMBEDDING_STDERR_BYTES: usize = 64 * 1024;
 
 fn memory_limit() -> Box<dyn std::error::Error> {
-    "history refresh limit exceeded: preparation data exceeds 256 MiB; reduce indexed history and retry".into()
+    "history refresh preparation size overflow".into()
 }
 
 const MAX_GIT_STDERR_BYTES: usize = 64 * 1024;
@@ -131,7 +124,7 @@ fn for_each_tree_record(
         let _ = child.kill();
     }
     let status = child.wait()?;
-    let (stderr, exceeded) = stderr.join().map_err(|_| "git stderr reader panicked")??;
+    let (stderr, _stderr_exceeded) = stderr.join().map_err(|_| "git stderr reader panicked")??;
     let stderr_capacity = stderr.capacity();
     preparation_bytes.release(MAX_GIT_STDERR_BYTES - stderr_capacity);
     preparation_bytes.release(TREE_READ_BUFFER_BYTES);
@@ -139,11 +132,6 @@ fn for_each_tree_record(
         drop(stderr);
         preparation_bytes.release(stderr_capacity);
         return Err(error);
-    }
-    if exceeded {
-        drop(stderr);
-        preparation_bytes.release(stderr_capacity);
-        return Err(memory_limit());
     }
     if !status.success() {
         let error = format!("git ls-tree failed: {}", String::from_utf8_lossy(&stderr));
@@ -258,7 +246,7 @@ fn reachable_commits(preparation_bytes: &mut Budget) -> Result<Vec<(String, i64)
         return Ok(vec![]);
     }
     let mut child = Command::new("git")
-        .args(["rev-list", "--timestamp", "--max-count=100001", "--stdin"])
+        .args(["rev-list", "--timestamp", "--stdin"])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -323,17 +311,13 @@ fn vectors<'a>(
     command: &str,
     model: &str,
     dimension: usize,
-    max_bytes: Option<usize>,
     budget: &mut Budget,
 ) -> Result<(Vec<Vec<u8>>, usize)> {
     let mut dim = dimension;
     let mut out = vec![];
-    let mut total_bytes = 0usize;
     for text in texts {
         budget.reserve_vec(&mut out, 1, "history vector rows")?;
-        let remaining_vectors =
-            max_bytes.map_or(usize::MAX, |limit| limit.saturating_sub(total_bytes));
-        let remaining = budget.remaining().min(remaining_vectors);
+        let remaining = budget.remaining();
         let output_limit = remaining.saturating_sub(EMBEDDING_STDERR_BYTES) / 17;
         // Each JSON number needs at least one byte. The stdout limit therefore
         // bounds both Vec capacities (at most 8 bytes/element each); with stdout
@@ -361,10 +345,6 @@ fn vectors<'a>(
             .len()
             .checked_mul(std::mem::size_of::<f32>())
             .ok_or_else(memory_limit)?;
-        if max_bytes.is_some_and(|limit| total_bytes.saturating_add(payload) > limit) {
-            budget.release(decoded_capacity);
-            return Err(format!("history refresh limit exceeded: embedding vectors exceed {} bytes; reduce indexed history and retry", max_bytes.unwrap()).into());
-        }
         let mut encoded = Vec::new();
         if let Err(error) = budget.reserve_vec(&mut encoded, payload, "encoded history vector") {
             budget.release(decoded_capacity);
@@ -374,7 +354,6 @@ fn vectors<'a>(
             encoded.extend_from_slice(&value.to_le_bytes());
         }
         budget.release(decoded_capacity);
-        total_bytes += payload;
         out.push(encoded);
     }
     Ok((out, dim))
@@ -396,9 +375,6 @@ mod tests {
         assert_eq!(stdout, 17);
         assert_eq!(stderr, MAX_GIT_STDERR_BYTES);
         assert!(stdout + stderr <= MAX_REFRESH_MEMORY_BYTES - used);
-        assert!(
-            git_capture_limits(MAX_REFRESH_MEMORY_BYTES, MAX_REFRESH_MEMORY_BYTES + 1).is_err()
-        );
     }
 
     #[test]
@@ -420,7 +396,6 @@ mod tests {
             embedder.to_str().unwrap(),
             "model",
             0,
-            Some(limit),
             &mut Budget::new(limit, "history refresh limit exceeded"),
         );
         assert!(
@@ -484,11 +459,7 @@ pub fn refresh(c: &mut Connection) -> Result<()> {
         "history refresh limit exceeded: preparation data",
     );
     let commits = reachable_commits(&mut preparation_bytes)?;
-    if commits.len() > MAX_COMMITS {
-        return Err(format!("history refresh limit exceeded: at most {MAX_COMMITS} reachable commits; narrow repository refs and retry").into());
-    }
     let mut blobs = BTreeMap::new();
-    let mut total_blob_bytes = 0u64;
     let mut occurrences = vec![];
     for (commit_id, _) in &commits {
         for_each_tree_record(
@@ -516,13 +487,6 @@ pub fn refresh(c: &mut Connection) -> Result<()> {
                     )?)?
                     .trim()
                     .parse()?;
-                    if size > MAX_BLOB_BYTES {
-                        return Err(format!("history refresh limit exceeded: blob {blob_id} is {size} bytes (maximum {MAX_BLOB_BYTES}); reduce the blob or exclude its commit and retry").into());
-                    }
-                    total_blob_bytes = total_blob_bytes.saturating_add(size);
-                    if total_blob_bytes > MAX_TOTAL_BLOB_BYTES {
-                        return Err(format!("history refresh limit exceeded: distinct Git blobs exceed {MAX_TOTAL_BLOB_BYTES} total bytes; reduce indexed history and retry").into());
-                    }
                     let blob_bytes = size as usize;
                     let blob_overhead = blob_id.len()
                         + std::mem::size_of::<Blob>()
@@ -560,9 +524,6 @@ pub fn refresh(c: &mut Connection) -> Result<()> {
                     };
                     blobs.insert(blob_id.clone(), blob);
                 }
-                if occurrences.len() == MAX_OCCURRENCES {
-                    return Err(format!("history refresh limit exceeded: at most {MAX_OCCURRENCES} commit/path occurrences; narrow repository refs and retry").into());
-                }
                 let path = &record[tab + 1..];
                 preparation_bytes.charge(
                     path.len() + commit_id.len() + blob_id.len(),
@@ -585,7 +546,6 @@ pub fn refresh(c: &mut Connection) -> Result<()> {
         CREATE TEMP TABLE refresh_units(unit_id INTEGER PRIMARY KEY, blob_id TEXT NOT NULL, segmentation_kind TEXT NOT NULL, text TEXT NOT NULL, line_start INTEGER NOT NULL, line_end INTEGER NOT NULL);
         CREATE TEMP TABLE refresh_embeddings(unit_id INTEGER PRIMARY KEY, vector BLOB NOT NULL);")?;
     let mut unit_count = 0usize;
-    let mut unit_text_bytes = 0usize;
     let mut unit_stage = c.prepare("INSERT INTO temp.refresh_units VALUES(?1,?2,?3,?4,?5,?6)")?;
     let variants: BTreeSet<_> = occurrences
         .iter()
@@ -595,14 +555,7 @@ pub fn refresh(c: &mut Connection) -> Result<()> {
         if let Some(content) = &blobs[blob_id].content {
             let mut staging_error: Option<Box<dyn std::error::Error>> = None;
             segmentation::visit(kind, content, |unit| {
-                if unit_count == MAX_UNITS
-                    || unit_text_bytes.saturating_add(unit.text.len()) > MAX_UNIT_TEXT_BYTES
-                {
-                    staging_error = Some(format!("history refresh limit exceeded: indexed units must fit within {MAX_UNITS} units and {MAX_UNIT_TEXT_BYTES} text bytes; reduce indexed history and retry").into());
-                    return false;
-                }
                 unit_count += 1;
-                unit_text_bytes += unit.text.len();
                 if let Err(error) = unit_stage.execute(params![
                     unit_count,
                     blob_id,
@@ -639,7 +592,6 @@ pub fn refresh(c: &mut Connection) -> Result<()> {
                 command,
                 model,
                 embedding_dimension.unwrap_or(*configured_dimension),
-                Some(MAX_VECTOR_BYTES.saturating_sub(vector_bytes)),
                 &mut preparation_bytes,
             )?;
             let vector = vectors.pop().ok_or("embedding produced no vector")?;
@@ -718,7 +670,6 @@ pub fn reembed(c: &mut Connection, command: &str, model: &str) -> Result<()> {
                 command,
                 model,
                 dim,
-                None,
                 &mut preparation_bytes,
             )?;
             let encoded = vector.pop().ok_or("embedding produced no vector")?;

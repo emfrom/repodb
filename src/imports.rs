@@ -11,19 +11,12 @@ use std::{
     process::{Command, Stdio},
 };
 
-const MAX_IMPORT_BYTES: usize = 10 * 1024 * 1024;
-const MAX_PDF_TEXT_BYTES: usize = 10 * 1024 * 1024;
 const MAX_COMMAND_STDERR_BYTES: usize = 64 * 1024;
-const MAX_EMBEDDING_OUTPUT_BYTES: usize = 1024 * 1024;
-const MAX_IMPORTED_UNITS: usize = 100_000;
-const MAX_PDF_PAGES: usize = 100_000;
 
-fn read_bounded(reader: impl Read, limit: usize, description: &str) -> Result<Vec<u8>> {
-    let mut bytes = Vec::with_capacity(limit.min(64 * 1024));
-    reader.take((limit + 1) as u64).read_to_end(&mut bytes)?;
-    if bytes.len() > limit {
-        return Err(format!("{description} exceeds the {limit}-byte import limit").into());
-    }
+fn read_all(reader: impl Read) -> Result<Vec<u8>> {
+    let mut bytes = Vec::new();
+    let mut reader = reader;
+    reader.read_to_end(&mut bytes)?;
     Ok(bytes)
 }
 
@@ -75,8 +68,7 @@ fn import_embed(command: &str, model: &str, text: &str, used: &mut Budget) -> Re
     // A JSON number needs at least one input byte; Vec growth can reserve up to
     // twice the element count, so budget up to 8 bytes of vector capacity per
     // captured stdout byte while stdout remains live.
-    let output_limit = MAX_EMBEDDING_OUTPUT_BYTES
-        .min(used.remaining().saturating_sub(MAX_COMMAND_STDERR_BYTES) / 9);
+    let output_limit = used.remaining().saturating_sub(MAX_COMMAND_STDERR_BYTES) / 9;
     let (status, stdout, stderr) =
         bounded_command_output_with_input(&mut child, text.as_bytes(), output_limit, used)?;
     if !status.success() {
@@ -205,19 +197,16 @@ fn checksum(bytes: &[u8]) -> String {
     state.iter().map(|word| format!("{word:08x}")).collect()
 }
 
-fn cache_pages(cache: &Path, max_bytes: usize, used: &mut Budget) -> Result<Option<Vec<String>>> {
+fn cache_pages(cache: &Path, used: &mut Budget) -> Result<Option<Vec<String>>> {
     let file = match fs::File::open(cache) {
         Ok(file) => file,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(error) => return Err(error.into()),
     };
-    let file_size = file.metadata()?.len() as usize;
-    if file_size > max_bytes {
-        return Err("PDF cache input exceeds the remaining refresh-memory budget; reduce indexed data and retry".into());
-    }
-    let input_reservation = max_bytes.min(file_size.max(64 * 1024));
+    let file_size = usize::try_from(file.metadata()?.len())?;
+    let input_reservation = file_size.max(64 * 1024);
     used.charge(input_reservation, "PDF cache input reservation")?;
-    let bytes = match read_bounded(file, max_bytes, "PDF conversion cache") {
+    let bytes = match read_all(file) {
         Ok(bytes) => bytes,
         Err(_) => {
             used.release(input_reservation);
@@ -562,11 +551,7 @@ pub fn refresh(c: &Connection) -> Result<()> {
             refresh_memory_bytes.charge(size as usize, "local import input")?;
         }
         let source_bytes = if kind == "file" {
-            read_bounded(
-                fs::File::open(&locator)?,
-                MAX_IMPORT_BYTES,
-                &format!("local file {locator}"),
-            )?
+            read_all(fs::File::open(&locator)?)?
         } else {
             let mut child = Command::new("curl")
                 .args([
@@ -576,8 +561,6 @@ pub fn refresh(c: &Connection) -> Result<()> {
                     "--show-error",
                     "--max-time",
                     "30",
-                    "--max-filesize",
-                    "10485760",
                     "--proto-redir",
                     "=http,https",
                     &locator,
@@ -587,11 +570,9 @@ pub fn refresh(c: &Connection) -> Result<()> {
                 .spawn()?;
             let output = bounded_command_output(
                 &mut child,
-                MAX_IMPORT_BYTES.min(
-                    refresh_memory_bytes
-                        .remaining()
-                        .saturating_sub(MAX_COMMAND_STDERR_BYTES),
-                ),
+                refresh_memory_bytes
+                    .remaining()
+                    .saturating_sub(MAX_COMMAND_STDERR_BYTES),
                 &mut refresh_memory_bytes,
             )?;
             if !output.0.success() {
@@ -617,17 +598,7 @@ pub fn refresh(c: &Connection) -> Result<()> {
         let pages = if is_pdf {
             let source_version = checksum(&source_bytes);
             let cache = cache_dir.join(format!("{source_version}.json"));
-            if let Some(pages) = cache_pages(
-                &cache,
-                refresh_memory_bytes.remaining().min(64 * 1024 * 1024),
-                &mut refresh_memory_bytes,
-            )? {
-                if pages.len() > MAX_PDF_PAGES {
-                    return Err(format!(
-                        "PDF {locator} exceeds the {MAX_PDF_PAGES}-page import limit"
-                    )
-                    .into());
-                }
+            if let Some(pages) = cache_pages(&cache, &mut refresh_memory_bytes)? {
                 pages
             } else {
                 let mut child = Command::new("pdftotext")
@@ -640,11 +611,9 @@ pub fn refresh(c: &Connection) -> Result<()> {
                 let output = bounded_command_output_with_input(
                     &mut child,
                     &source_bytes,
-                    MAX_PDF_TEXT_BYTES.min(
-                        refresh_memory_bytes
-                            .remaining()
-                            .saturating_sub(MAX_COMMAND_STDERR_BYTES),
-                    ),
+                    refresh_memory_bytes
+                        .remaining()
+                        .saturating_sub(MAX_COMMAND_STDERR_BYTES),
                     &mut refresh_memory_bytes,
                 )?;
                 if !output.0.success() {
@@ -656,12 +625,6 @@ pub fn refresh(c: &Connection) -> Result<()> {
                 }
                 let text = String::from_utf8(output.1)?;
                 refresh_memory_bytes.charge(text.len(), "PDF page text copies")?;
-                if text.matches('\u{c}').count() >= MAX_PDF_PAGES {
-                    return Err(format!(
-                        "PDF {locator} exceeds the {MAX_PDF_PAGES}-page import limit"
-                    )
-                    .into());
-                }
                 let pages = text.split('\u{c}').map(str::to_owned).collect::<Vec<_>>();
                 write_cache(&cache, &pages)?;
                 pages
@@ -706,12 +669,6 @@ pub fn refresh(c: &Connection) -> Result<()> {
         for (line, page, text) in lines {
             if text.trim().is_empty() {
                 continue;
-            }
-            if units.len() == MAX_IMPORTED_UNITS {
-                return Err(format!(
-                    "import {locator} exceeds the {MAX_IMPORTED_UNITS}-unit limit"
-                )
-                .into());
             }
             let vector = cfg
                 .as_ref()
@@ -980,7 +937,7 @@ mod tests {
     }
 
     #[test]
-    fn command_stderr_capture_is_limited_by_remaining_budget() {
+    fn command_stderr_over_capture_size_is_drained_without_rejection() {
         let mut budget = Budget::new(10, "refresh limit exceeded");
         budget.charge(7, "existing refresh data").unwrap();
         let mut child = Command::new("sh")
@@ -990,36 +947,30 @@ mod tests {
             .spawn()
             .unwrap();
 
-        let result = bounded_command_output_with_input(&mut child, &[], 8, &mut budget);
+        let (status, stdout, stderr) =
+            bounded_command_output_with_input(&mut child, &[], 8, &mut budget).unwrap();
 
+        assert!(status.success());
+        assert!(stdout.is_empty());
         assert!(
-            result.is_err(),
-            "stderr exceeding available budget is rejected"
+            stderr.len() <= 3,
+            "stderr excerpt fits available capture space"
         );
-        assert_eq!(
-            budget.used(),
-            7,
-            "rejected output must release its bounded capture reservation"
-        );
+        assert!(budget.used() >= 7);
     }
 
     #[test]
-    fn many_empty_cached_pages_are_rejected_before_deserialization_and_preserved() {
+    fn cached_pages_above_the_old_aggregate_budget_are_read() {
         let path =
             std::env::temp_dir().join(format!("repodb-cache-budget-{}.json", std::process::id()));
         let json = format!("[{}]", vec!["\"\""; 1000].join(","));
         std::fs::write(&path, &json).unwrap();
-        let mut budget = Budget::new(70_000, "refresh limit exceeded");
+        let mut budget = Budget::new(usize::MAX, "refresh accounting");
 
-        let error = cache_pages(&path, 64 * 1024, &mut budget).unwrap_err();
+        let pages = cache_pages(&path, &mut budget).unwrap().unwrap();
 
-        assert!(
-            error
-                .to_string()
-                .contains("aggregate preparation-memory budget")
-        );
-        assert!(path.exists(), "a valid over-budget cache must be preserved");
-        assert_eq!(budget.used(), 0, "failed reservations must be released");
+        assert_eq!(pages.len(), 1000);
+        assert!(path.exists(), "a valid cache should be preserved");
         std::fs::remove_file(path).unwrap();
     }
 
