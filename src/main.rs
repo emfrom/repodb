@@ -75,10 +75,17 @@ fn embed(command: &str, text: &str) -> Result<Vec<f32>> {
         .into());
     }
     let v: Vec<f32> = serde_json::from_slice(&o.stdout)?;
+    validate_vector(&v)?;
+    Ok(v)
+}
+fn validate_vector(v: &[f32]) -> Result<()> {
     if v.is_empty() || v.iter().any(|x| !x.is_finite()) {
         return Err("embedding must be a nonempty finite vector".into());
     }
-    Ok(v)
+    if v.iter().all(|x| *x == 0.0) {
+        return Err("embedding must have nonzero norm for cosine distance".into());
+    }
+    Ok(())
 }
 fn refresh(c: &mut Connection) -> Result<()> {
     let commit = String::from_utf8(git(&["rev-parse", "HEAD"])?)?
@@ -221,7 +228,7 @@ fn exact(c: &Connection, q: &str) -> Result<Vec<SearchResult>> {
     }
     Ok(out)
 }
-fn semantic(c: &Connection, q: &str, limit: usize) -> Result<Vec<SearchResult>> {
+fn query_vector(c: &Connection, q: &str) -> Result<Vec<f32>> {
     let command: String = c
         .query_row(
             "SELECT value FROM embedding_config WHERE key='command'",
@@ -230,7 +237,6 @@ fn semantic(c: &Connection, q: &str, limit: usize) -> Result<Vec<SearchResult>> 
         )
         .map_err(|_| "no embeddings; run reembed")?;
     let v = embed(&command, q)?;
-    let bytes = as_bytes(&v);
     let dim: i64 = c
         .query_row(
             "SELECT value FROM embedding_config WHERE key='dimension'",
@@ -241,8 +247,11 @@ fn semantic(c: &Connection, q: &str, limit: usize) -> Result<Vec<SearchResult>> 
     if v.len() as i64 != dim {
         return Err("query embedding dimension mismatch".into());
     }
+    Ok(v)
+}
+fn semantic_with_vector(c: &Connection, v: &[f32], limit: usize) -> Result<Vec<SearchResult>> {
     let mut s=c.prepare("SELECT path,line,text,commit_id,vec_distance_cosine(vector,?1) d FROM embeddings ORDER BY d,path,line LIMIT ?2")?;
-    let rows = s.query_map(params![bytes, limit as i64], |r| {
+    let rows = s.query_map(params![as_bytes(v), limit as i64], |r| {
         Ok(SearchResult {
             path: r.get(0)?,
             line_start: r.get(1)?,
@@ -253,6 +262,9 @@ fn semantic(c: &Connection, q: &str, limit: usize) -> Result<Vec<SearchResult>> 
         })
     })?;
     Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
+}
+fn semantic(c: &Connection, q: &str, limit: usize) -> Result<Vec<SearchResult>> {
+    semantic_with_vector(c, &query_vector(c, q)?, limit)
 }
 fn execute() -> Result<()> {
     let mut a = env::args().skip(1);
@@ -291,30 +303,36 @@ fn execute() -> Result<()> {
                 }
             }
             let c = open_db()?;
-            let mut result = if mode == "exact" {
+            let result = if mode == "exact" {
                 exact(&c, &q)?
-            } else {
-                semantic(&c, &q, limit)?
-            };
-            if mode == "combined" {
+            } else if mode == "combined" {
+                let v = query_vector(&c, &q)?;
+                let mut candidates = semantic_with_vector(&c, &v, limit)?;
                 let mut seen = std::collections::HashSet::new();
-                for x in &result {
+                for x in &candidates {
                     seen.insert((x.path.clone(), x.line_start));
                 }
                 for mut x in exact(&c, &q)? {
                     if seen.insert((x.path.clone(), x.line_start)) {
-                        x.distance = Some(f64::MAX);
-                        result.push(x)
+                        let distance: f64 = c.query_row(
+                            "SELECT vec_distance_cosine(vector,?1) FROM embeddings WHERE path=?2 AND line=?3",
+                            params![as_bytes(&v), x.path, x.line_start as i64], |r| r.get(0),
+                        )?;
+                        x.distance = Some(distance);
+                        candidates.push(x);
                     }
                 }
-                result.sort_by(|a, b| {
+                candidates.sort_by(|a, b| {
                     a.distance
-                        .unwrap_or(f64::MAX)
-                        .total_cmp(&b.distance.unwrap_or(f64::MAX))
+                        .unwrap()
+                        .total_cmp(&b.distance.unwrap())
                         .then(a.path.cmp(&b.path))
                         .then(a.line_start.cmp(&b.line_start))
                 });
-            }
+                candidates
+            } else {
+                semantic(&c, &q, limit)?
+            };
             if json {
                 println!("{}", serde_json::to_string_pretty(&result)?)
             } else {

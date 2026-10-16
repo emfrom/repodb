@@ -114,6 +114,94 @@ fn semantic_search_uses_configured_fake_embeddings_and_precise_refs() {
 }
 
 #[test]
+fn combined_search_ranks_exact_hits_by_their_stored_vectors() {
+    let repo = repository();
+    let root = repo.path();
+    let fake = root.join("fake-embedder");
+    fs::write(&fake, "#!/bin/sh\ninput=$(cat)\ncase \"$input\" in *'Exact [literal] TARGET'*) printf '[0.0, 1.0]' ;; *'fn main'*) printf '[0.9, 0.1]' ;; *) printf '[1.0, 0.0]' ;; esac\n").unwrap();
+    use std::os::unix::fs::PermissionsExt;
+    fs::set_permissions(&fake, fs::Permissions::from_mode(0o755)).unwrap();
+    assert!(run(root, &["init"]).0);
+    assert!(run(root, &["reembed", "--command", fake.to_str().unwrap()]).0);
+    let (ok, output) = run(
+        root,
+        &[
+            "search",
+            "TARGET",
+            "--combined",
+            "--semantic-limit",
+            "1",
+            "--json",
+        ],
+    );
+    assert!(ok, "{output}");
+    let results: serde_json::Value = serde_json::from_str(&output).unwrap();
+    assert_eq!(results.as_array().unwrap().len(), 2);
+    assert_eq!(results[0]["text"], "First line");
+    assert_eq!(results[1]["text"], "Exact [literal] TARGET");
+    assert!(results[0]["distance"].as_f64().unwrap() < results[1]["distance"].as_f64().unwrap());
+}
+
+#[test]
+fn failed_reembed_preserves_previous_vectors_and_configuration() {
+    let repo = repository();
+    let root = repo.path();
+    let old = root.join("old-embedder");
+    fs::write(&old, "#!/bin/sh\ncat >/dev/null\nprintf '[1.0, 0.0]'\n").unwrap();
+    use std::os::unix::fs::PermissionsExt;
+    fs::set_permissions(&old, fs::Permissions::from_mode(0o755)).unwrap();
+    assert!(run(root, &["init"]).0);
+    assert!(
+        run(
+            root,
+            &[
+                "reembed",
+                "--model",
+                "old-model",
+                "--command",
+                old.to_str().unwrap()
+            ]
+        )
+        .0
+    );
+    let bad = root.join("failing-embedder");
+    fs::write(&bad, "#!/bin/sh\nexit 1\n").unwrap();
+    fs::set_permissions(&bad, fs::Permissions::from_mode(0o755)).unwrap();
+    assert!(
+        !run(
+            root,
+            &[
+                "reembed",
+                "--model",
+                "new-model",
+                "--command",
+                bad.to_str().unwrap()
+            ]
+        )
+        .0
+    );
+    let (ok, output) = run(root, &["search", "still works", "--semantic", "--json"]);
+    assert!(ok, "{output}");
+    let db = rusqlite::Connection::open(root.join(".git/repodb.sqlite")).unwrap();
+    let model: String = db
+        .query_row(
+            "SELECT value FROM embedding_config WHERE key='model'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(model, "old-model");
+    let command: String = db
+        .query_row(
+            "SELECT value FROM embedding_config WHERE key='command'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(command, old.to_str().unwrap());
+}
+
+#[test]
 fn uncommitted_phrase_is_not_searchable() {
     let repo = repository();
     let root = repo.path();
