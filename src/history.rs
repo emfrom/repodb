@@ -77,9 +77,8 @@ fn for_each_tree_record(
         .spawn()?;
     let mut stdout = BufReader::with_capacity(TREE_READ_BUFFER_BYTES, child.stdout.take().unwrap());
     let stderr = child.stderr.take().unwrap();
-    let stderr = std::thread::spawn(move || {
-        crate::process::read_bounded_command_output(stderr, MAX_GIT_STDERR_BYTES)
-    });
+    let stderr =
+        std::thread::spawn(move || crate::process::drain_bounded(stderr, MAX_GIT_STDERR_BYTES));
     let result = (|| -> Result<()> {
         loop {
             let mut record = Vec::new();

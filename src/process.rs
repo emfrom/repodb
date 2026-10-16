@@ -10,7 +10,7 @@ pub(crate) struct Output {
     pub exceeded: bool,
 }
 
-fn drain(reader: impl Read, limit: usize) -> std::io::Result<(Vec<u8>, bool)> {
+pub(crate) fn drain_bounded(reader: impl Read, limit: usize) -> std::io::Result<(Vec<u8>, bool)> {
     let mut output = Vec::with_capacity(limit.min(8192));
     let mut buffer = [0u8; 8192];
     let mut exceeded = false;
@@ -25,13 +25,6 @@ fn drain(reader: impl Read, limit: usize) -> std::io::Result<(Vec<u8>, bool)> {
         exceeded |= keep != count;
     }
     Ok((output, exceeded))
-}
-
-pub(crate) fn read_bounded_command_output(
-    reader: impl Read,
-    limit: usize,
-) -> std::io::Result<(Vec<u8>, bool)> {
-    drain(reader, limit)
 }
 
 pub(crate) fn capture(
@@ -50,8 +43,8 @@ pub(crate) fn capture_with_input(
 ) -> std::io::Result<Output> {
     let stdout = child.stdout.take().expect("captured stdout");
     let stderr = child.stderr.take().expect("captured stderr");
-    let stdout = std::thread::spawn(move || drain(stdout, stdout_limit));
-    let stderr = std::thread::spawn(move || drain(stderr, stderr_limit));
+    let stdout = std::thread::spawn(move || drain_bounded(stdout, stdout_limit));
+    let stderr = std::thread::spawn(move || drain_bounded(stderr, stderr_limit));
     if let Some(mut stdin) = child.stdin.take() {
         let write_result = stdin.write_all(input);
         drop(stdin);
