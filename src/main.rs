@@ -3,7 +3,7 @@ use serde::Serialize;
 use std::{
     env,
     error::Error,
-    io::Write,
+    io::{Read, Write},
     path::PathBuf,
     process::{Command, Stdio},
 };
@@ -93,6 +93,15 @@ fn is_builtin_embedding_command(command: &str) -> bool {
 }
 
 fn embed(command: &str, model: &str, text: &str) -> Result<Vec<f32>> {
+    embed_with_output_limit(command, model, text, None)
+}
+
+pub(crate) fn embed_with_output_limit(
+    command: &str,
+    model: &str,
+    text: &str,
+    output_limit: Option<usize>,
+) -> Result<Vec<f32>> {
     if is_builtin_embedding_command(command) && model != "all-MiniLM-L6-v2" {
         return Err(
             "the built-in generate_embeddings command only supports all-MiniLM-L6-v2".into(),
@@ -103,18 +112,36 @@ fn embed(command: &str, model: &str, text: &str) -> Result<Vec<f32>> {
         .args(["--json", "-"])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
+        .stderr(if output_limit.is_some() {
+            Stdio::null()
+        } else {
+            Stdio::piped()
+        })
         .spawn()?;
     child.stdin.take().unwrap().write_all(text.as_bytes())?;
-    let o = child.wait_with_output()?;
-    if !o.status.success() {
-        return Err(format!(
-            "embedding command failed: {}",
-            String::from_utf8_lossy(&o.stderr)
-        )
-        .into());
+    let stdout = child.stdout.take().unwrap();
+    let output = if let Some(limit) = output_limit {
+        let mut output = Vec::new();
+        stdout
+            .take(limit.saturating_add(1) as u64)
+            .read_to_end(&mut output)?;
+        if output.len() > limit {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(format!("history refresh limit exceeded: embedding output exceeds {limit} bytes; reduce indexed history and retry").into());
+        }
+        output
+    } else {
+        let mut output = Vec::new();
+        let mut stdout = stdout;
+        stdout.read_to_end(&mut output)?;
+        output
+    };
+    let status = child.wait()?;
+    if !status.success() {
+        return Err("embedding command failed".into());
     }
-    let v: Vec<f32> = serde_json::from_slice(&o.stdout)?;
+    let v: Vec<f32> = serde_json::from_slice(&output)?;
     validate_vector(&v)?;
     Ok(v)
 }

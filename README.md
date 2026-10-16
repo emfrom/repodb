@@ -129,8 +129,15 @@ model is configured. To bound refresh preparation resources, refresh rejects mor
 than 100,000 reachable commits, 1,000,000 commit/path occurrences, any individual
 blob over 32 MiB, or distinct Git blobs totaling over 256 MiB. It also rejects
 more than 500,000 indexed units, 256 MiB of unit text, or 256 MiB of generated
-vectors. These limits are checked before publication; reduce indexed history or
-large blobs and retry. A rejected refresh leaves the previous snapshot searchable.
+vectors. In addition, one hard 256 MiB aggregate memory budget covers RepoDB-owned
+history-refresh preparation payloads: retained Git blob contents, occurrence and
+unit staging (including text and paths), generated vectors, and each temporary
+Git/embedding stdout buffer. Git tree records are consumed incrementally rather
+than captured as a complete tree. The aggregate budget does not include memory
+owned by Git/the embedding child, SQLite's internal caches, allocator overhead, or
+the already-open searchable database. These limits are checked before publication;
+reduce indexed history or large blobs and retry. A rejected refresh leaves the
+previous snapshot searchable.
 
 Existing #3 databases (without blob IDs) and version 2/#4 databases (line units)
 remain searchable in their original representation until a successful explicit
