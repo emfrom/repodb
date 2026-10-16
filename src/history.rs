@@ -183,14 +183,6 @@ struct Blob {
     content: Option<String>,
     status: &'static str,
 }
-struct Unit {
-    id: usize,
-    blob_id: String,
-    kind: &'static str,
-    line_start: usize,
-    line_end: usize,
-    text: String,
-}
 struct Occurrence {
     commit_id: String,
     blob_id: String,
@@ -587,8 +579,14 @@ pub fn refresh(c: &mut Connection) -> Result<()> {
             },
         )?;
     }
-    let mut units = vec![];
+    c.execute_batch("PRAGMA temp_store=FILE;
+        DROP TABLE IF EXISTS temp.refresh_units;
+        DROP TABLE IF EXISTS temp.refresh_embeddings;
+        CREATE TEMP TABLE refresh_units(unit_id INTEGER PRIMARY KEY, blob_id TEXT NOT NULL, segmentation_kind TEXT NOT NULL, text TEXT NOT NULL, line_start INTEGER NOT NULL, line_end INTEGER NOT NULL);
+        CREATE TEMP TABLE refresh_embeddings(unit_id INTEGER PRIMARY KEY, vector BLOB NOT NULL);")?;
+    let mut unit_count = 0usize;
     let mut unit_text_bytes = 0usize;
+    let mut unit_stage = c.prepare("INSERT INTO temp.refresh_units VALUES(?1,?2,?3,?4,?5,?6)")?;
     let variants: BTreeSet<_> = occurrences
         .iter()
         .map(|o| (o.blob_id.as_str(), o.kind))
@@ -597,34 +595,25 @@ pub fn refresh(c: &mut Connection) -> Result<()> {
         if let Some(content) = &blobs[blob_id].content {
             let mut staging_error: Option<Box<dyn std::error::Error>> = None;
             segmentation::visit(kind, content, |unit| {
-                if units.len() == MAX_UNITS
+                if unit_count == MAX_UNITS
                     || unit_text_bytes.saturating_add(unit.text.len()) > MAX_UNIT_TEXT_BYTES
                 {
                     staging_error = Some(format!("history refresh limit exceeded: indexed units must fit within {MAX_UNITS} units and {MAX_UNIT_TEXT_BYTES} text bytes; reduce indexed history and retry").into());
                     return false;
                 }
-                let charge = unit.text.len() + blob_id.len();
-                if let Err(error) = preparation_bytes.charge(charge, "staged history unit payloads")
-                {
-                    staging_error = Some(error);
-                    return false;
-                }
-                if let Err(error) =
-                    preparation_bytes.reserve_vec(&mut units, 1, "staged history unit vector")
-                {
-                    preparation_bytes.release(charge);
-                    staging_error = Some(error);
-                    return false;
-                }
+                unit_count += 1;
                 unit_text_bytes += unit.text.len();
-                units.push(Unit {
-                    id: units.len() + 1,
-                    blob_id: blob_id.to_owned(),
+                if let Err(error) = unit_stage.execute(params![
+                    unit_count,
+                    blob_id,
                     kind,
-                    line_start: unit.line_start,
-                    line_end: unit.line_end,
-                    text: unit.text.to_owned(),
-                });
+                    unit.text,
+                    unit.line_start,
+                    unit.line_end
+                ]) {
+                    staging_error = Some(error.into());
+                    return false;
+                }
                 true
             });
             if let Some(error) = staging_error {
@@ -632,21 +621,33 @@ pub fn refresh(c: &mut Connection) -> Result<()> {
             }
         }
     }
+    drop(unit_stage);
     let cfg = configuration(c)?;
-    let embedded = cfg
-        .as_ref()
-        .map(|(command, model, dim)| {
-            let (rows, dimension) = vectors(
-                units.iter().map(|unit| unit.text.as_str()),
+    let mut embedding_dimension = None;
+    if let Some((command, model, configured_dimension)) = &cfg {
+        let mut statement =
+            c.prepare("SELECT unit_id,text FROM temp.refresh_units ORDER BY unit_id")?;
+        let mut embedding_statement =
+            c.prepare("INSERT INTO temp.refresh_embeddings VALUES(?1,?2)")?;
+        let mut rows = statement.query([])?;
+        let mut vector_bytes = 0usize;
+        while let Some(row) = rows.next()? {
+            let unit_id: i64 = row.get(0)?;
+            let text: String = row.get(1)?;
+            let (mut vectors, dimension) = vectors(
+                std::iter::once(text.as_str()),
                 command,
                 model,
-                *dim,
-                Some(MAX_VECTOR_BYTES),
+                embedding_dimension.unwrap_or(*configured_dimension),
+                Some(MAX_VECTOR_BYTES.saturating_sub(vector_bytes)),
                 &mut preparation_bytes,
             )?;
-            Ok::<_, Box<dyn std::error::Error>>((rows, dimension))
-        })
-        .transpose()?;
+            let vector = vectors.pop().ok_or("embedding produced no vector")?;
+            vector_bytes = vector_bytes.saturating_add(vector.len());
+            embedding_statement.execute(params![unit_id, vector])?;
+            embedding_dimension = Some(dimension);
+        }
+    }
     // Nothing published until Git reads and all embedding generation succeed.
     let tx = publish_transaction(c, version)?;
     tx.execute_batch("DROP TABLE IF EXISTS unit_embeddings;
@@ -682,23 +683,10 @@ pub fn refresh(c: &mut Connection) -> Result<()> {
             ],
         )?;
     }
-    for unit in &units {
-        tx.execute(
-            "INSERT INTO indexed_units VALUES(?1,?2,?3,?4)",
-            params![unit.id, unit.text, unit.line_start, unit.line_end],
-        )?;
-        tx.execute(
-            "INSERT INTO git_blob_units VALUES(?1,?2,?3)",
-            params![unit.blob_id, unit.id, unit.kind],
-        )?;
-    }
-    if let Some((rows, dim)) = embedded {
-        for (unit, vector) in units.iter().zip(rows) {
-            tx.execute(
-                "INSERT INTO unit_embeddings VALUES(?1,?2)",
-                params![unit.id, vector],
-            )?;
-        }
+    tx.execute("INSERT INTO indexed_units SELECT unit_id,text,line_start,line_end FROM temp.refresh_units ORDER BY unit_id", [])?;
+    tx.execute("INSERT INTO git_blob_units SELECT blob_id,unit_id,segmentation_kind FROM temp.refresh_units ORDER BY unit_id", [])?;
+    tx.execute("INSERT INTO unit_embeddings SELECT unit_id,vector FROM temp.refresh_embeddings ORDER BY unit_id", [])?;
+    if let Some(dim) = embedding_dimension {
         tx.execute(
             "UPDATE embedding_config SET value=?1 WHERE key='dimension'",
             [dim.to_string()],
@@ -706,6 +694,7 @@ pub fn refresh(c: &mut Connection) -> Result<()> {
     }
     tx.execute_batch("DROP TABLE IF EXISTS indexed_files; DROP TABLE IF EXISTS embeddings; PRAGMA user_version=3;")?;
     tx.commit()?;
+    c.execute_batch("DROP TABLE temp.refresh_embeddings; DROP TABLE temp.refresh_units;")?;
     Ok(())
 }
 

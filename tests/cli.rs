@@ -1201,7 +1201,7 @@ fn large_history_tree_refreshes_incrementally_and_keeps_the_snapshot_atomic() {
     for index in 0..2_000 {
         fs::write(
             dir.join(format!("file-{index:04}.txt")),
-            b"many tree entries\\n",
+            format!("many tree entries {index}\\n"),
         )
         .unwrap();
     }
@@ -1214,7 +1214,7 @@ fn large_history_tree_refreshes_incrementally_and_keeps_the_snapshot_atomic() {
     assert_eq!(after[0]["text"], before[0]["text"]);
     assert_eq!(
         search_json(root, &["many tree entries", "--all-history"]).len(),
-        1
+        2_000
     );
 }
 
