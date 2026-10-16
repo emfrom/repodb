@@ -1,4 +1,4 @@
-use crate::{Result, SearchResult, as_bytes, embed, process};
+use crate::{Result, SearchResult, as_bytes, budget::Budget, embed, process};
 use rusqlite::{Connection, params};
 use std::{
     fs,
@@ -27,7 +27,7 @@ fn read_bounded(reader: impl Read, limit: usize, description: &str) -> Result<Ve
 fn bounded_command_output(
     child: &mut std::process::Child,
     stdout_limit: usize,
-    used: &mut usize,
+    used: &mut Budget,
 ) -> Result<(std::process::ExitStatus, Vec<u8>, Vec<u8>)> {
     bounded_command_output_with_input(child, &[], stdout_limit, used)
 }
@@ -36,7 +36,7 @@ fn bounded_command_output_with_input(
     child: &mut std::process::Child,
     input: &[u8],
     stdout_limit: usize,
-    used: &mut usize,
+    used: &mut Budget,
 ) -> Result<(std::process::ExitStatus, Vec<u8>, Vec<u8>)> {
     let output = process::capture_with_input(child, input, stdout_limit, MAX_COMMAND_STDERR_BYTES)?;
     if output.exceeded {
@@ -46,13 +46,11 @@ fn bounded_command_output_with_input(
     Ok((output.status, output.stdout, output.stderr))
 }
 
-fn charge_refresh_memory(used: &mut usize, bytes: usize, description: &str) -> Result<()> {
-    *used = used.checked_add(bytes).filter(|total| *total <= MAX_REFRESH_MEMORY_BYTES)
-        .ok_or_else(|| format!("import refresh exceeds the 256 MiB aggregate preparation-memory budget while preparing {description}; reduce registered imports or their size and retry"))?;
-    Ok(())
+fn charge_refresh_memory(used: &mut Budget, bytes: usize, description: &str) -> Result<()> {
+    used.charge(bytes, description)
 }
 
-fn import_embed(command: &str, model: &str, text: &str, used: &mut usize) -> Result<Vec<f32>> {
+fn import_embed(command: &str, model: &str, text: &str, used: &mut Budget) -> Result<Vec<f32>> {
     let mut child = Command::new(command)
         .env("REPODB_EMBEDDING_MODEL", model)
         .args(["--json", "-"])
@@ -61,7 +59,7 @@ fn import_embed(command: &str, model: &str, text: &str, used: &mut usize) -> Res
         .stderr(Stdio::piped())
         .spawn()?;
     let output_limit = MAX_EMBEDDING_OUTPUT_BYTES
-        .min(MAX_REFRESH_MEMORY_BYTES.saturating_sub(*used + MAX_COMMAND_STDERR_BYTES) / 2);
+        .min(used.remaining().saturating_sub(MAX_COMMAND_STDERR_BYTES) / 2);
     let (status, stdout, stderr) =
         bounded_command_output_with_input(&mut child, text.as_bytes(), output_limit, used)?;
     charge_refresh_memory(used, stdout.len(), "embedding command output")?;
@@ -296,7 +294,7 @@ pub fn set_retention(c: &Connection, value: &str) -> Result<()> {
     Ok(())
 }
 
-fn git_output(repo: &str, args: &[&str], limit: usize, used: &mut usize) -> Result<Vec<u8>> {
+fn git_output(repo: &str, args: &[&str], limit: usize, used: &mut Budget) -> Result<Vec<u8>> {
     let mut child = Command::new("git")
         .args(["-C", repo])
         .args(args)
@@ -350,7 +348,10 @@ pub fn refresh(c: &Connection) -> Result<()> {
         .join("repodb-cache");
     let tx = c.unchecked_transaction()?;
     // This conservative cumulative accounting includes buffers and representations materialized during preparation.
-    let mut refresh_memory_bytes = 0usize;
+    let mut refresh_memory_bytes = Budget::new(
+        MAX_REFRESH_MEMORY_BYTES,
+        "import refresh exceeds the aggregate preparation-memory budget",
+    );
     for (id, locator, kind) in sources {
         if kind == "git" {
             let repository = if Path::new(&locator).is_dir() {
@@ -381,8 +382,9 @@ pub fn refresh(c: &Connection) -> Result<()> {
             let commits_bytes = git_output(
                 &repository,
                 &["rev-list", "--all", "--date-order"],
-                MAX_REFRESH_MEMORY_BYTES
-                    .saturating_sub(refresh_memory_bytes + MAX_COMMAND_STDERR_BYTES),
+                refresh_memory_bytes
+                    .remaining()
+                    .saturating_sub(MAX_COMMAND_STDERR_BYTES),
                 &mut refresh_memory_bytes,
             )?;
             charge_refresh_memory(
@@ -402,8 +404,9 @@ pub fn refresh(c: &Connection) -> Result<()> {
                 let paths = git_output(
                     &repository,
                     &["ls-tree", "-r", "--name-only", "-z", &commit],
-                    MAX_REFRESH_MEMORY_BYTES
-                        .saturating_sub(refresh_memory_bytes + MAX_COMMAND_STDERR_BYTES),
+                    refresh_memory_bytes
+                        .remaining()
+                        .saturating_sub(MAX_COMMAND_STDERR_BYTES),
                     &mut refresh_memory_bytes,
                 )?;
                 charge_refresh_memory(&mut refresh_memory_bytes, paths.len(), "Git path list")?;
@@ -415,8 +418,9 @@ pub fn refresh(c: &Connection) -> Result<()> {
                     let bytes = git_output(
                         &repository,
                         &["show", &spec],
-                        MAX_REFRESH_MEMORY_BYTES
-                            .saturating_sub(refresh_memory_bytes + MAX_COMMAND_STDERR_BYTES),
+                        refresh_memory_bytes
+                            .remaining()
+                            .saturating_sub(MAX_COMMAND_STDERR_BYTES),
                         &mut refresh_memory_bytes,
                     )?;
                     charge_refresh_memory(
@@ -542,8 +546,9 @@ pub fn refresh(c: &Connection) -> Result<()> {
             let output = bounded_command_output(
                 &mut child,
                 MAX_IMPORT_BYTES.min(
-                    MAX_REFRESH_MEMORY_BYTES
-                        .saturating_sub(refresh_memory_bytes + MAX_COMMAND_STDERR_BYTES),
+                    refresh_memory_bytes
+                        .remaining()
+                        .saturating_sub(MAX_COMMAND_STDERR_BYTES),
                 ),
                 &mut refresh_memory_bytes,
             )?;
@@ -577,7 +582,7 @@ pub fn refresh(c: &Connection) -> Result<()> {
             let cache = cache_dir.join(format!("{source_version}.json"));
             if let Some((pages, cache_bytes)) = cache_pages(
                 &cache,
-                ((MAX_REFRESH_MEMORY_BYTES - refresh_memory_bytes) / 2).min(64 * 1024 * 1024),
+                (refresh_memory_bytes.remaining() / 2).min(64 * 1024 * 1024),
             )? {
                 charge_refresh_memory(
                     &mut refresh_memory_bytes,
@@ -603,8 +608,9 @@ pub fn refresh(c: &Connection) -> Result<()> {
                     &mut child,
                     &source_bytes,
                     MAX_PDF_TEXT_BYTES.min(
-                        MAX_REFRESH_MEMORY_BYTES
-                            .saturating_sub(refresh_memory_bytes + MAX_COMMAND_STDERR_BYTES),
+                        refresh_memory_bytes
+                            .remaining()
+                            .saturating_sub(MAX_COMMAND_STDERR_BYTES),
                     ),
                     &mut refresh_memory_bytes,
                 )?;

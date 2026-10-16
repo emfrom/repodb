@@ -1,4 +1,4 @@
-use crate::{Result, SearchResult, as_bytes, process, query_vector, segmentation};
+use crate::{Result, SearchResult, as_bytes, budget::Budget, process, query_vector, segmentation};
 use rusqlite::{Connection, Transaction, TransactionBehavior, params};
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -35,9 +35,9 @@ fn git_capture_limits(requested_stdout: usize, preparation_bytes: usize) -> Resu
 fn git_output(
     args: &[&str],
     stdout_limit: usize,
-    preparation_bytes: &mut usize,
+    preparation_bytes: &mut Budget,
 ) -> Result<Vec<u8>> {
-    let (stdout_limit, stderr_limit) = git_capture_limits(stdout_limit, *preparation_bytes)?;
+    let (stdout_limit, stderr_limit) = git_capture_limits(stdout_limit, preparation_bytes.used())?;
     let mut child = Command::new("git")
         .args(args)
         .stdout(Stdio::piped())
@@ -47,10 +47,7 @@ fn git_output(
     if output.exceeded {
         return Err(memory_limit());
     }
-    *preparation_bytes = preparation_bytes
-        .checked_add(output.stdout.len())
-        .filter(|bytes| *bytes <= MAX_REFRESH_MEMORY_BYTES)
-        .ok_or_else(memory_limit)?;
+    preparation_bytes.charge(output.stdout.len(), "Git output")?;
     if !output.status.success() {
         return Err(format!(
             "git {} failed: {}",
@@ -64,56 +61,71 @@ fn git_output(
 
 fn for_each_tree_record(
     commit_id: &str,
-    preparation_bytes: &mut usize,
-    mut visit: impl FnMut(&[u8], &mut usize) -> Result<()>,
+    preparation_bytes: &mut Budget,
+    mut visit: impl FnMut(&[u8], &mut Budget) -> Result<()>,
 ) -> Result<()> {
+    const TREE_READ_BUFFER_BYTES: usize = 8 * 1024;
+    // Reserve both concurrent captures before starting the child, so record growth
+    // cannot consume memory needed by stderr or the buffered stdout reader.
+    preparation_bytes.charge(MAX_GIT_STDERR_BYTES, "Git stderr capture")?;
+    preparation_bytes.charge(TREE_READ_BUFFER_BYTES, "Git stdout read buffer")?;
     let mut child = Command::new("git")
         .args(["ls-tree", "-r", "-z", "--full-tree", commit_id])
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()?;
-    let mut stdout = BufReader::new(child.stdout.take().unwrap());
+    let mut stdout = BufReader::with_capacity(TREE_READ_BUFFER_BYTES, child.stdout.take().unwrap());
     let stderr = child.stderr.take().unwrap();
     let stderr = std::thread::spawn(move || {
         crate::process::read_bounded_command_output(stderr, MAX_GIT_STDERR_BYTES)
     });
-    loop {
-        let mut record = Vec::new();
-        if stdout.read_until(0, &mut record)? == 0 {
-            break;
+    let result = (|| -> Result<()> {
+        loop {
+            let mut record = Vec::new();
+            loop {
+                let available = stdout.fill_buf()?;
+                if available.is_empty() {
+                    break;
+                }
+                let end = available
+                    .iter()
+                    .position(|byte| *byte == 0)
+                    .map_or(available.len(), |n| n + 1);
+                let record_bytes = end - usize::from(available[end - 1] == 0);
+                if record_bytes > preparation_bytes.remaining() {
+                    return Err(memory_limit());
+                }
+                preparation_bytes.charge(record_bytes, "Git tree record")?;
+                record.extend_from_slice(&available[..record_bytes]);
+                let terminated = end > record_bytes;
+                stdout.consume(end);
+                if terminated {
+                    break;
+                }
+            }
+            if record.is_empty() {
+                break;
+            }
+            let visit_result = visit(&record, preparation_bytes);
+            preparation_bytes.release(record.len());
+            visit_result?;
         }
-        record.pop();
-        let record_len = record.len();
-        *preparation_bytes = preparation_bytes
-            .checked_add(record_len)
-            .filter(|bytes| *bytes <= MAX_REFRESH_MEMORY_BYTES)
-            .ok_or_else(memory_limit)?;
-        if record_len > MAX_REFRESH_MEMORY_BYTES {
-            let _ = child.kill();
-            let _ = child.wait();
-            return Err(memory_limit());
-        }
-        let result = visit(&record, preparation_bytes);
-        *preparation_bytes -= record_len;
-        if let Err(error) = result {
-            let _ = child.kill();
-            let _ = child.wait();
-            return Err(error);
-        }
+        Ok(())
+    })();
+    if result.is_err() {
+        let _ = child.kill();
     }
     let status = child.wait()?;
     let (stderr, exceeded) = stderr.join().map_err(|_| "git stderr reader panicked")??;
-    *preparation_bytes = preparation_bytes
-        .checked_add(stderr.len())
-        .filter(|bytes| *bytes <= MAX_REFRESH_MEMORY_BYTES)
-        .ok_or_else(memory_limit)?;
+    preparation_bytes.release(TREE_READ_BUFFER_BYTES);
+    preparation_bytes.release(MAX_GIT_STDERR_BYTES);
+    result?;
     if exceeded {
         return Err(memory_limit());
     }
     if !status.success() {
         return Err(format!("git ls-tree failed: {}", String::from_utf8_lossy(&stderr)).into());
     }
-    *preparation_bytes -= stderr.len();
     Ok(())
 }
 
@@ -172,7 +184,7 @@ fn head() -> Result<Option<String>> {
     }
 }
 
-fn reachable_commits(preparation_bytes: &mut usize) -> Result<Vec<(String, i64)>> {
+fn reachable_commits(preparation_bytes: &mut Budget) -> Result<Vec<(String, i64)>> {
     // Capture immutable roots once; later ref changes cannot mix two snapshots.
     let mut roots = git_output(
         &["for-each-ref", "--format=%(objectname)"],
@@ -181,10 +193,7 @@ fn reachable_commits(preparation_bytes: &mut usize) -> Result<Vec<(String, i64)>
     )?;
     if let Some(head) = head()? {
         let head = format!("{head}\n");
-        *preparation_bytes = preparation_bytes
-            .checked_add(head.len())
-            .filter(|bytes| *bytes <= MAX_REFRESH_MEMORY_BYTES)
-            .ok_or_else(memory_limit)?;
+        preparation_bytes.charge(head.len(), "Git roots")?;
         roots.extend_from_slice(head.as_bytes());
     }
     if roots.is_empty() {
@@ -197,13 +206,10 @@ fn reachable_commits(preparation_bytes: &mut usize) -> Result<Vec<(String, i64)>
         .stderr(Stdio::piped())
         .spawn()?;
     let (stdout_limit, stderr_limit) =
-        git_capture_limits(MAX_REFRESH_MEMORY_BYTES, *preparation_bytes)?;
+        git_capture_limits(MAX_REFRESH_MEMORY_BYTES, preparation_bytes.used())?;
     let output = process::capture_with_input(&mut child, &roots, stdout_limit, stderr_limit)?;
-    *preparation_bytes = preparation_bytes
-        .checked_add(output.stdout.len())
-        .and_then(|bytes| bytes.checked_add(output.stderr.len()))
-        .filter(|bytes| *bytes <= MAX_REFRESH_MEMORY_BYTES)
-        .ok_or_else(memory_limit)?;
+    preparation_bytes.charge(output.stdout.len(), "Git commit output")?;
+    preparation_bytes.charge(output.stderr.len(), "Git stderr")?;
     if output.exceeded {
         return Err(memory_limit());
     }
@@ -221,10 +227,7 @@ fn reachable_commits(preparation_bytes: &mut usize) -> Result<Vec<(String, i64)>
     for line in stdout.lines() {
         let (timestamp, id) = line.split_once(' ').ok_or("invalid git commit record")?;
         let commit_bytes = id.len() + std::mem::size_of::<(String, i64)>();
-        *preparation_bytes = preparation_bytes
-            .checked_add(commit_bytes)
-            .filter(|bytes| *bytes <= MAX_REFRESH_MEMORY_BYTES)
-            .ok_or_else(memory_limit)?;
+        preparation_bytes.charge(commit_bytes, "parsed commit records")?;
         commits.push((id.to_owned(), timestamp.parse()?));
     }
     // The captured bytes and parsed records coexist during parsing. Retain the
@@ -232,8 +235,8 @@ fn reachable_commits(preparation_bytes: &mut usize) -> Result<Vec<(String, i64)>
     drop(stdout);
     drop(output.stderr);
     drop(roots);
-    *preparation_bytes -= output_bytes;
-    *preparation_bytes -= roots_bytes;
+    preparation_bytes.release(output_bytes);
+    preparation_bytes.release(roots_bytes);
     Ok(commits)
 }
 
@@ -306,12 +309,26 @@ mod tests {
             git_capture_limits(MAX_REFRESH_MEMORY_BYTES, MAX_REFRESH_MEMORY_BYTES + 1).is_err()
         );
     }
+
+    #[test]
+    fn tree_record_budget_caps_append_and_rolls_back_after_visit() {
+        let mut budget = Budget::new(5, "history refresh limit exceeded");
+        budget.charge(3, "tree record").unwrap();
+        assert_eq!(budget.remaining(), 2);
+        assert!(budget.charge(3, "tree record").is_err());
+        assert_eq!(budget.used(), 3, "rejected append must not charge bytes");
+        budget.release(3);
+        assert_eq!(budget.used(), 0, "record charge is rolled back after visit");
+    }
 }
 
 pub fn refresh(c: &mut Connection) -> Result<()> {
     let version = snapshot_version(c)?;
     is_current(c)?;
-    let mut preparation_bytes = 0usize;
+    let mut preparation_bytes = Budget::new(
+        MAX_REFRESH_MEMORY_BYTES,
+        "history refresh limit exceeded: preparation data",
+    );
     let commits = reachable_commits(&mut preparation_bytes)?;
     if commits.len() > MAX_COMMITS {
         return Err(format!("history refresh limit exceeded: at most {MAX_COMMITS} reachable commits; narrow repository refs and retry").into());
@@ -356,10 +373,8 @@ pub fn refresh(c: &mut Connection) -> Result<()> {
                     let blob_overhead = blob_id.len()
                         + std::mem::size_of::<Blob>()
                         + std::mem::size_of::<(String, Blob)>();
-                    if preparation_bytes
-                        .saturating_add(blob_bytes.saturating_mul(2))
-                        .saturating_add(blob_overhead)
-                        > MAX_REFRESH_MEMORY_BYTES
+                    if blob_bytes.saturating_mul(2).saturating_add(blob_overhead)
+                        > preparation_bytes.remaining()
                     {
                         return Err(memory_limit());
                     }
@@ -368,9 +383,10 @@ pub fn refresh(c: &mut Connection) -> Result<()> {
                         blob_bytes,
                         preparation_bytes,
                     )?;
-                    *preparation_bytes = preparation_bytes
-                        .saturating_add(blob_bytes)
-                        .saturating_add(blob_overhead);
+                    preparation_bytes.charge(
+                        blob_bytes.saturating_add(blob_overhead),
+                        "Git blob contents",
+                    )?;
                     let blob = if bytes.contains(&0) {
                         Blob {
                             content: None,
@@ -394,15 +410,13 @@ pub fn refresh(c: &mut Connection) -> Result<()> {
                     return Err(format!("history refresh limit exceeded: at most {MAX_OCCURRENCES} commit/path occurrences; narrow repository refs and retry").into());
                 }
                 let path = &record[tab + 1..];
-                *preparation_bytes = preparation_bytes.saturating_add(
+                preparation_bytes.charge(
                     path.len()
                         + commit_id.len()
                         + blob_id.len()
                         + std::mem::size_of::<Occurrence>(),
-                );
-                if *preparation_bytes > MAX_REFRESH_MEMORY_BYTES {
-                    return Err(memory_limit());
-                }
+                    "Git occurrence records",
+                )?;
                 occurrences.push(Occurrence {
                     commit_id: commit_id.clone(),
                     blob_id,
@@ -430,11 +444,10 @@ pub fn refresh(c: &mut Connection) -> Result<()> {
                     return false;
                 }
                 let charge = unit.text.len() + blob_id.len() + std::mem::size_of::<Unit>();
-                if preparation_bytes.saturating_add(charge) > MAX_REFRESH_MEMORY_BYTES {
-                    staging_error = Some(memory_limit());
+                if let Err(error) = preparation_bytes.charge(charge, "staged history units") {
+                    staging_error = Some(error);
                     return false;
                 }
-                preparation_bytes += charge;
                 unit_text_bytes += unit.text.len();
                 units.push(Unit {
                     id: units.len() + 1,
@@ -460,10 +473,7 @@ pub fn refresh(c: &mut Connection) -> Result<()> {
                 command,
                 model,
                 *dim,
-                Some(
-                    MAX_VECTOR_BYTES
-                        .min(MAX_REFRESH_MEMORY_BYTES.saturating_sub(preparation_bytes)),
-                ),
+                Some(MAX_VECTOR_BYTES.min(preparation_bytes.remaining())),
             )?;
             Ok::<_, Box<dyn std::error::Error>>((rows, dimension))
         })

@@ -7,6 +7,7 @@ use std::{
     process::{Command, Stdio},
 };
 
+mod budget;
 mod history;
 mod imports;
 mod process;
