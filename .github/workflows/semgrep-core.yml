@@ -1,0 +1,19 @@
+name: Semgrep core integration
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  real-semgrep-core:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: astral-sh/setup-uv@v6
+      - name: Run corpus against bundled Semgrep core 1.181.0
+        run: uv run --no-project --with semgrep==1.181.0 -- bash scripts/test-semgrep-core.sh

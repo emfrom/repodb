@@ -125,8 +125,7 @@ fn optional_segmenter_uses_byte_partition_and_falls_back_on_invalid_output() {
 fn optional_semgrep_core_uses_real_ast_and_falls_back_when_unavailable() {
     use std::os::unix::fs::PermissionsExt;
 
-    let Some(core) = semgrep_corpus::actual_semgrep_core() else {
-        eprintln!("skipping real Semgrep integration: Semgrep core 1.181.0 is unavailable");
+    let Some(core) = semgrep_corpus::semgrep_core_or_skip("Go Semgrep integration") else {
         return;
     };
     let repo = repository();

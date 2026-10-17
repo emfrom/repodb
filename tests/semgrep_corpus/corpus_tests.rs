@@ -101,15 +101,29 @@ fn empty_repository() -> tempfile::TempDir {
     dir
 }
 
-pub(super) fn actual_semgrep_core() -> Option<PathBuf> {
+pub(super) fn semgrep_core_or_skip(context: &str) -> Option<PathBuf> {
+    let core = actual_semgrep_core();
+    if core.is_none() {
+        if env::var_os("REPODB_REQUIRE_SEMGREP_CORE").is_some() {
+            panic!(
+                "{context} requires Semgrep core 1.181.0; set REPODB_SEMGREP_CORE or put semgrep on PATH"
+            );
+        }
+        eprintln!("skipping {context}: Semgrep core 1.181.0 is unavailable");
+    }
+    core
+}
+
+fn actual_semgrep_core() -> Option<PathBuf> {
     static CORE: OnceLock<Option<PathBuf>> = OnceLock::new();
     CORE.get_or_init(discover_semgrep_core).clone()
 }
 
 fn discover_semgrep_core() -> Option<PathBuf> {
-    let configured = env::var_os("REPODB_SEMGREP_CORE").map(PathBuf::from);
-    let mut candidates = configured.into_iter().collect::<Vec<_>>();
-    candidates.extend(find_on_path("semgrep-core"));
+    if let Some(configured) = env::var_os("REPODB_SEMGREP_CORE").map(PathBuf::from) {
+        return is_pinned_semgrep_core(&configured).then_some(configured);
+    }
+    let mut candidates = find_on_path("semgrep-core").into_iter().collect::<Vec<_>>();
 
     if let Some(semgrep) = find_on_path("semgrep")
         && let Ok(semgrep) = fs::canonicalize(semgrep)
@@ -267,11 +281,7 @@ fn verify_fixture(fixture: &Fixture) {
         return;
     }
 
-    let Some(core) = actual_semgrep_core() else {
-        eprintln!(
-            "skipping {}: Semgrep core 1.181.0 is unavailable",
-            fixture.path()
-        );
+    let Some(core) = semgrep_core_or_skip(&fixture.path()) else {
         return;
     };
     let root = tempfile::tempdir().unwrap();
@@ -461,12 +471,7 @@ define_corpus![
 
 #[test]
 fn all_candidate_languages_keep_both_entity_versions_in_reachable_history() {
-    let core = actual_semgrep_core();
-    if core.is_none() {
-        eprintln!(
-            "Semgrep core 1.181.0 unavailable; corpus history will use fallback segmentation"
-        );
-    }
+    let core = semgrep_core_or_skip("corpus history");
     let fixtures = fixtures();
     assert_eq!(fixtures.len(), 50);
     let repo = empty_repository();
