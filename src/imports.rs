@@ -952,7 +952,8 @@ mod tests {
 
     #[test]
     fn cache_writer_streams_page_iterator_as_compatible_json() {
-        let path = std::env::temp_dir().join(format!("repodb-cache-write-{}.json", std::process::id()));
+        let path =
+            std::env::temp_dir().join(format!("repodb-cache-write-{}.json", std::process::id()));
         let pages = vec!["first page".to_owned(), "second\\npage".to_owned()];
 
         write_cache(&path, pages.iter().map(String::as_str)).unwrap();
