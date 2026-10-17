@@ -1491,6 +1491,48 @@ fn history_import_dimension_mismatch_keeps_prior_snapshot_and_model_dimension() 
 }
 
 #[test]
+fn history_and_import_dimension_mismatch_fails_when_model_dimension_is_unknown() {
+    let repo = tempfile::tempdir().unwrap();
+    git(repo.path(), &["init", "-q"]);
+    assert!(run(repo.path(), &["init"]).0);
+
+    let embedder = fake_embedder(
+        repo.path(),
+        "case \"$input\" in\n  *'two dimensional history marker'*) printf '[1,0]' ;;\n  *) printf '[1,0,0]' ;;\nesac",
+    );
+    assert!(
+        run(
+            repo.path(),
+            &["reembed", "--command", embedder.to_str().unwrap()]
+        )
+        .0
+    );
+
+    fs::write(
+        repo.path().join("history.txt"),
+        "two dimensional history marker\n",
+    )
+    .unwrap();
+    git(repo.path(), &["add", "history.txt"]);
+    git(repo.path(), &["commit", "-qm", "history dimension"]);
+
+    let imported = repo.path().join("external.txt");
+    fs::write(&imported, "three dimensional imported marker\n").unwrap();
+    let locator = imported.to_string_lossy().into_owned();
+    assert!(run(repo.path(), &["import", &locator]).0);
+
+    assert!(!run(repo.path(), &["refresh"]).0);
+    assert!(
+        search_json(
+            repo.path(),
+            &["two dimensional history marker", "--all-history"]
+        )
+        .is_empty()
+    );
+    assert!(search_json(repo.path(), &["three dimensional imported marker"]).is_empty());
+}
+
+#[test]
 fn empty_repository_can_initialize_then_index_its_first_commit() {
     let repo = tempfile::tempdir().unwrap();
     let root = repo.path();
@@ -2289,7 +2331,7 @@ fn imported_source_kinds_share_dimension_when_model_dimension_is_unknown() {
 
     let embedder = fake_embedder(
         repo.path(),
-        "case \"$input\" in\n  *'local source dimension marker'*) printf '[1,0]' ;;\n  *'imported git dimension marker'*) printf '[1,0,0]' ;;\n  *) printf '[1,0,0,0]' ;;\nesac",
+        "case \"$input\" in\n  *'local source dimension marker'*) printf '[1,0]' ;;\n  *'imported git dimension marker'*) printf '[1,0]' ;;\n  *) printf '[1,0,0]' ;;\nesac",
     );
     assert!(
         run(
