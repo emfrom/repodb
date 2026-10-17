@@ -610,7 +610,9 @@ pub fn refresh(c: &Connection) -> Result<()> {
                 pages
             }
         } else {
-            vec![String::from_utf8(source_bytes.clone())?]
+            // Transfer ownership into the decoded text instead of retaining the
+            // source byte buffer alongside a full duplicate.
+            vec![String::from_utf8(source_bytes)?]
         };
         refresh_memory_bytes.charge(pages.iter().map(String::len).sum(), "PDF/cache pages")?;
         let content_size =
