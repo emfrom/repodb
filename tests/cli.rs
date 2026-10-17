@@ -2345,12 +2345,24 @@ fn imported_source_kinds_share_dimension_when_model_dimension_is_unknown() {
     let converter = bin.join("pdftotext");
     fs::write(
         &converter,
-        "#!/bin/sh\ncat >/dev/null\nprintf 'pdf source dimension marker'\n",
+        "#!/bin/sh\nprintf invoked > \"$PDF_CONVERTER_MARKER\"\ncat >/dev/null\nprintf 'pdf source dimension marker'\n",
     )
     .unwrap();
     fs::set_permissions(&converter, fs::Permissions::from_mode(0o755)).unwrap();
     let path = format!("{}:{}", bin.display(), std::env::var("PATH").unwrap());
-    assert!(!run_with_env(repo.path(), &["refresh"], &[("PATH", &path)]).0);
+    let converter_marker = repo.path().join("pdf-converter-invoked");
+    assert!(
+        !run_with_env(
+            repo.path(),
+            &["refresh"],
+            &[
+                ("PATH", &path),
+                ("PDF_CONVERTER_MARKER", converter_marker.to_str().unwrap()),
+            ],
+        )
+        .0
+    );
+    assert!(converter_marker.is_file(), "fake pdftotext was not invoked");
     for marker in [
         "local source dimension marker",
         "imported git dimension marker",
