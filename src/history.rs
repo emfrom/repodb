@@ -3,7 +3,7 @@ use crate::{
     budget::{Budget, MAX_REFRESH_ACCOUNTING_BYTES},
     process, query_vector, segmentation,
 };
-use rusqlite::{Connection, Transaction, TransactionBehavior, params};
+use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
 use std::{
     io::{BufRead, BufReader},
     process::{Command, Stdio},
@@ -436,8 +436,7 @@ mod tests {
     }
 }
 
-pub fn refresh(c: &mut Connection) -> Result<()> {
-    let version = snapshot_version(c)?;
+pub fn prepare_refresh(c: &Connection) -> Result<()> {
     is_current(c)?;
     let mut preparation_bytes = Budget::new(
         MAX_REFRESH_ACCOUNTING_BYTES,
@@ -451,7 +450,8 @@ pub fn refresh(c: &mut Connection) -> Result<()> {
         CREATE TEMP TABLE refresh_blobs(blob_id TEXT PRIMARY KEY, content TEXT, status TEXT NOT NULL);
         CREATE TEMP TABLE refresh_occurrences(commit_id TEXT NOT NULL, blob_id TEXT NOT NULL, path BLOB NOT NULL, segmentation_kind TEXT NOT NULL, PRIMARY KEY(commit_id,path));
         CREATE TEMP TABLE refresh_units(unit_id INTEGER PRIMARY KEY, blob_id TEXT NOT NULL, segmentation_kind TEXT NOT NULL, text TEXT NOT NULL, line_start INTEGER NOT NULL, line_end INTEGER NOT NULL);
-        CREATE TEMP TABLE refresh_embeddings(unit_id INTEGER PRIMARY KEY, vector BLOB NOT NULL);")?;
+        CREATE TEMP TABLE refresh_embeddings(unit_id INTEGER PRIMARY KEY, vector BLOB NOT NULL);
+        DROP TABLE IF EXISTS temp.refresh_dimension; CREATE TEMP TABLE refresh_dimension(value INTEGER);")?;
     {
         let mut commit_stage =
             c.prepare("INSERT OR IGNORE INTO temp.refresh_commits VALUES(?1,?2)")?;
@@ -562,8 +562,16 @@ pub fn refresh(c: &mut Connection) -> Result<()> {
             embedding_dimension = Some(dimension);
         }
     }
-    let tx = publish_transaction(c, version)?;
-    crate::imports::publish(&tx)?;
+    if let Some(dimension) = embedding_dimension {
+        c.execute(
+            "INSERT INTO temp.refresh_dimension VALUES(?1)",
+            [dimension as i64],
+        )?;
+    }
+    Ok(())
+}
+
+pub fn publish_refresh(tx: &Transaction<'_>) -> Result<()> {
     tx.execute_batch("DROP TABLE IF EXISTS unit_embeddings; DROP TABLE IF EXISTS git_blob_units; DROP TABLE IF EXISTS indexed_units; DROP TABLE IF EXISTS git_occurrences; DROP TABLE IF EXISTS blob_contents; DROP TABLE IF EXISTS git_commits;
         CREATE TABLE git_commits(commit_id TEXT PRIMARY KEY NOT NULL, timestamp INTEGER NOT NULL);
         CREATE TABLE blob_contents(blob_id TEXT PRIMARY KEY NOT NULL, content TEXT, status TEXT NOT NULL);
@@ -592,15 +600,20 @@ pub fn refresh(c: &mut Connection) -> Result<()> {
         "INSERT INTO unit_embeddings SELECT * FROM temp.refresh_embeddings",
         [],
     )?;
-    if let Some(dim) = embedding_dimension {
+    let dimension: Option<i64> = tx
+        .query_row(
+            "SELECT value FROM temp.refresh_dimension LIMIT 1",
+            [],
+            |row| row.get(0),
+        )
+        .optional()?;
+    if let Some(dim) = dimension {
         tx.execute(
             "UPDATE embedding_config SET value=?1 WHERE key='dimension'",
             [dim.to_string()],
         )?;
     }
     tx.execute_batch("DROP TABLE IF EXISTS indexed_files; DROP TABLE IF EXISTS embeddings; PRAGMA user_version=3;")?;
-    tx.commit()?;
-    c.execute_batch("DROP TABLE temp.refresh_embeddings; DROP TABLE temp.refresh_units; DROP TABLE temp.refresh_occurrences; DROP TABLE temp.refresh_blobs; DROP TABLE temp.refresh_commits;")?;
     Ok(())
 }
 

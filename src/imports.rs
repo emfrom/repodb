@@ -122,20 +122,81 @@ fn git_output(repo: &str, args: &[&str], limit: usize, used: &mut Budget) -> Res
     Ok(stdout)
 }
 
+fn table_exists(c: &Connection, table: &str) -> Result<bool> {
+    Ok(c.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name=?1)",
+        [table],
+        |row| row.get(0),
+    )?)
+}
+
+fn column_exists(c: &Connection, table: &str, column: &str) -> Result<bool> {
+    if !table_exists(c, table)? {
+        return Ok(false);
+    }
+    let mut stmt = c.prepare(&format!("PRAGMA table_info({table})"))?;
+    Ok(stmt
+        .query_map([], |row| row.get::<_, String>(1))?
+        .collect::<std::result::Result<Vec<_>, _>>()?
+        .iter()
+        .any(|name| name == column))
+}
+
 pub fn refresh(c: &Connection) -> Result<()> {
-    init(c)?;
     c.execute_batch("PRAGMA temp_store=FILE;
         DROP TABLE IF EXISTS temp.import_stage_sources; DROP TABLE IF EXISTS temp.import_stage_versions;
         DROP TABLE IF EXISTS temp.import_stage_units; DROP TABLE IF EXISTS temp.import_stage_git_units;
-        CREATE TEMP TABLE import_stage_sources AS SELECT * FROM imported_sources;
-        CREATE TEMP TABLE import_stage_versions AS SELECT * FROM imported_versions;
-        CREATE TEMP TABLE import_stage_units AS SELECT * FROM imported_units;
-        CREATE TEMP TABLE import_stage_git_units AS SELECT * FROM imported_git_units;
-        CREATE UNIQUE INDEX import_stage_versions_key ON import_stage_versions(source_id,version);
-        CREATE UNIQUE INDEX import_stage_units_key ON import_stage_units(source_id,version,line,text);
-        CREATE UNIQUE INDEX import_stage_git_units_key ON import_stage_git_units(source_id,commit_id,path,line,text);")?;
-    let mut st = c.prepare("SELECT id,locator,kind FROM temp.import_stage_sources ORDER BY id")?;
-    let mut source_rows = st.query([])?;
+        CREATE TEMP TABLE import_stage_sources(id TEXT PRIMARY KEY,locator TEXT NOT NULL,kind TEXT NOT NULL);
+        CREATE TEMP TABLE import_stage_versions(source_id TEXT NOT NULL,version TEXT NOT NULL,content TEXT NOT NULL,fetched_order INTEGER NOT NULL,PRIMARY KEY(source_id,version));
+        CREATE TEMP TABLE import_stage_units(source_id TEXT NOT NULL,version TEXT NOT NULL,line INTEGER NOT NULL,line_end INTEGER NOT NULL,text TEXT NOT NULL,vector BLOB,page INTEGER,PRIMARY KEY(source_id,version,line,text));
+        CREATE TEMP TABLE import_stage_git_units(source_id TEXT NOT NULL,commit_id TEXT NOT NULL,path TEXT NOT NULL,line INTEGER NOT NULL,line_end INTEGER NOT NULL,text TEXT NOT NULL,vector BLOB,PRIMARY KEY(source_id,commit_id,path,line,text));")?;
+    if table_exists(c, "imported_sources")? {
+        c.execute(
+            "INSERT INTO temp.import_stage_sources SELECT id,locator,kind FROM imported_sources",
+            [],
+        )?;
+    }
+    if table_exists(c, "imported_versions")? {
+        let order = if column_exists(c, "imported_versions", "fetched_order")? {
+            "fetched_order"
+        } else {
+            "rowid"
+        };
+        c.execute(&format!("INSERT INTO temp.import_stage_versions SELECT source_id,version,content,{order} FROM imported_versions"), [])?;
+    }
+    if table_exists(c, "imported_units")? {
+        let line_end = if column_exists(c, "imported_units", "line_end")? {
+            "line_end"
+        } else {
+            "line"
+        };
+        let page = if column_exists(c, "imported_units", "page")? {
+            "page"
+        } else {
+            "NULL"
+        };
+        c.execute(&format!("INSERT INTO temp.import_stage_units SELECT source_id,version,line,{line_end},text,vector,{page} FROM imported_units"), [])?;
+    }
+    if table_exists(c, "imported_git_units")? {
+        let line_end = if column_exists(c, "imported_git_units", "line_end")? {
+            "line_end"
+        } else {
+            "line"
+        };
+        c.execute(&format!("INSERT INTO temp.import_stage_git_units SELECT source_id,commit_id,path,line,{line_end},text,vector FROM imported_git_units"), [])?;
+    }
+    let source_rows = {
+        let mut st =
+            c.prepare("SELECT id,locator,kind FROM temp.import_stage_sources ORDER BY id")?;
+        st.query_map([], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, String>(2)?,
+            ))
+        })?
+        .collect::<std::result::Result<Vec<_>, _>>()?
+    };
     let cfg: Option<(String,String)> = c.query_row("SELECT (SELECT value FROM embedding_config WHERE key='command'),(SELECT value FROM embedding_config WHERE key='model')", [], |r| Ok((r.get(0)?,r.get(1)?))).ok();
     let configured_dimension = c
         .query_row(
@@ -146,11 +207,13 @@ pub fn refresh(c: &Connection) -> Result<()> {
         .ok()
         .and_then(|v| v.parse::<usize>().ok())
         .filter(|d| *d != 0);
-    let retention: String = c.query_row(
-        "SELECT value FROM import_config WHERE key='retention'",
-        [],
-        |r| r.get(0),
-    )?;
+    let retention: String = c
+        .query_row(
+            "SELECT value FROM import_config WHERE key='retention'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap_or_else(|_| "latest".to_owned());
     let cache_dir: String = c.query_row("PRAGMA database_list", [], |r| r.get(2))?;
     let cache_dir = Path::new(&cache_dir)
         .parent()
@@ -162,10 +225,7 @@ pub fn refresh(c: &Connection) -> Result<()> {
         MAX_REFRESH_ACCOUNTING_BYTES,
         "import refresh preparation accounting",
     );
-    while let Some(row) = source_rows.next()? {
-        let id: String = row.get(0)?;
-        let locator: String = row.get(1)?;
-        let kind: String = row.get(2)?;
+    for (id, locator, kind) in source_rows {
         if kind == "git" {
             let repository = if Path::new(&locator).is_dir() {
                 locator.clone()
@@ -473,8 +533,6 @@ pub fn refresh(c: &Connection) -> Result<()> {
             )?;
         }
     }
-    drop(source_rows);
-    drop(st);
     Ok(())
 }
 
@@ -486,8 +544,14 @@ pub fn publish(tx: &rusqlite::Transaction<'_>) -> Result<()> {
         ("imported_git_units", "import_stage_git_units"),
     ] {
         tx.execute(&format!("DELETE FROM {table}"), [])?;
+        let columns = match table {
+            "imported_versions" => "source_id,version,content,fetched_order",
+            "imported_units" => "source_id,version,line,line_end,text,vector,page",
+            "imported_git_units" => "source_id,commit_id,path,line,line_end,text,vector",
+            _ => unreachable!(),
+        };
         tx.execute(
-            &format!("INSERT INTO {table} SELECT * FROM temp.{stage}"),
+            &format!("INSERT INTO {table}({columns}) SELECT {columns} FROM temp.{stage}"),
             [],
         )?;
     }

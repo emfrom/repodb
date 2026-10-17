@@ -1338,7 +1338,11 @@ fn history_blob_larger_than_previous_limit_refreshes() {
         .current_dir(root)
         .output()
         .unwrap();
-    assert!(output.status.success(), "large valid blob should refresh");
+    assert!(
+        output.status.success(),
+        "large valid blob should refresh: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
     let after = search_json(root, &["TARGET", "--all-history"]);
     assert_eq!(after.len(), before.len());
     assert_eq!(after[0]["text"], before[0]["text"]);
@@ -1571,6 +1575,47 @@ fn refresh_keeps_history_and_imports_atomic_when_import_preparation_fails() {
         "previous imported marker"
     );
     assert!(search_json(root, &["failing imported marker"]).is_empty());
+}
+
+#[test]
+fn refresh_keeps_imports_atomic_when_history_preparation_fails() {
+    use std::os::unix::fs::PermissionsExt;
+    let repo = repository();
+    let root = repo.path();
+    assert!(run(root, &["init"]).0);
+    let imported = root.join("external.txt");
+    fs::write(&imported, "previous imported marker\n").unwrap();
+    let locator = imported.to_string_lossy().into_owned();
+    assert!(run(root, &["import", &locator]).0);
+    assert!(run(root, &["refresh"]).0);
+
+    fs::write(&imported, "new imported marker\n").unwrap();
+    fs::write(root.join("new-history.txt"), "new history marker\n").unwrap();
+    git(root, &["add", "new-history.txt"]);
+    git(root, &["commit", "-qm", "new history"]);
+    let shim = root.join("git-shim");
+    fs::create_dir(&shim).unwrap();
+    let real_git = Command::new("which").arg("git").output().unwrap();
+    let real_git = String::from_utf8(real_git.stdout)
+        .unwrap()
+        .trim()
+        .to_owned();
+    let failing_git = shim.join("git");
+    fs::write(
+        &failing_git,
+        format!("#!/bin/sh\n[ \"$1\" != rev-list ] || exit 1\nexec {real_git} \"$@\"\n"),
+    )
+    .unwrap();
+    fs::set_permissions(&failing_git, fs::Permissions::from_mode(0o755)).unwrap();
+    let path = format!("{}:{}", shim.display(), std::env::var("PATH").unwrap());
+    assert!(!run_with_env(root, &["refresh"], &[("PATH", &path)]).0);
+
+    assert_eq!(
+        search_json(root, &["previous imported marker"])[0]["text"],
+        "previous imported marker"
+    );
+    assert!(search_json(root, &["new imported marker"]).is_empty());
+    assert!(search_json(root, &["new history marker", "--all-history"]).is_empty());
 }
 
 #[test]
