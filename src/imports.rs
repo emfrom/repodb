@@ -256,7 +256,7 @@ fn cache_pages(cache: &Path, used: &mut Budget) -> Result<Option<Vec<String>>> {
     }
 }
 
-fn write_cache(cache: &Path, pages: &[String]) -> Result<()> {
+fn write_cache<'a>(cache: &Path, pages: impl IntoIterator<Item = &'a str>) -> Result<()> {
     use std::sync::atomic::{AtomicU64, Ordering};
     static NEXT_TEMP: AtomicU64 = AtomicU64::new(0);
     let parent = cache.parent().ok_or("cache path has no parent")?;
@@ -275,7 +275,13 @@ fn write_cache(cache: &Path, pages: &[String]) -> Result<()> {
             .write(true)
             .create_new(true)
             .open(&temp)?;
-        serde_json::to_writer(&mut file, pages)?;
+        use serde::ser::{SerializeSeq, Serializer};
+        let mut serializer = serde_json::Serializer::new(&mut file);
+        let mut sequence = serializer.serialize_seq(None)?;
+        for page in pages {
+            sequence.serialize_element(page)?;
+        }
+        sequence.end()?;
         file.sync_all()?;
         fs::rename(&temp, cache)?;
         Ok(())
@@ -606,7 +612,7 @@ pub fn refresh(c: &Connection) -> Result<()> {
                 let text = String::from_utf8(output.1)?;
                 refresh_memory_bytes.charge(text.len(), "PDF page text copies")?;
                 let pages = text.split('\u{c}').map(str::to_owned).collect::<Vec<_>>();
-                write_cache(&cache, &pages)?;
+                write_cache(&cache, pages.iter().map(String::as_str))?;
                 pages
             }
         } else {
@@ -874,7 +880,7 @@ pub fn search(c: &Connection, query: &str, mode: &str, limit: usize) -> Result<V
 
 #[cfg(test)]
 mod tests {
-    use super::{bounded_command_output_with_input, cache_pages, checksum};
+    use super::{bounded_command_output_with_input, cache_pages, checksum, write_cache};
     use crate::budget::Budget;
     use std::process::{Command, Stdio};
 
@@ -941,6 +947,18 @@ mod tests {
 
         assert_eq!(pages.len(), 1000);
         assert!(path.exists(), "a valid cache should be preserved");
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn cache_writer_streams_page_iterator_as_compatible_json() {
+        let path = std::env::temp_dir().join(format!("repodb-cache-write-{}.json", std::process::id()));
+        let pages = vec!["first page".to_owned(), "second\\npage".to_owned()];
+
+        write_cache(&path, pages.iter().map(String::as_str)).unwrap();
+
+        let decoded: Vec<String> = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        assert_eq!(decoded, pages);
         std::fs::remove_file(path).unwrap();
     }
 
