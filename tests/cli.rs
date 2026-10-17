@@ -2850,3 +2850,6 @@ fn imported_git_units_reject_mixed_embedding_dimensions_atomically() {
     assert!(search_json(repo.path(), &["short marker"]).is_empty());
     assert!(search_json(repo.path(), &["long marker"]).is_empty());
 }
+
+#[path = "semgrep_corpus/corpus_tests.rs"]
+mod semgrep_corpus;
