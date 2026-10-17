@@ -645,16 +645,6 @@ pub fn refresh(c: &Connection) -> Result<()> {
             while let Some(row) = rows.next()? {
                 let page: usize = row.get(0)?;
                 let text: String = row.get(1)?;
-                if page > 1 {
-                    tx.execute(
-                        "UPDATE imported_versions SET content=content||char(10) WHERE source_id=?1 AND version=?2",
-                        params![id, version],
-                    )?;
-                }
-                tx.execute(
-                    "UPDATE imported_versions SET content=content||?3 WHERE source_id=?1 AND version=?2",
-                    params![id, version, text],
-                )?;
                 if text.trim().is_empty() {
                     continue;
                 }

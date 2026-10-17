@@ -438,15 +438,17 @@ fn imported_pdfs_preserve_pages_cache_conversions_and_refresh_versions() {
     assert!(search_json(root, &["first page text"]).is_empty());
     assert!(!search_json(root, &["updated page marker"]).is_empty());
 
+    // Exceed the former 100,000-page ceiling and verify the final page reference.
     // A large cached array remains reusable without rerunning pdftotext.
-    let many_pages = (0..2_000).map(|i| format!("page-{i}"));
+    let many_pages = (0..100_001).map(|i| format!("page-{i}"));
     fs::write(&text, many_pages.collect::<Vec<_>>().join("\x0c")).unwrap();
     fs::write(&pdf, b"%PDF-test many pages").unwrap();
     assert!(run_with_env(root, &["refresh"], &env).0);
     let calls_after_conversion = fs::read_to_string(&calls).unwrap();
     assert!(run_with_env(root, &["refresh"], &env).0);
     assert_eq!(fs::read_to_string(&calls).unwrap(), calls_after_conversion);
-    assert!(!search_json(root, &["page-1999"]).is_empty());
+    let last_page = search_json(root, &["page-100000"]);
+    assert!(last_page.iter().any(|result| result["page"] == 100_001));
 }
 
 #[test]
