@@ -2194,3 +2194,48 @@ esac
         }
     }
 }
+
+#[test]
+fn imported_git_units_reject_mixed_embedding_dimensions_atomically() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let repo = tempfile::tempdir().unwrap();
+    git(repo.path(), &["init", "-q"]);
+    assert!(run(repo.path(), &["init"]).0);
+
+    let external = tempfile::tempdir().unwrap();
+    git(external.path(), &["init", "-q"]);
+    git(
+        external.path(),
+        &["config", "user.email", "test@example.com"],
+    );
+    git(external.path(), &["config", "user.name", "Test"]);
+    fs::write(
+        external.path().join("lib.rs"),
+        "fn short_unit() { println!(\"short marker\"); }\n\nfn long_unit() { println!(\"long marker\"); }\n",
+    )
+    .unwrap();
+    git(external.path(), &["add", "."]);
+    git(external.path(), &["commit", "-qm", "source"]);
+
+    let embedder = repo.path().join("fake-embedder");
+    fs::write(
+        &embedder,
+        "#!/bin/sh\ninput=$(cat)\ncase \"$input\" in *short_unit*) printf '[1,0]' ;; *) printf '[1,0,0]' ;; esac\n",
+    )
+    .unwrap();
+    fs::set_permissions(&embedder, fs::Permissions::from_mode(0o755)).unwrap();
+    assert!(
+        run(
+            repo.path(),
+            &["reembed", "--command", embedder.to_str().unwrap()]
+        )
+        .0
+    );
+
+    let locator = external.path().to_string_lossy().into_owned();
+    assert!(run(repo.path(), &["import", &locator]).0);
+    assert!(!run(repo.path(), &["refresh"]).0);
+    assert!(search_json(repo.path(), &["short marker"]).is_empty());
+    assert!(search_json(repo.path(), &["long marker"]).is_empty());
+}

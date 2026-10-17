@@ -3,7 +3,7 @@ use crate::{
     budget::{Budget, MAX_REFRESH_ACCOUNTING_BYTES},
     embed, process, segmentation,
 };
-use rusqlite::{Connection, params};
+use rusqlite::{Connection, OptionalExtension, params};
 use std::{
     fs,
     io::Read,
@@ -185,6 +185,7 @@ pub fn refresh(c: &Connection) -> Result<()> {
         })?
         .collect::<std::result::Result<Vec<_>, _>>()?
     };
+    c.execute_batch("DROP TABLE IF EXISTS temp.import_refresh_dimension; CREATE TEMP TABLE import_refresh_dimension(value INTEGER);")?;
     let cfg: Option<(String,String)> = c.query_row("SELECT (SELECT value FROM embedding_config WHERE key='command'),(SELECT value FROM embedding_config WHERE key='model')", [], |r| Ok((r.get(0)?,r.get(1)?))).ok();
     let configured_dimension = c
         .query_row(
@@ -202,6 +203,18 @@ pub fn refresh(c: &Connection) -> Result<()> {
             |r| r.get(0),
         )
         .unwrap_or_else(|_| "latest".to_owned());
+    let mut dimension = None;
+    {
+        let mut stmt = c.prepare("SELECT DISTINCT length(vector)/4 FROM temp.import_stage_units WHERE vector IS NOT NULL UNION SELECT DISTINCT length(vector)/4 FROM temp.import_stage_git_units WHERE vector IS NOT NULL")?;
+        let mut rows = stmt.query([])?;
+        while let Some(row) = rows.next()? {
+            let staged_dimension: usize = row.get(0)?;
+            if dimension.is_some_and(|d| d != staged_dimension) {
+                return Err("embedding dimension mismatch".into());
+            }
+            dimension = Some(staged_dimension);
+        }
+    }
     let cache_dir: String = c.query_row("PRAGMA database_list", [], |r| r.get(2))?;
     let cache_dir = Path::new(&cache_dir)
         .parent()
@@ -295,10 +308,13 @@ pub fn refresh(c: &Connection) -> Result<()> {
                                     import_embed(cmd, model, unit.text, &mut refresh_memory_bytes)
                                 })
                                 .transpose()?;
-                            if vector.as_ref().is_some_and(|vector| {
-                                configured_dimension.is_some_and(|d| d != vector.len())
-                            }) {
-                                return Err("embedding dimension mismatch".into());
+                            if let Some(vector) = &vector {
+                                if configured_dimension.is_some_and(|d| d != vector.len())
+                                    || dimension.is_some_and(|d| d != vector.len())
+                                {
+                                    return Err("embedding dimension mismatch".into());
+                                }
+                                dimension = Some(vector.len());
                             }
                             refresh_memory_bytes
                                 .charge(unit.text.len(), "Git indexed unit text")?;
@@ -380,7 +396,6 @@ pub fn refresh(c: &Connection) -> Result<()> {
                 .extension()
                 .and_then(|extension| extension.to_str())
                 .is_some_and(|extension| extension.eq_ignore_ascii_case("pdf"));
-        let mut dimension = None;
         let (version, content) = if is_pdf {
             let source_version = checksum(&source_bytes);
             let cache = cache_dir.join(format!("{source_version}.json"));
@@ -521,11 +536,51 @@ pub fn refresh(c: &Connection) -> Result<()> {
             )?;
         }
     }
+    if let Some(dimension) = dimension {
+        c.execute(
+            "INSERT INTO temp.import_refresh_dimension VALUES(?1)",
+            [dimension as i64],
+        )?;
+    }
+    Ok(())
+}
+
+pub fn validate_dimensions(c: &Connection) -> Result<()> {
+    let imported: Option<i64> = c
+        .query_row(
+            "SELECT value FROM temp.import_refresh_dimension LIMIT 1",
+            [],
+            |row| row.get(0),
+        )
+        .optional()?;
+    let history: Option<i64> = c
+        .query_row(
+            "SELECT value FROM temp.refresh_dimension LIMIT 1",
+            [],
+            |row| row.get(0),
+        )
+        .optional()?;
+    if imported.zip(history).is_some_and(|(a, b)| a != b) {
+        return Err("embedding dimension mismatch".into());
+    }
     Ok(())
 }
 
 pub fn publish(tx: &rusqlite::Transaction<'_>) -> Result<()> {
     init(tx)?;
+    if let Some(dimension) = tx
+        .query_row(
+            "SELECT value FROM temp.import_refresh_dimension LIMIT 1",
+            [],
+            |row| row.get::<_, i64>(0),
+        )
+        .optional()?
+    {
+        tx.execute(
+            "UPDATE embedding_config SET value=?1 WHERE key='dimension'",
+            [dimension.to_string()],
+        )?;
+    }
     for (table, stage) in [
         ("imported_versions", "import_stage_versions"),
         ("imported_units", "import_stage_units"),

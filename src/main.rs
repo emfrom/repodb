@@ -309,6 +309,7 @@ fn execute() -> Result<()> {
             let version = history::snapshot_version(&db)?;
             imports::refresh(&db)?;
             history::prepare_refresh(&db)?;
+            imports::validate_dimensions(&db)?;
             let tx = history::publish_transaction(&mut db, version)?;
             imports::publish(&tx)?;
             history::publish_refresh(&tx)?;
