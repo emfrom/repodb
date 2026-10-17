@@ -306,8 +306,8 @@ fn execute() -> Result<()> {
                 return Err("unexpected arguments".into());
             }
             let mut db = open_db()?;
-            history::refresh(&mut db)?;
             imports::refresh(&db)?;
+            history::refresh(&mut db)?;
         }
         "import" => {
             let locator = a

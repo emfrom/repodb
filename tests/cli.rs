@@ -1535,6 +1535,45 @@ fn newest_reference_uses_timestamp_then_commit_id_then_path_including_detached_h
 }
 
 #[test]
+fn refresh_keeps_history_and_imports_atomic_when_import_preparation_fails() {
+    use std::os::unix::fs::PermissionsExt;
+    let repo = repository();
+    let root = repo.path();
+    assert!(run(root, &["init"]).0);
+    let imported = root.join("external.txt");
+    fs::write(&imported, "previous imported marker\n").unwrap();
+    let locator = imported.to_string_lossy().into_owned();
+    assert!(run(root, &["import", &locator]).0);
+    let embedder = root.join("atomic-embedder");
+    fs::write(
+        &embedder,
+        "#!/bin/sh\ninput=$(cat)\n[ \"$input\" != 'failing imported marker' ] || exit 1\nprintf '[1,0]'\n",
+    )
+    .unwrap();
+    fs::set_permissions(&embedder, fs::Permissions::from_mode(0o755)).unwrap();
+    assert!(run(root, &["reembed", "--command", embedder.to_str().unwrap()]).0);
+    assert!(run(root, &["refresh"]).0);
+    assert_eq!(
+        search_json(root, &["previous imported marker"])[0]["text"],
+        "previous imported marker"
+    );
+
+    fs::write(root.join("new-history.txt"), "new history marker\n").unwrap();
+    git(root, &["add", "new-history.txt"]);
+    git(root, &["commit", "-qm", "new history"]);
+    fs::write(&imported, "failing imported marker\n").unwrap();
+    assert!(!run(root, &["refresh"]).0);
+
+    assert_eq!(search_json(root, &["TARGET", "--all-history"]).len(), 1);
+    assert!(search_json(root, &["new history marker", "--all-history"]).is_empty());
+    assert_eq!(
+        search_json(root, &["previous imported marker"])[0]["text"],
+        "previous imported marker"
+    );
+    assert!(search_json(root, &["failing imported marker"]).is_empty());
+}
+
+#[test]
 fn refresh_does_not_publish_vectors_over_a_concurrently_changed_model() {
     use std::os::unix::fs::PermissionsExt;
     use std::time::{Duration, Instant};
