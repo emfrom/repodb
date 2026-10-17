@@ -1,7 +1,8 @@
 use crate::Result;
 
 // Accounts retained preparation allocations without imposing an application-level size cap.
-pub(crate) const MAX_REFRESH_MEMORY_BYTES: usize = usize::MAX;
+// This is an accounting boundary, not a configured limit.
+pub(crate) const MAX_REFRESH_ACCOUNTING_BYTES: usize = usize::MAX;
 
 pub(crate) struct Budget {
     limit: usize,

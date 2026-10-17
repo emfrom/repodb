@@ -1,6 +1,6 @@
 use crate::{
     Result, SearchResult, as_bytes,
-    budget::{Budget, MAX_REFRESH_MEMORY_BYTES},
+    budget::{Budget, MAX_REFRESH_ACCOUNTING_BYTES},
     process, query_vector, segmentation,
 };
 use rusqlite::{Connection, Transaction, TransactionBehavior, params};
@@ -18,7 +18,7 @@ fn memory_limit() -> Box<dyn std::error::Error> {
 const MAX_GIT_STDERR_BYTES: usize = 64 * 1024;
 
 fn git_capture_limits(requested_stdout: usize, preparation_bytes: usize) -> Result<(usize, usize)> {
-    let remaining = MAX_REFRESH_MEMORY_BYTES
+    let remaining = MAX_REFRESH_ACCOUNTING_BYTES
         .checked_sub(preparation_bytes)
         .ok_or_else(memory_limit)?;
     let stderr = remaining.min(MAX_GIT_STDERR_BYTES);
@@ -347,16 +347,19 @@ mod tests {
 
     #[test]
     fn git_capture_limits_reserve_stderr_and_use_remaining_budget() {
-        let (stdout, stderr) =
-            git_capture_limits(MAX_REFRESH_MEMORY_BYTES, MAX_REFRESH_MEMORY_BYTES - 100).unwrap();
+        let (stdout, stderr) = git_capture_limits(
+            MAX_REFRESH_ACCOUNTING_BYTES,
+            MAX_REFRESH_ACCOUNTING_BYTES - 100,
+        )
+        .unwrap();
         assert_eq!(stdout, 0);
         assert_eq!(stderr, 100);
 
-        let used = MAX_REFRESH_MEMORY_BYTES - MAX_GIT_STDERR_BYTES - 17;
-        let (stdout, stderr) = git_capture_limits(MAX_REFRESH_MEMORY_BYTES, used).unwrap();
+        let used = MAX_REFRESH_ACCOUNTING_BYTES - MAX_GIT_STDERR_BYTES - 17;
+        let (stdout, stderr) = git_capture_limits(MAX_REFRESH_ACCOUNTING_BYTES, used).unwrap();
         assert_eq!(stdout, 17);
         assert_eq!(stderr, MAX_GIT_STDERR_BYTES);
-        assert!(stdout + stderr <= MAX_REFRESH_MEMORY_BYTES - used);
+        assert!(stdout + stderr <= MAX_REFRESH_ACCOUNTING_BYTES - used);
     }
 
     #[test]
@@ -437,8 +440,8 @@ pub fn refresh(c: &mut Connection) -> Result<()> {
     let version = snapshot_version(c)?;
     is_current(c)?;
     let mut preparation_bytes = Budget::new(
-        MAX_REFRESH_MEMORY_BYTES,
-        "history refresh limit exceeded: preparation data",
+        MAX_REFRESH_ACCOUNTING_BYTES,
+        "history refresh preparation accounting",
     );
     c.execute_batch("PRAGMA temp_store=FILE;
         DROP TABLE IF EXISTS temp.refresh_commits; DROP TABLE IF EXISTS temp.refresh_blobs;
@@ -604,8 +607,8 @@ pub fn reembed(c: &mut Connection, command: &str, model: &str) -> Result<()> {
     let version = snapshot_version(c)?;
     c.execute_batch("PRAGMA temp_store=FILE; DROP TABLE IF EXISTS temp.reembed_vectors; CREATE TEMP TABLE reembed_vectors(unit_id INTEGER PRIMARY KEY, vector BLOB NOT NULL);")?;
     let mut preparation_bytes = Budget::new(
-        MAX_REFRESH_MEMORY_BYTES,
-        "history refresh limit exceeded: preparation data",
+        MAX_REFRESH_ACCOUNTING_BYTES,
+        "history refresh preparation accounting",
     );
     let mut dim = 0;
     {
@@ -789,7 +792,7 @@ impl Scope {
         } else {
             {
                 let mut budget =
-                    Budget::new(MAX_REFRESH_MEMORY_BYTES, "history query limit exceeded");
+                    Budget::new(MAX_REFRESH_ACCOUNTING_BYTES, "history query accounting");
                 head(&mut budget)?
             }
             .into_iter()

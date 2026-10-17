@@ -1,6 +1,6 @@
 use crate::{
     Result, SearchResult, as_bytes,
-    budget::{Budget, MAX_REFRESH_MEMORY_BYTES},
+    budget::{Budget, MAX_REFRESH_ACCOUNTING_BYTES},
     embed, process,
 };
 use rusqlite::{Connection, params};
@@ -408,8 +408,8 @@ pub fn refresh(c: &Connection) -> Result<()> {
     tx.execute_batch("PRAGMA temp_store=FILE; DROP TABLE IF EXISTS temp.import_pdf_pages; CREATE TEMP TABLE import_pdf_pages(page INTEGER PRIMARY KEY,text TEXT NOT NULL);")?;
     // This conservative cumulative accounting includes buffers and representations materialized during preparation.
     let mut refresh_memory_bytes = Budget::new(
-        MAX_REFRESH_MEMORY_BYTES,
-        "import refresh exceeds the aggregate preparation-memory budget",
+        MAX_REFRESH_ACCOUNTING_BYTES,
+        "import refresh preparation accounting",
     );
     while let Some(row) = source_rows.next()? {
         let id: String = row.get(0)?;
