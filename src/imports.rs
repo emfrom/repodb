@@ -6,7 +6,7 @@ use crate::{
 use rusqlite::{Connection, params};
 use std::{
     fs,
-    io::Read,
+    io::{BufReader, Read},
     path::Path,
     process::{Command, Stdio},
 };
@@ -197,59 +197,63 @@ fn checksum(bytes: &[u8]) -> String {
     state.iter().map(|word| format!("{word:08x}")).collect()
 }
 
-fn cache_pages(cache: &Path, used: &mut Budget) -> Result<Option<Vec<String>>> {
+fn visit_cache_pages(
+    cache: &Path,
+    mut visit: impl FnMut(usize, String) -> Result<()>,
+) -> Result<Option<usize>> {
+    use serde::de::{Error as _, SeqAccess, Visitor};
+
     let file = match fs::File::open(cache) {
         Ok(file) => file,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(error) => return Err(error.into()),
     };
-    let file_size = usize::try_from(file.metadata()?.len())?;
-    let input_reservation = file_size.max(64 * 1024);
-    used.charge(input_reservation, "PDF cache input reservation")?;
-    let bytes = match read_all(file) {
-        Ok(bytes) => bytes,
-        Err(_) => {
-            used.release(input_reservation);
-            fs::remove_file(cache)?;
-            return Ok(None);
-        }
-    };
-    let input_capacity = bytes.capacity();
-    if input_capacity > input_reservation {
-        return Err("PDF cache input capacity exceeded its reservation".into());
+    let mut deserializer = serde_json::Deserializer::from_reader(BufReader::new(file));
+    let mut callback_error = None;
+    struct PageVisitor<'a, F> {
+        visit: &'a mut F,
+        callback_error: &'a mut Option<Box<dyn std::error::Error>>,
     }
-    used.release(input_reservation - input_capacity);
+    impl<'de, F> Visitor<'de> for PageVisitor<'_, F>
+    where
+        F: FnMut(usize, String) -> Result<()>,
+    {
+        type Value = usize;
 
-    // Each JSON string needs at least two bytes, and Vec growth may reserve
-    // nearly twice the number of decoded pages. Reserve before serde allocates.
-    let page_bound = bytes.len() / 2 + 1;
-    let page_reservation = page_bound
-        .checked_mul(2)
-        .and_then(|count| count.checked_mul(std::mem::size_of::<String>()))
-        .ok_or("PDF cache page capacity exceeds refresh budget")?;
-    let string_reservation = bytes
-        .len()
-        .checked_mul(2)
-        .ok_or("PDF cache string capacity exceeds refresh budget")?;
-    let reservation = page_reservation
-        .checked_add(string_reservation)
-        .ok_or("PDF cache decoded capacity exceeds refresh budget")?;
-    if let Err(error) = used.charge(reservation, "PDF cache decoded capacity") {
-        used.release(input_capacity);
+        fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            formatter.write_str("an array of PDF page strings")
+        }
+
+        fn visit_seq<A>(self, mut seq: A) -> std::result::Result<usize, A::Error>
+        where
+            A: SeqAccess<'de>,
+        {
+            let mut count = 0;
+            while let Some(page) = seq.next_element::<String>()? {
+                count += 1;
+                if let Err(error) = (self.visit)(count, page) {
+                    *self.callback_error = Some(error);
+                    return Err(A::Error::custom("PDF cache page processing failed"));
+                }
+            }
+            Ok(count)
+        }
+    }
+
+    let parsed = serde::de::Deserializer::deserialize_seq(
+        &mut deserializer,
+        PageVisitor {
+            visit: &mut visit,
+            callback_error: &mut callback_error,
+        },
+    )
+    .and_then(|count| deserializer.end().map(|()| count));
+    if let Some(error) = callback_error {
         return Err(error);
     }
-    match serde_json::from_slice::<Vec<String>>(&bytes) {
-        Ok(pages) => {
-            let actual = pages.capacity() * std::mem::size_of::<String>()
-                + pages.iter().map(String::capacity).sum::<usize>();
-            used.release(reservation - actual);
-            let bytes_capacity = bytes.capacity();
-            drop(bytes);
-            used.release(bytes_capacity);
-            Ok(Some(pages))
-        }
+    match parsed {
+        Ok(count) => Ok(Some(count)),
         Err(_) => {
-            used.release(reservation + input_capacity);
             fs::remove_file(cache)?;
             Ok(None)
         }
@@ -401,6 +405,7 @@ pub fn refresh(c: &Connection) -> Result<()> {
         .ok_or("database has no parent directory")?
         .join("repodb-cache");
     let tx = c.unchecked_transaction()?;
+    tx.execute_batch("PRAGMA temp_store=FILE; DROP TABLE IF EXISTS temp.import_pdf_pages; CREATE TEMP TABLE import_pdf_pages(page INTEGER PRIMARY KEY,text TEXT NOT NULL);")?;
     // This conservative cumulative accounting includes buffers and representations materialized during preparation.
     let mut refresh_memory_bytes = Budget::new(
         MAX_REFRESH_MEMORY_BYTES,
@@ -578,15 +583,20 @@ pub fn refresh(c: &Connection) -> Result<()> {
                 .extension()
                 .and_then(|extension| extension.to_str())
                 .is_some_and(|extension| extension.eq_ignore_ascii_case("pdf"));
-        if !is_pdf {
-            refresh_memory_bytes.charge(source_bytes.len(), "decoded local import text")?;
-        }
-        let pages = if is_pdf {
+        let mut dimension = None;
+        let (version, content) = if is_pdf {
             let source_version = checksum(&source_bytes);
             let cache = cache_dir.join(format!("{source_version}.json"));
-            if let Some(pages) = cache_pages(&cache, &mut refresh_memory_bytes)? {
-                pages
-            } else {
+            tx.execute("DELETE FROM temp.import_pdf_pages", [])?;
+            let cached = visit_cache_pages(&cache, |page, text| {
+                tx.execute(
+                    "INSERT INTO temp.import_pdf_pages(page,text) VALUES(?1,?2)",
+                    params![page, text],
+                )?;
+                Ok(())
+            })?;
+            if cached.is_none() {
+                tx.execute("DELETE FROM temp.import_pdf_pages", [])?;
                 let mut child = Command::new("pdftotext")
                     .args(["-layout", "-enc", "UTF-8", "-", "-"])
                     .stdin(Stdio::piped())
@@ -610,26 +620,23 @@ pub fn refresh(c: &Connection) -> Result<()> {
                     .into());
                 }
                 let text = String::from_utf8(output.1)?;
-                refresh_memory_bytes.charge(text.len(), "PDF page text copies")?;
-                let pages = text.split('\u{c}').map(str::to_owned).collect::<Vec<_>>();
-                write_cache(&cache, pages.iter().map(String::as_str))?;
-                pages
+                refresh_memory_bytes.charge(text.len(), "PDF conversion output")?;
+                let pages = text.split('\u{c}');
+                write_cache(&cache, pages.clone())?;
+                for (page, text) in pages.enumerate() {
+                    tx.execute(
+                        "INSERT INTO temp.import_pdf_pages(page,text) VALUES(?1,?2)",
+                        params![page + 1, text],
+                    )?;
+                }
             }
+            (source_version, None)
         } else {
-            // Transfer ownership into the decoded text instead of retaining the
-            // source byte buffer alongside a full duplicate.
-            vec![String::from_utf8(source_bytes)?]
+            // Transfer ownership into decoded text instead of retaining source bytes too.
+            let content = String::from_utf8(source_bytes)?;
+            refresh_memory_bytes.charge(content.len(), "decoded local import text")?;
+            (checksum(content.as_bytes()), Some(content))
         };
-        refresh_memory_bytes.charge(pages.iter().map(String::len).sum(), "PDF/cache pages")?;
-        let content_size =
-            pages.iter().map(String::len).sum::<usize>() + pages.len().saturating_sub(1);
-        refresh_memory_bytes.charge(content_size, "joined imported content")?;
-        let content = if is_pdf {
-            pages.join("\n")
-        } else {
-            pages[0].clone()
-        };
-        let version = checksum(content.as_bytes());
         let fetched_order: i64 = tx.query_row(
             "SELECT COALESCE(MAX(fetched_order),0)+1 FROM imported_versions",
             [],
@@ -637,50 +644,75 @@ pub fn refresh(c: &Connection) -> Result<()> {
         )?;
         tx.execute(
             "INSERT INTO imported_versions(source_id,version,content,fetched_order) VALUES(?1,?2,?3,?4) ON CONFLICT(source_id,version) DO UPDATE SET content=excluded.content,fetched_order=excluded.fetched_order",
-            params![id, version, content, fetched_order],
+            params![id, version, content.as_deref().unwrap_or(""), fetched_order],
         )?;
-        let mut dimension = None;
-        let lines: Box<dyn Iterator<Item = (usize, Option<usize>, &str)>> = if is_pdf {
-            Box::new(
-                pages
-                    .iter()
-                    .enumerate()
-                    .map(|(page, text)| (page + 1, Some(page + 1), text.as_str())),
-            )
-        } else {
-            Box::new(
-                content
-                    .lines()
-                    .enumerate()
-                    .map(|(line, text)| (line + 1, None, text)),
-            )
-        };
-        for (line, page, text) in lines {
-            if text.trim().is_empty() {
-                continue;
-            }
-            let vector = cfg
-                .as_ref()
-                .map(|(cmd, model)| import_embed(cmd, model, text, &mut refresh_memory_bytes))
-                .transpose()?;
-            if let Some(vector) = &vector {
-                if dimension.is_some_and(|d| d != vector.len())
-                    || configured_dimension.is_some_and(|d| d != vector.len())
-                {
-                    return Err("embedding dimension mismatch".into());
+        if is_pdf {
+            let mut stmt =
+                tx.prepare("SELECT page,text FROM temp.import_pdf_pages ORDER BY page")?;
+            let mut rows = stmt.query([])?;
+            while let Some(row) = rows.next()? {
+                let page: usize = row.get(0)?;
+                let text: String = row.get(1)?;
+                if page > 1 {
+                    tx.execute(
+                        "UPDATE imported_versions SET content=content||char(10) WHERE source_id=?1 AND version=?2",
+                        params![id, version],
+                    )?;
                 }
-                dimension = Some(vector.len());
+                tx.execute(
+                    "UPDATE imported_versions SET content=content||?3 WHERE source_id=?1 AND version=?2",
+                    params![id, version, text],
+                )?;
+                if text.trim().is_empty() {
+                    continue;
+                }
+                refresh_memory_bytes.charge(text.len(), "PDF indexed unit text")?;
+                let vector = cfg
+                    .as_ref()
+                    .map(|(cmd, model)| import_embed(cmd, model, &text, &mut refresh_memory_bytes))
+                    .transpose()?;
+                if let Some(vector) = &vector {
+                    if dimension.is_some_and(|d| d != vector.len())
+                        || configured_dimension.is_some_and(|d| d != vector.len())
+                    {
+                        return Err("embedding dimension mismatch".into());
+                    }
+                    dimension = Some(vector.len());
+                }
+                let vector_bytes = vector.as_ref().map_or(0, |v| v.len() * 4);
+                refresh_memory_bytes.charge(vector_bytes, "PDF stored vector bytes")?;
+                tx.execute(
+                    "INSERT OR REPLACE INTO imported_units(source_id,version,line,text,vector,page) VALUES(?1,?2,?3,?4,?5,?6)",
+                    params![id, version, page, text, vector.map(|v| as_bytes(&v)), page],
+                )?;
+                refresh_memory_bytes.release(text.len() + vector_bytes);
             }
-            refresh_memory_bytes.charge(text.len(), "indexed unit text")?;
-            let vector_bytes = vector.as_ref().map_or(0, |v| v.len() * 4);
-            if vector_bytes > 0 {
+        } else {
+            let content = content.expect("non-PDF content exists");
+            for (line, text) in content.lines().enumerate() {
+                if text.trim().is_empty() {
+                    continue;
+                }
+                let vector = cfg
+                    .as_ref()
+                    .map(|(cmd, model)| import_embed(cmd, model, text, &mut refresh_memory_bytes))
+                    .transpose()?;
+                if let Some(vector) = &vector {
+                    if dimension.is_some_and(|d| d != vector.len())
+                        || configured_dimension.is_some_and(|d| d != vector.len())
+                    {
+                        return Err("embedding dimension mismatch".into());
+                    }
+                    dimension = Some(vector.len());
+                }
+                let vector_bytes = vector.as_ref().map_or(0, |v| v.len() * 4);
                 refresh_memory_bytes.charge(vector_bytes, "stored vector bytes")?;
+                tx.execute(
+                    "INSERT OR REPLACE INTO imported_units(source_id,version,line,text,vector,page) VALUES(?1,?2,?3,?4,?5,NULL)",
+                    params![id, version, line + 1, text, vector.map(|v| as_bytes(&v))],
+                )?;
+                refresh_memory_bytes.release(vector_bytes);
             }
-            tx.execute(
-                "INSERT OR REPLACE INTO imported_units(source_id,version,line,text,vector,page) VALUES(?1,?2,?3,?4,?5,?6)",
-                params![id, version, line, text, vector.map(|v| as_bytes(&v)), page],
-            )?;
-            refresh_memory_bytes.release(text.len() + vector_bytes);
         }
         if retention == "latest" {
             tx.execute(
@@ -880,7 +912,7 @@ pub fn search(c: &Connection, query: &str, mode: &str, limit: usize) -> Result<V
 
 #[cfg(test)]
 mod tests {
-    use super::{bounded_command_output_with_input, cache_pages, checksum, write_cache};
+    use super::{bounded_command_output_with_input, checksum, visit_cache_pages, write_cache};
     use crate::budget::Budget;
     use std::process::{Command, Stdio};
 
@@ -941,11 +973,17 @@ mod tests {
             std::env::temp_dir().join(format!("repodb-cache-budget-{}.json", std::process::id()));
         let json = format!("[{}]", vec!["\"\""; 1000].join(","));
         std::fs::write(&path, &json).unwrap();
-        let mut budget = Budget::new(usize::MAX, "refresh accounting");
+        let mut pages = 0;
+        let count = visit_cache_pages(&path, |_, page| {
+            assert!(page.is_empty());
+            pages += 1;
+            Ok(())
+        })
+        .unwrap()
+        .unwrap();
 
-        let pages = cache_pages(&path, &mut budget).unwrap().unwrap();
-
-        assert_eq!(pages.len(), 1000);
+        assert_eq!(count, 1000);
+        assert_eq!(pages, 1000);
         assert!(path.exists(), "a valid cache should be preserved");
         std::fs::remove_file(path).unwrap();
     }
