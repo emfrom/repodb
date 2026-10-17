@@ -60,6 +60,108 @@ fn repository() -> tempfile::TempDir {
 }
 
 #[test]
+fn optional_segmenter_uses_byte_partition_and_falls_back_on_invalid_output() {
+    use std::os::unix::fs::PermissionsExt;
+    let repo = repository();
+    let root = repo.path();
+    assert!(run(root, &["init"]).0);
+    let embedder = root.join("embedder");
+    fs::write(&embedder, "#!/bin/sh\ncat >/dev/null\nprintf '[1,0]'\n").unwrap();
+    fs::set_permissions(&embedder, fs::Permissions::from_mode(0o755)).unwrap();
+    assert!(run(root, &["reembed", "--command", embedder.to_str().unwrap()]).0);
+    let segmenter = root.join("segmenter");
+    fs::write(
+        &segmenter,
+        "#!/bin/sh\ncat >/dev/null\n[ \"$1\" = rust ] || exit 2\nprintf '[[0,12],[12,39]]'\n",
+    )
+    .unwrap();
+    fs::set_permissions(&segmenter, fs::Permissions::from_mode(0o755)).unwrap();
+    assert!(
+        run_with_env(
+            root,
+            &["refresh"],
+            &[("REPODB_SEGMENTER", segmenter.to_str().unwrap())]
+        )
+        .0
+    );
+    let all = search_json(root, &["Rust phrase", "--all-history"]);
+    assert_eq!(all[0]["text"], "println!(\"Rust phrase\"); }\n");
+    fs::write(&segmenter, "#!/bin/sh\nprintf '[ [0,1], [0,2] ]'\n").unwrap();
+    let (success, _) = run_with_env(
+        root,
+        &["refresh"],
+        &[("REPODB_SEGMENTER", segmenter.to_str().unwrap())],
+    );
+    assert!(
+        success,
+        "malformed ranges must fall back instead of failing refresh"
+    );
+    assert_eq!(
+        search_json(root, &["Rust phrase", "--all-history"])[0]["text"],
+        "fn main() { println!(\"Rust phrase\"); }"
+    );
+    for unavailable in [root.join("missing-segmenter"), {
+        let failing = root.join("failing-segmenter");
+        fs::write(&failing, "#!/bin/sh\nexit 1\n").unwrap();
+        fs::set_permissions(&failing, fs::Permissions::from_mode(0o755)).unwrap();
+        failing
+    }] {
+        assert!(
+            run_with_env(
+                root,
+                &["refresh"],
+                &[("REPODB_SEGMENTER", unavailable.to_str().unwrap())]
+            )
+            .0
+        );
+        assert_eq!(
+            search_json(root, &["Rust phrase", "--all-history"])[0]["text"],
+            "fn main() { println!(\"Rust phrase\"); }"
+        );
+    }
+}
+
+#[test]
+fn optional_segmenter_rejects_utf8_split_and_falls_back() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let repo = repository();
+    let root = repo.path();
+    assert!(run(root, &["init"]).0);
+    let embedder = root.join("embedder");
+    fs::write(&embedder, "#!/bin/sh\ncat >/dev/null\nprintf '[1,0]'\n").unwrap();
+    fs::set_permissions(&embedder, fs::Permissions::from_mode(0o755)).unwrap();
+    assert!(run(root, &["reembed", "--command", embedder.to_str().unwrap()]).0);
+
+    let source = root.join("unicode.rs");
+    fs::write(&source, "fn unicode() { println!(\"é marker\"); }\n").unwrap();
+    let locator = source.to_string_lossy().into_owned();
+    assert!(run(root, &["import", &locator]).0);
+    let segmenter = root.join("segmenter");
+    fs::write(
+        &segmenter,
+        "#!/bin/sh\ninput=$(cat)\ncase \"$input\" in *'é marker'*) printf '[[0,26],[26,40]]' ;; *) printf '[[0,1],[1,2]]' ;; esac\n",
+    )
+    .unwrap();
+    fs::set_permissions(&segmenter, fs::Permissions::from_mode(0o755)).unwrap();
+    assert!(
+        run_with_env(
+            root,
+            &["refresh"],
+            &[("REPODB_SEGMENTER", segmenter.to_str().unwrap())]
+        )
+        .0
+    );
+
+    let results = search_json(root, &["é marker", "--all-history"]);
+    assert!(
+        results
+            .iter()
+            .any(|result| result["text"] == "fn unicode() { println!(\"é marker\"); }")
+    );
+}
+
+#[test]
 fn imported_text_and_git_blobs_use_document_and_source_units_with_line_ranges() {
     use std::os::unix::fs::PermissionsExt;
 

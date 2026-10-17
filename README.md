@@ -108,6 +108,16 @@ newlines within a unit. A query spanning separate units (including size-imposed
 boundaries) cannot match. Distinct units with the same starting line retain source
 order when other ordering keys tie. Binary/invalid UTF-8 blobs have no text units.
 
+An optional external segmenter can be selected with `REPODB_SEGMENTER=/path/to/tool`.
+For source segmentation kinds (currently `rust`), RepoDB invokes that executable
+directly with the kind as its sole argument and sends the exact UTF-8 source bytes
+on stdin. It must print a JSON array of `[start,end]` half-open byte-offset pairs
+on stdout. The ranges must form an ordered, non-overlapping, UTF-8-aligned full
+partition of the input. Output is capped at 8 MiB and execution at 10 seconds;
+missing tools, nonzero exits, timeouts, oversized output, or invalid ranges use the
+built-in segmentation instead. The environment variable is unset by default, and
+RepoDB does not install or bundle an external segmenter.
+
 ### Refresh and storage safety
 
 Refresh captures ref object IDs plus HEAD (including detached HEAD), traverses

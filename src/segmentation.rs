@@ -102,10 +102,83 @@ fn rust(text: &str, visit: &mut impl FnMut(Unit<'_>) -> bool) -> Option<bool> {
 
 /// Visits borrowed units in segmentation order; returning false stops before any later unit is staged.
 pub fn visit(kind: &str, text: &str, mut visitor: impl FnMut(Unit<'_>) -> bool) {
+    if !matches!(kind, "paragraph" | "fallback")
+        && let Some(command) = std::env::var_os("REPODB_SEGMENTER")
+        && let Some(ranges) = external_ranges(&command, kind, text.as_bytes())
+    {
+        let mut line = 1;
+        for (start, end) in ranges {
+            let piece = &text[start..end];
+            let newlines = piece.bytes().filter(|byte| *byte == b'\n').count();
+            if !visitor(Unit {
+                text: piece,
+                line_start: line,
+                line_end: line + newlines - usize::from(piece.ends_with('\n')),
+            }) {
+                return;
+            }
+            line += newlines;
+        }
+        return;
+    }
     if kind == "rust" && rust(text, &mut visitor).is_some() {
         return;
     }
     paragraphs(text, 1, &mut visitor);
+}
+
+fn external_ranges(
+    command: &std::ffi::OsStr,
+    language: &str,
+    source: &[u8],
+) -> Option<Vec<(usize, usize)>> {
+    use std::{
+        process::{Command, Stdio},
+        time::Duration,
+    };
+    let mut command = Command::new(command);
+    command
+        .arg(language)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        command.process_group(0);
+    }
+    let mut child = command.spawn().ok()?;
+    let output = crate::process::capture_with_input_timeout(
+        &mut child,
+        source,
+        8 * 1024 * 1024,
+        64 * 1024,
+        Duration::from_secs(10),
+    )
+    .ok()?;
+    if !output.status.success() || output.exceeded {
+        return None;
+    }
+    let ranges: Vec<[usize; 2]> = serde_json::from_slice(&output.stdout).ok()?;
+    let source = std::str::from_utf8(source).ok()?;
+    let mut cursor = 0;
+    let mut validated = Vec::with_capacity(ranges.len());
+    for [start, end] in ranges {
+        if start != cursor
+            || start >= end
+            || end > source.len()
+            || !source.is_char_boundary(start)
+            || !source.is_char_boundary(end)
+        {
+            return None;
+        }
+        cursor = end;
+        validated.push((start, end));
+    }
+    if cursor != source.len() {
+        return None;
+    }
+    Some(validated)
 }
 
 #[cfg(test)]
