@@ -472,7 +472,6 @@ pub fn refresh(c: &Connection) -> Result<()> {
                         .saturating_sub(MAX_COMMAND_STDERR_BYTES),
                     &mut refresh_memory_bytes,
                 )?;
-                let mut content = String::new();
                 for path in paths.split(|b| *b == 0).filter(|p| !p.is_empty()) {
                     let path = String::from_utf8(path.to_vec())?;
                     let spec = format!("{commit}:{path}");
@@ -488,14 +487,6 @@ pub fn refresh(c: &Connection) -> Result<()> {
                         continue;
                     };
                     refresh_memory_bytes.charge(text.len(), "Git blob text")?;
-                    refresh_memory_bytes
-                        .charge(path.len() + text.len() + 2, "Git joined content")?;
-                    content.push_str(&path);
-                    content.push('\n');
-                    content.push_str(&text);
-                    if !content.ends_with('\n') {
-                        content.push('\n');
-                    }
                     for (index, line) in text.lines().enumerate() {
                         if line.trim().is_empty() {
                             continue;
@@ -523,13 +514,14 @@ pub fn refresh(c: &Connection) -> Result<()> {
                         )?;
                         refresh_memory_bytes.release(line.len() + path.len() + vector_bytes);
                     }
+                    refresh_memory_bytes.release(text.len());
                 }
                 let fetched_order: i64 = tx.query_row(
                     "SELECT COALESCE(MAX(fetched_order),0)+1 FROM imported_versions",
                     [],
                     |r| r.get(0),
                 )?;
-                tx.execute("INSERT INTO imported_versions(source_id,version,content,fetched_order) VALUES(?1,?2,?3,?4) ON CONFLICT(source_id,version) DO UPDATE SET content=excluded.content,fetched_order=excluded.fetched_order", params![id, commit, content, fetched_order])?;
+                tx.execute("INSERT INTO imported_versions(source_id,version,content,fetched_order) VALUES(?1,?2,'',?3) ON CONFLICT(source_id,version) DO UPDATE SET content=excluded.content,fetched_order=excluded.fetched_order", params![id, commit, fetched_order])?;
             }
             if retention == "latest" {
                 tx.execute("DELETE FROM imported_versions WHERE source_id=?1 AND version NOT IN (SELECT version FROM imported_versions WHERE source_id=?1 ORDER BY fetched_order DESC LIMIT 1)", [&id])?;
