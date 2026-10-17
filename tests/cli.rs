@@ -60,6 +60,67 @@ fn repository() -> tempfile::TempDir {
 }
 
 #[test]
+fn imported_text_and_git_blobs_use_document_and_source_units_with_line_ranges() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let repo = repository();
+    let root = repo.path();
+    assert!(run(root, &["init"]).0);
+    let fake = root.join("fake-embedder");
+    fs::write(&fake, "#!/bin/sh\ncat >/dev/null\nprintf '[1.0, 0.0]'\n").unwrap();
+    fs::set_permissions(&fake, fs::Permissions::from_mode(0o755)).unwrap();
+    assert!(run(root, &["reembed", "--command", fake.to_str().unwrap()]).0);
+
+    let document = root.join("external.md");
+    fs::write(
+        &document,
+        "first paragraph line one\nline two\n\nsecond paragraph marker\n",
+    )
+    .unwrap();
+    let document_locator = document.to_string_lossy().into_owned();
+    assert!(run(root, &["import", &document_locator]).0);
+    assert!(run(root, &["refresh"]).0);
+    let first = search_json(root, &["first paragraph"]);
+    assert_eq!(first.len(), 1);
+    assert_eq!(first[0]["text"], "first paragraph line one\nline two");
+    assert_eq!(
+        (
+            first[0]["line_start"].as_u64(),
+            first[0]["line_end"].as_u64()
+        ),
+        (Some(1), Some(2))
+    );
+    let second = search_json(root, &["second paragraph marker"]);
+    assert_eq!(second.len(), 1);
+    assert_eq!(second[0]["line_start"], 4);
+
+    let external = tempfile::tempdir().unwrap();
+    git(external.path(), &["init", "-q"]);
+    git(
+        external.path(),
+        &["config", "user.email", "test@example.com"],
+    );
+    git(external.path(), &["config", "user.name", "Test"]);
+    fs::write(external.path().join("lib.rs"), "fn alpha() {\n    println!(\"first git marker\");\n}\n\nfn beta() {\n    println!(\"second git marker\");\n}\n").unwrap();
+    git(external.path(), &["add", "."]);
+    git(external.path(), &["commit", "-qm", "source"]);
+    let git_locator = external.path().to_string_lossy().into_owned();
+    assert!(run(root, &["import", &git_locator]).0);
+    assert!(run(root, &["refresh"]).0);
+    let unit = search_json(root, &["second git marker"]);
+    assert_eq!(unit.len(), 1);
+    assert_eq!(unit[0]["path"], "lib.rs");
+    assert_eq!(
+        unit[0]["text"],
+        "fn beta() {\n    println!(\"second git marker\");\n}"
+    );
+    assert_eq!(
+        (unit[0]["line_start"].as_u64(), unit[0]["line_end"].as_u64()),
+        (Some(5), Some(7))
+    );
+}
+
+#[test]
 fn imported_files_refresh_with_references_and_both_retention_policies() {
     let repo = repository();
     let root = repo.path();
@@ -106,7 +167,7 @@ fn imported_files_refresh_with_references_and_both_retention_policies() {
 }
 
 #[test]
-fn imported_files_keep_line_references_for_many_incrementally_inserted_units() {
+fn imported_files_keep_line_references_for_paragraph_and_bounded_units() {
     let repo = repository();
     let root = repo.path();
     let file = root.join("many-lines.txt");
@@ -119,9 +180,9 @@ fn imported_files_keep_line_references_for_many_incrementally_inserted_units() {
     assert!(run(root, &["refresh"]).0);
 
     let results = search_json(root, &["marker"]);
-    assert_eq!(results.len(), 256);
+    assert_eq!(results.len(), 2);
     assert!(results.iter().any(|result| result["line_start"] == 1));
-    assert!(results.iter().any(|result| result["line_start"] == 256));
+    assert!(results.iter().any(|result| result["line_end"] == 256));
 }
 
 #[test]

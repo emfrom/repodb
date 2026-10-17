@@ -3,9 +3,23 @@ use rusqlite::{Connection, params};
 use std::{path::Path, process::Command};
 
 pub(super) fn init(c: &Connection) -> Result<()> {
-    c.execute_batch("CREATE TABLE IF NOT EXISTS imported_sources(id TEXT PRIMARY KEY, locator TEXT NOT NULL UNIQUE, kind TEXT NOT NULL); CREATE TABLE IF NOT EXISTS imported_versions(source_id TEXT NOT NULL, version TEXT NOT NULL, content TEXT NOT NULL, fetched_order INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(source_id,version)); CREATE TABLE IF NOT EXISTS imported_units(source_id TEXT NOT NULL, version TEXT NOT NULL, line INTEGER NOT NULL, text TEXT NOT NULL, vector BLOB, page INTEGER, PRIMARY KEY(source_id,version,line)); CREATE TABLE IF NOT EXISTS import_config(key TEXT PRIMARY KEY,value TEXT NOT NULL); CREATE TABLE IF NOT EXISTS imported_git_units(source_id TEXT NOT NULL,commit_id TEXT NOT NULL,path TEXT NOT NULL,line INTEGER NOT NULL,text TEXT NOT NULL,vector BLOB,PRIMARY KEY(source_id,commit_id,path,line));")?;
+    c.execute_batch("CREATE TABLE IF NOT EXISTS imported_sources(id TEXT PRIMARY KEY, locator TEXT NOT NULL UNIQUE, kind TEXT NOT NULL); CREATE TABLE IF NOT EXISTS imported_versions(source_id TEXT NOT NULL, version TEXT NOT NULL, content TEXT NOT NULL, fetched_order INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(source_id,version)); CREATE TABLE IF NOT EXISTS imported_units(source_id TEXT NOT NULL, version TEXT NOT NULL, line INTEGER NOT NULL, text TEXT NOT NULL, vector BLOB, page INTEGER, line_end INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(source_id,version,line,text)); CREATE TABLE IF NOT EXISTS import_config(key TEXT PRIMARY KEY,value TEXT NOT NULL); CREATE TABLE IF NOT EXISTS imported_git_units(source_id TEXT NOT NULL,commit_id TEXT NOT NULL,path TEXT NOT NULL,line INTEGER NOT NULL,line_end INTEGER NOT NULL DEFAULT 0,text TEXT NOT NULL,vector BLOB,PRIMARY KEY(source_id,commit_id,path,line,text));")?;
     if !column_exists(c, "imported_units", "page")? {
         c.execute("ALTER TABLE imported_units ADD COLUMN page INTEGER", [])?;
+    }
+    if !column_exists(c, "imported_units", "line_end")? {
+        c.execute(
+            "ALTER TABLE imported_units ADD COLUMN line_end INTEGER NOT NULL DEFAULT 0",
+            [],
+        )?;
+        c.execute("UPDATE imported_units SET line_end=line", [])?;
+    }
+    if !column_exists(c, "imported_git_units", "line_end")? {
+        c.execute(
+            "ALTER TABLE imported_git_units ADD COLUMN line_end INTEGER NOT NULL DEFAULT 0",
+            [],
+        )?;
+        c.execute("UPDATE imported_git_units SET line_end=line", [])?;
     }
     if !column_exists(c, "imported_versions", "fetched_order")? {
         c.execute(

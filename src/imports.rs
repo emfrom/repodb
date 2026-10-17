@@ -1,7 +1,7 @@
 use crate::{
     Result, SearchResult, as_bytes,
     budget::{Budget, MAX_REFRESH_ACCOUNTING_BYTES},
-    embed, process,
+    embed, process, segmentation,
 };
 use rusqlite::{Connection, params};
 use std::{
@@ -229,32 +229,38 @@ pub fn refresh(c: &Connection) -> Result<()> {
                         continue;
                     };
                     refresh_memory_bytes.charge(text.len(), "Git blob text")?;
-                    for (index, line) in text.lines().enumerate() {
-                        if line.trim().is_empty() {
-                            continue;
-                        }
-                        let vector = cfg
-                            .as_ref()
-                            .map(|(cmd, model)| {
-                                import_embed(cmd, model, line, &mut refresh_memory_bytes)
-                            })
-                            .transpose()?;
-                        if let Some(vector) = &vector
-                            && configured_dimension.is_some_and(|d| d != vector.len())
-                        {
-                            return Err("embedding dimension mismatch".into());
-                        }
-                        refresh_memory_bytes.charge(line.len(), "Git indexed unit text")?;
-                        refresh_memory_bytes.charge(path.len(), "Git unit path")?;
-                        let vector_bytes = vector.as_ref().map_or(0, |v| v.len() * 4);
-                        if vector_bytes > 0 {
+                    let mut unit_error = None;
+                    segmentation::visit(segmentation::kind(path.as_bytes()), &text, |unit| {
+                        let result = (|| -> Result<()> {
+                            let vector = cfg
+                                .as_ref()
+                                .map(|(cmd, model)| {
+                                    import_embed(cmd, model, unit.text, &mut refresh_memory_bytes)
+                                })
+                                .transpose()?;
+                            if vector.as_ref().is_some_and(|vector| {
+                                configured_dimension.is_some_and(|d| d != vector.len())
+                            }) {
+                                return Err("embedding dimension mismatch".into());
+                            }
+                            refresh_memory_bytes
+                                .charge(unit.text.len(), "Git indexed unit text")?;
+                            refresh_memory_bytes.charge(path.len(), "Git unit path")?;
+                            let vector_bytes = vector.as_ref().map_or(0, |v| v.len() * 4);
                             refresh_memory_bytes.charge(vector_bytes, "Git stored vector bytes")?;
+                            tx.execute("INSERT OR REPLACE INTO imported_git_units(source_id,commit_id,path,line,line_end,text,vector) VALUES(?1,?2,?3,?4,?5,?6,?7)", params![id, commit, path, unit.line_start, unit.line_end, unit.text, vector.map(|v| as_bytes(&v))])?;
+                            refresh_memory_bytes
+                                .release(unit.text.len() + path.len() + vector_bytes);
+                            Ok(())
+                        })();
+                        if let Err(error) = result {
+                            unit_error = Some(error);
+                            return false;
                         }
-                        tx.execute(
-                            "INSERT OR REPLACE INTO imported_git_units(source_id,commit_id,path,line,text,vector) VALUES(?1,?2,?3,?4,?5,?6)",
-                            params![id, commit, path, index + 1, line, vector.map(|v| as_bytes(&v))],
-                        )?;
-                        refresh_memory_bytes.release(line.len() + path.len() + vector_bytes);
+                        true
+                    });
+                    if let Some(error) = unit_error {
+                        return Err(error);
                     }
                     refresh_memory_bytes.release(text.len());
                 }
@@ -406,36 +412,45 @@ pub fn refresh(c: &Connection) -> Result<()> {
                 let vector_bytes = vector.as_ref().map_or(0, |v| v.len() * 4);
                 refresh_memory_bytes.charge(vector_bytes, "PDF stored vector bytes")?;
                 tx.execute(
-                    "INSERT OR REPLACE INTO imported_units(source_id,version,line,text,vector,page) VALUES(?1,?2,?3,?4,?5,?6)",
+                    "INSERT OR REPLACE INTO imported_units(source_id,version,line,line_end,text,vector,page) VALUES(?1,?2,?3,?3,?4,?5,?6)",
                     params![id, version, page, text, vector.map(|v| as_bytes(&v)), page],
                 )?;
                 refresh_memory_bytes.release(text.len() + vector_bytes);
             }
         } else {
             let content = content.expect("non-PDF content exists");
-            for (line, text) in content.lines().enumerate() {
-                if text.trim().is_empty() {
-                    continue;
-                }
-                let vector = cfg
-                    .as_ref()
-                    .map(|(cmd, model)| import_embed(cmd, model, text, &mut refresh_memory_bytes))
-                    .transpose()?;
-                if let Some(vector) = &vector {
-                    if dimension.is_some_and(|d| d != vector.len())
-                        || configured_dimension.is_some_and(|d| d != vector.len())
-                    {
-                        return Err("embedding dimension mismatch".into());
+            let kind = segmentation::kind(Path::new(&locator).as_os_str().as_encoded_bytes());
+            let mut unit_error = None;
+            segmentation::visit(kind, &content, |unit| {
+                let result = (|| -> Result<()> {
+                    let vector = cfg
+                        .as_ref()
+                        .map(|(cmd, model)| {
+                            import_embed(cmd, model, unit.text, &mut refresh_memory_bytes)
+                        })
+                        .transpose()?;
+                    if let Some(vector) = &vector {
+                        if dimension.is_some_and(|d| d != vector.len())
+                            || configured_dimension.is_some_and(|d| d != vector.len())
+                        {
+                            return Err("embedding dimension mismatch".into());
+                        }
+                        dimension = Some(vector.len());
                     }
-                    dimension = Some(vector.len());
+                    let vector_bytes = vector.as_ref().map_or(0, |v| v.len() * 4);
+                    refresh_memory_bytes.charge(vector_bytes, "stored vector bytes")?;
+                    tx.execute("INSERT OR REPLACE INTO imported_units(source_id,version,line,line_end,text,vector,page) VALUES(?1,?2,?3,?4,?5,?6,NULL)", params![id, version, unit.line_start, unit.line_end, unit.text, vector.map(|v| as_bytes(&v))])?;
+                    refresh_memory_bytes.release(vector_bytes);
+                    Ok(())
+                })();
+                if let Err(error) = result {
+                    unit_error = Some(error);
+                    return false;
                 }
-                let vector_bytes = vector.as_ref().map_or(0, |v| v.len() * 4);
-                refresh_memory_bytes.charge(vector_bytes, "stored vector bytes")?;
-                tx.execute(
-                    "INSERT OR REPLACE INTO imported_units(source_id,version,line,text,vector,page) VALUES(?1,?2,?3,?4,?5,NULL)",
-                    params![id, version, line + 1, text, vector.map(|v| as_bytes(&v))],
-                )?;
-                refresh_memory_bytes.release(vector_bytes);
+                true
+            });
+            if let Some(error) = unit_error {
+                return Err(error);
             }
         }
         if retention == "latest" {
@@ -510,20 +525,21 @@ pub fn search(c: &Connection, query: &str, mode: &str, limit: usize) -> Result<V
             return Err("query embedding dimension mismatch".into());
         }
     }
-    let mut st = c.prepare("SELECT s.locator,u.line,u.text,u.version,u.vector,u.page FROM imported_units u JOIN imported_sources s ON s.id=u.source_id WHERE s.kind<>'git'")?;
+    let mut st = c.prepare("SELECT s.locator,u.line,u.line_end,u.text,u.version,u.vector,u.page FROM imported_units u JOIN imported_sources s ON s.id=u.source_id WHERE s.kind<>'git'")?;
     let rows = st.query_map([], |r| {
         Ok((
             r.get::<_, String>(0)?,
             r.get::<_, usize>(1)?,
-            r.get::<_, String>(2)?,
+            r.get::<_, usize>(2)?,
             r.get::<_, String>(3)?,
-            r.get::<_, Option<Vec<u8>>>(4)?,
-            r.get::<_, Option<usize>>(5)?,
+            r.get::<_, String>(4)?,
+            r.get::<_, Option<Vec<u8>>>(5)?,
+            r.get::<_, Option<usize>>(6)?,
         ))
     })?;
     let mut out = Vec::new();
     for row in rows {
-        let (locator, line, text, version, stored, page) = row?;
+        let (locator, line, line_end, text, version, stored, page) = row?;
         if semantic {
             if let (Some(v), Some(q)) = (stored.as_deref(), vector.as_deref()) {
                 if v.len() != q.len() {
@@ -538,7 +554,7 @@ pub fn search(c: &Connection, query: &str, mode: &str, limit: usize) -> Result<V
                     SearchResult {
                         path: locator,
                         line_start: line,
-                        line_end: line,
+                        line_end,
                         text,
                         commit_id: None,
                         distance: Some(d),
@@ -554,7 +570,7 @@ pub fn search(c: &Connection, query: &str, mode: &str, limit: usize) -> Result<V
                 SearchResult {
                     path: locator,
                     line_start: line,
-                    line_end: line,
+                    line_end,
                     text,
                     commit_id: None,
                     distance: None,
@@ -565,19 +581,20 @@ pub fn search(c: &Connection, query: &str, mode: &str, limit: usize) -> Result<V
             ));
         }
     }
-    let mut git_rows = c.prepare("SELECT s.locator,u.path,u.line,u.text,u.commit_id,u.vector FROM imported_git_units u JOIN imported_sources s ON s.id=u.source_id")?;
+    let mut git_rows = c.prepare("SELECT s.locator,u.path,u.line,u.line_end,u.text,u.commit_id,u.vector FROM imported_git_units u JOIN imported_sources s ON s.id=u.source_id")?;
     let rows = git_rows.query_map([], |r| {
         Ok((
             r.get::<_, String>(0)?,
             r.get::<_, String>(1)?,
             r.get::<_, usize>(2)?,
-            r.get::<_, String>(3)?,
+            r.get::<_, usize>(3)?,
             r.get::<_, String>(4)?,
-            r.get::<_, Option<Vec<u8>>>(5)?,
+            r.get::<_, String>(5)?,
+            r.get::<_, Option<Vec<u8>>>(6)?,
         ))
     })?;
     for row in rows {
-        let (repo_id, path, line, text, commit, stored) = row?;
+        let (repo_id, path, line, line_end, text, commit, stored) = row?;
         if semantic {
             if let (Some(stored), Some(query_vector)) = (stored.as_deref(), vector.as_deref()) {
                 let distance: f64 = c.query_row(
@@ -590,7 +607,7 @@ pub fn search(c: &Connection, query: &str, mode: &str, limit: usize) -> Result<V
                     SearchResult {
                         path,
                         line_start: line,
-                        line_end: line,
+                        line_end,
                         text,
                         commit_id: Some(commit),
                         distance: Some(distance),
@@ -606,7 +623,7 @@ pub fn search(c: &Connection, query: &str, mode: &str, limit: usize) -> Result<V
                 SearchResult {
                     path,
                     line_start: line,
-                    line_end: line,
+                    line_end,
                     text,
                     commit_id: Some(commit),
                     distance: None,
