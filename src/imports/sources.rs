@@ -63,7 +63,7 @@ fn primary_key_matches(c: &Connection, table: &str, expected: &[&str]) -> Result
         .eq(expected.iter().copied()))
 }
 
-fn column_exists(c: &Connection, table: &str, column: &str) -> Result<bool> {
+pub(super) fn column_exists(c: &Connection, table: &str, column: &str) -> Result<bool> {
     let mut stmt = c.prepare(&format!("PRAGMA table_info({table})"))?;
     let names = stmt.query_map([], |row| row.get::<_, String>(1))?;
     Ok(names

@@ -14,9 +14,17 @@ use std::{
 mod cache;
 mod sources;
 use cache::{checksum, visit_cache_pages, write_cache};
-use sources::init;
+use sources::{column_exists, init};
 pub(crate) use sources::{register, set_retention};
 const MAX_COMMAND_STDERR_BYTES: usize = 64 * 1024;
+
+fn table_exists(c: &Connection, table: &str) -> Result<bool> {
+    Ok(c.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name=?1)",
+        [table],
+        |row| row.get(0),
+    )?)
+}
 
 fn read_all(reader: impl Read) -> Result<Vec<u8>> {
     let mut bytes = Vec::new();
@@ -120,26 +128,6 @@ fn git_output(repo: &str, args: &[&str], limit: usize, used: &mut Budget) -> Res
         .into());
     }
     Ok(stdout)
-}
-
-fn table_exists(c: &Connection, table: &str) -> Result<bool> {
-    Ok(c.query_row(
-        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name=?1)",
-        [table],
-        |row| row.get(0),
-    )?)
-}
-
-fn column_exists(c: &Connection, table: &str, column: &str) -> Result<bool> {
-    if !table_exists(c, table)? {
-        return Ok(false);
-    }
-    let mut stmt = c.prepare(&format!("PRAGMA table_info({table})"))?;
-    Ok(stmt
-        .query_map([], |row| row.get::<_, String>(1))?
-        .collect::<std::result::Result<Vec<_>, _>>()?
-        .iter()
-        .any(|name| name == column))
 }
 
 pub fn refresh(c: &Connection) -> Result<()> {

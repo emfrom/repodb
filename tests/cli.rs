@@ -94,6 +94,39 @@ fn imported_text_and_git_blobs_use_document_and_source_units_with_line_ranges() 
     assert_eq!(second.len(), 1);
     assert_eq!(second[0]["line_start"], 4);
 
+    let rust = root.join("external.rs");
+    fs::write(
+        &rust,
+        "pub fn local_alpha() {\n    println!(\"local alpha marker\");\n}\n\npub struct LocalBeta;\n",
+    )
+    .unwrap();
+    let rust_locator = rust.to_string_lossy().into_owned();
+    assert!(run(root, &["import", &rust_locator]).0);
+    assert!(run(root, &["refresh"]).0);
+    let local_alpha = search_json(root, &["local alpha marker"]);
+    assert_eq!(local_alpha.len(), 1);
+    assert_eq!(
+        local_alpha[0]["text"],
+        "pub fn local_alpha() {\n    println!(\"local alpha marker\");\n}"
+    );
+    assert_eq!(
+        (
+            local_alpha[0]["line_start"].as_u64(),
+            local_alpha[0]["line_end"].as_u64()
+        ),
+        (Some(1), Some(3))
+    );
+    let local_beta = search_json(root, &["LocalBeta"]);
+    assert_eq!(local_beta.len(), 1);
+    assert_eq!(local_beta[0]["text"], "pub struct LocalBeta;");
+    assert_eq!(
+        (
+            local_beta[0]["line_start"].as_u64(),
+            local_beta[0]["line_end"].as_u64()
+        ),
+        (Some(5), Some(5))
+    );
+
     let external = tempfile::tempdir().unwrap();
     git(external.path(), &["init", "-q"]);
     git(
@@ -1561,6 +1594,23 @@ fn refresh_keeps_history_and_imports_atomic_when_import_preparation_fails() {
         search_json(root, &["previous imported marker"])[0]["text"],
         "previous imported marker"
     );
+    assert!(run(root, &["retention", "all"]).0);
+    fs::write(&imported, "second prior imported marker\n").unwrap();
+    assert!(run(root, &["refresh"]).0);
+    let prior_semantic = search_json(root, &["imported marker", "--semantic"])
+        .into_iter()
+        .filter(|r| r["path"] == locator)
+        .collect::<Vec<_>>();
+    assert!(
+        prior_semantic
+            .iter()
+            .any(|r| r["text"] == "previous imported marker")
+    );
+    assert!(
+        prior_semantic
+            .iter()
+            .any(|r| r["text"] == "second prior imported marker")
+    );
 
     fs::write(root.join("new-history.txt"), "new history marker\n").unwrap();
     git(root, &["add", "new-history.txt"]);
@@ -1570,9 +1620,15 @@ fn refresh_keeps_history_and_imports_atomic_when_import_preparation_fails() {
 
     assert_eq!(search_json(root, &["TARGET", "--all-history"]).len(), 1);
     assert!(search_json(root, &["new history marker", "--all-history"]).is_empty());
+    let after_semantic = search_json(root, &["imported marker", "--semantic"])
+        .into_iter()
+        .filter(|r| r["path"] == locator)
+        .collect::<Vec<_>>();
+    assert_eq!(after_semantic, prior_semantic);
+    assert_eq!(search_json(root, &["previous imported marker"]).len(), 1);
     assert_eq!(
-        search_json(root, &["previous imported marker"])[0]["text"],
-        "previous imported marker"
+        search_json(root, &["second prior imported marker"]).len(),
+        1
     );
     assert!(search_json(root, &["failing imported marker"]).is_empty());
 }
@@ -1587,7 +1643,26 @@ fn refresh_keeps_imports_atomic_when_history_preparation_fails() {
     fs::write(&imported, "previous imported marker\n").unwrap();
     let locator = imported.to_string_lossy().into_owned();
     assert!(run(root, &["import", &locator]).0);
+    let embedder = fake_embedder(root, "printf '[1,0]'");
+    assert!(run(root, &["reembed", "--command", embedder.to_str().unwrap()]).0);
+    assert!(run(root, &["retention", "all"]).0);
     assert!(run(root, &["refresh"]).0);
+    fs::write(&imported, "second prior imported marker\n").unwrap();
+    assert!(run(root, &["refresh"]).0);
+    let prior_semantic = search_json(root, &["imported marker", "--semantic"])
+        .into_iter()
+        .filter(|r| r["path"] == locator)
+        .collect::<Vec<_>>();
+    assert!(
+        prior_semantic
+            .iter()
+            .any(|r| r["text"] == "previous imported marker")
+    );
+    assert!(
+        prior_semantic
+            .iter()
+            .any(|r| r["text"] == "second prior imported marker")
+    );
 
     fs::write(&imported, "new imported marker\n").unwrap();
     fs::write(root.join("new-history.txt"), "new history marker\n").unwrap();
@@ -1610,9 +1685,15 @@ fn refresh_keeps_imports_atomic_when_history_preparation_fails() {
     let path = format!("{}:{}", shim.display(), std::env::var("PATH").unwrap());
     assert!(!run_with_env(root, &["refresh"], &[("PATH", &path)]).0);
 
+    let after_semantic = search_json(root, &["imported marker", "--semantic"])
+        .into_iter()
+        .filter(|r| r["path"] == locator)
+        .collect::<Vec<_>>();
+    assert_eq!(after_semantic, prior_semantic);
+    assert_eq!(search_json(root, &["previous imported marker"]).len(), 1);
     assert_eq!(
-        search_json(root, &["previous imported marker"])[0]["text"],
-        "previous imported marker"
+        search_json(root, &["second prior imported marker"]).len(),
+        1
     );
     assert!(search_json(root, &["new imported marker"]).is_empty());
     assert!(search_json(root, &["new history marker", "--all-history"]).is_empty());
