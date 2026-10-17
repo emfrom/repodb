@@ -1467,6 +1467,7 @@ fn history_import_dimension_mismatch_keeps_prior_snapshot_and_model_dimension() 
         &["prior imported marker", "--semantic", "--all-history"],
     );
     assert_eq!(prior_exact.len(), 1);
+    assert!(!prior_semantic.is_empty());
 
     fs::write(&imported, "new imported mismatch marker\n").unwrap();
     fs::write(
@@ -2295,17 +2296,15 @@ esac
 }
 
 #[test]
-fn imported_source_kinds_share_dimension_when_model_dimension_is_unknown() {
-    use std::os::unix::fs::PermissionsExt;
-
+fn local_text_and_imported_git_dimension_mismatch_when_model_dimension_is_unknown() {
     let repo = tempfile::tempdir().unwrap();
-    git(repo.path(), &["init", "-q"]);
-    assert!(run(repo.path(), &["init"]).0);
+    let root = repo.path();
+    git(root, &["init", "-q"]);
+    assert!(run(root, &["init"]).0);
 
-    let local_text = repo.path().join("local.txt");
+    let local_text = root.join("local.txt");
     fs::write(&local_text, "local source dimension marker\n").unwrap();
     let local_locator = local_text.to_string_lossy().into_owned();
-
     let external = tempfile::tempdir().unwrap();
     git(external.path(), &["init", "-q"]);
     git(
@@ -2321,26 +2320,54 @@ fn imported_source_kinds_share_dimension_when_model_dimension_is_unknown() {
     git(external.path(), &["add", "."]);
     git(external.path(), &["commit", "-qm", "source"]);
     let git_locator = external.path().to_string_lossy().into_owned();
-
-    let pdf = repo.path().join("source.pdf");
-    fs::write(&pdf, b"%PDF-test").unwrap();
-    let pdf_locator = pdf.to_string_lossy().into_owned();
-    assert!(run(repo.path(), &["import", &local_locator]).0);
-    assert!(run(repo.path(), &["import", &git_locator]).0);
-    assert!(run(repo.path(), &["import", &pdf_locator]).0);
+    assert!(run(root, &["import", &local_locator]).0);
+    assert!(run(root, &["import", &git_locator]).0);
 
     let embedder = fake_embedder(
-        repo.path(),
-        "case \"$input\" in\n  *'local source dimension marker'*) printf '[1,0]' ;;\n  *'imported git dimension marker'*) printf '[1,0]' ;;\n  *) printf '[1,0,0]' ;;\nesac",
+        root,
+        "printf '%s\\n' \"$input\" >> \"$EMBEDDER_CALL_LOG\"\ncase \"$input\" in\n  *'local source dimension marker'*) printf '[1,0]' ;;\n  *) printf '[1,0,0]' ;;\nesac",
     );
+    assert!(run(root, &["reembed", "--command", embedder.to_str().unwrap()]).0);
+    let call_log = root.join("embedder-calls.log");
     assert!(
-        run(
-            repo.path(),
-            &["reembed", "--command", embedder.to_str().unwrap()]
+        !run_with_env(
+            root,
+            &["refresh"],
+            &[("EMBEDDER_CALL_LOG", call_log.to_str().unwrap())],
         )
         .0
     );
-    let bin = repo.path().join("bin");
+    let calls = fs::read_to_string(call_log).unwrap();
+    assert!(calls.contains("local source dimension marker"), "{calls}");
+    assert!(calls.contains("imported git dimension marker"), "{calls}");
+    assert!(search_json(root, &["local source dimension marker"]).is_empty());
+    assert!(search_json(root, &["imported git dimension marker"]).is_empty());
+}
+
+#[test]
+fn local_text_and_pdf_dimension_mismatch_when_model_dimension_is_unknown() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let repo = tempfile::tempdir().unwrap();
+    let root = repo.path();
+    git(root, &["init", "-q"]);
+    assert!(run(root, &["init"]).0);
+
+    let local_text = root.join("local.txt");
+    fs::write(&local_text, "local source dimension marker\n").unwrap();
+    let local_locator = local_text.to_string_lossy().into_owned();
+    let pdf = root.join("source.pdf");
+    fs::write(&pdf, b"%PDF-test").unwrap();
+    let pdf_locator = pdf.to_string_lossy().into_owned();
+    assert!(run(root, &["import", &local_locator]).0);
+    assert!(run(root, &["import", &pdf_locator]).0);
+
+    let embedder = fake_embedder(
+        root,
+        "printf '%s\\n' \"$input\" >> \"$EMBEDDER_CALL_LOG\"\ncase \"$input\" in\n  *'local source dimension marker'*) printf '[1,0]' ;;\n  *) printf '[1,0,0]' ;;\nesac",
+    );
+    assert!(run(root, &["reembed", "--command", embedder.to_str().unwrap()]).0);
+    let bin = root.join("bin");
     fs::create_dir(&bin).unwrap();
     let converter = bin.join("pdftotext");
     fs::write(
@@ -2350,26 +2377,26 @@ fn imported_source_kinds_share_dimension_when_model_dimension_is_unknown() {
     .unwrap();
     fs::set_permissions(&converter, fs::Permissions::from_mode(0o755)).unwrap();
     let path = format!("{}:{}", bin.display(), std::env::var("PATH").unwrap());
-    let converter_marker = repo.path().join("pdf-converter-invoked");
+    let converter_marker = root.join("pdf-converter-invoked");
+    let call_log = root.join("embedder-calls.log");
     assert!(
         !run_with_env(
-            repo.path(),
+            root,
             &["refresh"],
             &[
                 ("PATH", &path),
                 ("PDF_CONVERTER_MARKER", converter_marker.to_str().unwrap()),
+                ("EMBEDDER_CALL_LOG", call_log.to_str().unwrap()),
             ],
         )
         .0
     );
     assert!(converter_marker.is_file(), "fake pdftotext was not invoked");
-    for marker in [
-        "local source dimension marker",
-        "imported git dimension marker",
-        "pdf source dimension marker",
-    ] {
-        assert!(search_json(repo.path(), &[marker]).is_empty(), "{marker}");
-    }
+    let calls = fs::read_to_string(call_log).unwrap();
+    assert!(calls.contains("local source dimension marker"), "{calls}");
+    assert!(calls.contains("pdf source dimension marker"), "{calls}");
+    assert!(search_json(root, &["local source dimension marker"]).is_empty());
+    assert!(search_json(root, &["pdf source dimension marker"]).is_empty());
 }
 
 #[test]
