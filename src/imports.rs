@@ -124,7 +124,17 @@ fn git_output(repo: &str, args: &[&str], limit: usize, used: &mut Budget) -> Res
 
 pub fn refresh(c: &Connection) -> Result<()> {
     init(c)?;
-    let mut st = c.prepare("SELECT id,locator,kind FROM imported_sources ORDER BY id")?;
+    c.execute_batch("PRAGMA temp_store=FILE;
+        DROP TABLE IF EXISTS temp.import_stage_sources; DROP TABLE IF EXISTS temp.import_stage_versions;
+        DROP TABLE IF EXISTS temp.import_stage_units; DROP TABLE IF EXISTS temp.import_stage_git_units;
+        CREATE TEMP TABLE import_stage_sources AS SELECT * FROM imported_sources;
+        CREATE TEMP TABLE import_stage_versions AS SELECT * FROM imported_versions;
+        CREATE TEMP TABLE import_stage_units AS SELECT * FROM imported_units;
+        CREATE TEMP TABLE import_stage_git_units AS SELECT * FROM imported_git_units;
+        CREATE UNIQUE INDEX import_stage_versions_key ON import_stage_versions(source_id,version);
+        CREATE UNIQUE INDEX import_stage_units_key ON import_stage_units(source_id,version,line,text);
+        CREATE UNIQUE INDEX import_stage_git_units_key ON import_stage_git_units(source_id,commit_id,path,line,text);")?;
+    let mut st = c.prepare("SELECT id,locator,kind FROM temp.import_stage_sources ORDER BY id")?;
     let mut source_rows = st.query([])?;
     let cfg: Option<(String,String)> = c.query_row("SELECT (SELECT value FROM embedding_config WHERE key='command'),(SELECT value FROM embedding_config WHERE key='model')", [], |r| Ok((r.get(0)?,r.get(1)?))).ok();
     let configured_dimension = c
@@ -146,8 +156,7 @@ pub fn refresh(c: &Connection) -> Result<()> {
         .parent()
         .ok_or("database has no parent directory")?
         .join("repodb-cache");
-    let tx = c.unchecked_transaction()?;
-    tx.execute_batch("PRAGMA temp_store=FILE; DROP TABLE IF EXISTS temp.import_pdf_pages; CREATE TEMP TABLE import_pdf_pages(page INTEGER PRIMARY KEY,text TEXT NOT NULL);")?;
+    c.execute_batch("DROP TABLE IF EXISTS temp.import_pdf_pages; CREATE TEMP TABLE import_pdf_pages(page INTEGER PRIMARY KEY,text TEXT NOT NULL);")?;
     // This conservative cumulative accounting includes buffers and representations materialized during preparation.
     let mut refresh_memory_bytes = Budget::new(
         MAX_REFRESH_ACCOUNTING_BYTES,
@@ -248,7 +257,7 @@ pub fn refresh(c: &Connection) -> Result<()> {
                             refresh_memory_bytes.charge(path.len(), "Git unit path")?;
                             let vector_bytes = vector.as_ref().map_or(0, |v| v.len() * 4);
                             refresh_memory_bytes.charge(vector_bytes, "Git stored vector bytes")?;
-                            tx.execute("INSERT OR REPLACE INTO imported_git_units(source_id,commit_id,path,line,line_end,text,vector) VALUES(?1,?2,?3,?4,?5,?6,?7)", params![id, commit, path, unit.line_start, unit.line_end, unit.text, vector.map(|v| as_bytes(&v))])?;
+                            c.execute("INSERT OR REPLACE INTO temp.import_stage_git_units(source_id,commit_id,path,line,line_end,text,vector) VALUES(?1,?2,?3,?4,?5,?6,?7)", params![id, commit, path, unit.line_start, unit.line_end, unit.text, vector.map(|v| as_bytes(&v))])?;
                             refresh_memory_bytes
                                 .release(unit.text.len() + path.len() + vector_bytes);
                             Ok(())
@@ -264,16 +273,16 @@ pub fn refresh(c: &Connection) -> Result<()> {
                     }
                     refresh_memory_bytes.release(text.len());
                 }
-                let fetched_order: i64 = tx.query_row(
-                    "SELECT COALESCE(MAX(fetched_order),0)+1 FROM imported_versions",
+                let fetched_order: i64 = c.query_row(
+                    "SELECT COALESCE(MAX(fetched_order),0)+1 FROM temp.import_stage_versions",
                     [],
                     |r| r.get(0),
                 )?;
-                tx.execute("INSERT INTO imported_versions(source_id,version,content,fetched_order) VALUES(?1,?2,'',?3) ON CONFLICT(source_id,version) DO UPDATE SET content=excluded.content,fetched_order=excluded.fetched_order", params![id, commit, fetched_order])?;
+                c.execute("INSERT INTO temp.import_stage_versions(source_id,version,content,fetched_order) VALUES(?1,?2,'',?3) ON CONFLICT(source_id,version) DO UPDATE SET content=excluded.content,fetched_order=excluded.fetched_order", params![id, commit, fetched_order])?;
             }
             if retention == "latest" {
-                tx.execute("DELETE FROM imported_versions WHERE source_id=?1 AND version NOT IN (SELECT version FROM imported_versions WHERE source_id=?1 ORDER BY fetched_order DESC LIMIT 1)", [&id])?;
-                tx.execute("DELETE FROM imported_git_units WHERE source_id=?1 AND commit_id NOT IN (SELECT version FROM imported_versions WHERE source_id=?1)", [&id])?;
+                c.execute("DELETE FROM temp.import_stage_versions WHERE source_id=?1 AND version NOT IN (SELECT version FROM temp.import_stage_versions WHERE source_id=?1 ORDER BY fetched_order DESC LIMIT 1)", [&id])?;
+                c.execute("DELETE FROM temp.import_stage_git_units WHERE source_id=?1 AND commit_id NOT IN (SELECT version FROM temp.import_stage_versions WHERE source_id=?1)", [&id])?;
             }
             continue;
         }
@@ -327,16 +336,16 @@ pub fn refresh(c: &Connection) -> Result<()> {
         let (version, content) = if is_pdf {
             let source_version = checksum(&source_bytes);
             let cache = cache_dir.join(format!("{source_version}.json"));
-            tx.execute("DELETE FROM temp.import_pdf_pages", [])?;
+            c.execute("DELETE FROM temp.import_pdf_pages", [])?;
             let cached = visit_cache_pages(&cache, |page, text| {
-                tx.execute(
+                c.execute(
                     "INSERT INTO temp.import_pdf_pages(page,text) VALUES(?1,?2)",
                     params![page, text],
                 )?;
                 Ok(())
             })?;
             if cached.is_none() {
-                tx.execute("DELETE FROM temp.import_pdf_pages", [])?;
+                c.execute("DELETE FROM temp.import_pdf_pages", [])?;
                 let mut child = Command::new("pdftotext")
                     .args(["-layout", "-enc", "UTF-8", "-", "-"])
                     .stdin(Stdio::piped())
@@ -364,7 +373,7 @@ pub fn refresh(c: &Connection) -> Result<()> {
                 let pages = text.split('\u{c}');
                 write_cache(&cache, pages.clone())?;
                 for (page, text) in pages.enumerate() {
-                    tx.execute(
+                    c.execute(
                         "INSERT INTO temp.import_pdf_pages(page,text) VALUES(?1,?2)",
                         params![page + 1, text],
                     )?;
@@ -377,18 +386,18 @@ pub fn refresh(c: &Connection) -> Result<()> {
             refresh_memory_bytes.charge(content.len(), "decoded local import text")?;
             (checksum(content.as_bytes()), Some(content))
         };
-        let fetched_order: i64 = tx.query_row(
-            "SELECT COALESCE(MAX(fetched_order),0)+1 FROM imported_versions",
+        let fetched_order: i64 = c.query_row(
+            "SELECT COALESCE(MAX(fetched_order),0)+1 FROM temp.import_stage_versions",
             [],
             |r| r.get(0),
         )?;
-        tx.execute(
-            "INSERT INTO imported_versions(source_id,version,content,fetched_order) VALUES(?1,?2,?3,?4) ON CONFLICT(source_id,version) DO UPDATE SET content=excluded.content,fetched_order=excluded.fetched_order",
+        c.execute(
+            "INSERT INTO temp.import_stage_versions(source_id,version,content,fetched_order) VALUES(?1,?2,?3,?4) ON CONFLICT(source_id,version) DO UPDATE SET content=excluded.content,fetched_order=excluded.fetched_order",
             params![id, version, content.as_deref().unwrap_or(""), fetched_order],
         )?;
         if is_pdf {
             let mut stmt =
-                tx.prepare("SELECT page,text FROM temp.import_pdf_pages ORDER BY page")?;
+                c.prepare("SELECT page,text FROM temp.import_pdf_pages ORDER BY page")?;
             let mut rows = stmt.query([])?;
             while let Some(row) = rows.next()? {
                 let page: usize = row.get(0)?;
@@ -411,8 +420,8 @@ pub fn refresh(c: &Connection) -> Result<()> {
                 }
                 let vector_bytes = vector.as_ref().map_or(0, |v| v.len() * 4);
                 refresh_memory_bytes.charge(vector_bytes, "PDF stored vector bytes")?;
-                tx.execute(
-                    "INSERT OR REPLACE INTO imported_units(source_id,version,line,line_end,text,vector,page) VALUES(?1,?2,?3,?3,?4,?5,?6)",
+                c.execute(
+                    "INSERT OR REPLACE INTO temp.import_stage_units(source_id,version,line,line_end,text,vector,page) VALUES(?1,?2,?3,?3,?4,?5,?6)",
                     params![id, version, page, text, vector.map(|v| as_bytes(&v)), page],
                 )?;
                 refresh_memory_bytes.release(text.len() + vector_bytes);
@@ -439,7 +448,7 @@ pub fn refresh(c: &Connection) -> Result<()> {
                     }
                     let vector_bytes = vector.as_ref().map_or(0, |v| v.len() * 4);
                     refresh_memory_bytes.charge(vector_bytes, "stored vector bytes")?;
-                    tx.execute("INSERT OR REPLACE INTO imported_units(source_id,version,line,line_end,text,vector,page) VALUES(?1,?2,?3,?4,?5,?6,NULL)", params![id, version, unit.line_start, unit.line_end, unit.text, vector.map(|v| as_bytes(&v))])?;
+                    c.execute("INSERT OR REPLACE INTO temp.import_stage_units(source_id,version,line,line_end,text,vector,page) VALUES(?1,?2,?3,?4,?5,?6,NULL)", params![id, version, unit.line_start, unit.line_end, unit.text, vector.map(|v| as_bytes(&v))])?;
                     refresh_memory_bytes.release(vector_bytes);
                     Ok(())
                 })();
@@ -454,19 +463,34 @@ pub fn refresh(c: &Connection) -> Result<()> {
             }
         }
         if retention == "latest" {
-            tx.execute(
-                "DELETE FROM imported_versions WHERE source_id=?1 AND fetched_order<>?2",
+            c.execute(
+                "DELETE FROM temp.import_stage_versions WHERE source_id=?1 AND fetched_order<>?2",
                 params![id, fetched_order],
             )?;
-            tx.execute(
-                "DELETE FROM imported_units WHERE source_id=?1 AND version NOT IN (SELECT version FROM imported_versions WHERE source_id=?1)",
+            c.execute(
+                "DELETE FROM temp.import_stage_units WHERE source_id=?1 AND version NOT IN (SELECT version FROM temp.import_stage_versions WHERE source_id=?1)",
                 [&id],
             )?;
         }
     }
     drop(source_rows);
     drop(st);
-    tx.commit()?;
+    Ok(())
+}
+
+pub fn publish(tx: &rusqlite::Transaction<'_>) -> Result<()> {
+    init(tx)?;
+    for (table, stage) in [
+        ("imported_versions", "import_stage_versions"),
+        ("imported_units", "import_stage_units"),
+        ("imported_git_units", "import_stage_git_units"),
+    ] {
+        tx.execute(&format!("DELETE FROM {table}"), [])?;
+        tx.execute(
+            &format!("INSERT INTO {table} SELECT * FROM temp.{stage}"),
+            [],
+        )?;
+    }
     Ok(())
 }
 

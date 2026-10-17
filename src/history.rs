@@ -563,6 +563,7 @@ pub fn refresh(c: &mut Connection) -> Result<()> {
         }
     }
     let tx = publish_transaction(c, version)?;
+    crate::imports::publish(&tx)?;
     tx.execute_batch("DROP TABLE IF EXISTS unit_embeddings; DROP TABLE IF EXISTS git_blob_units; DROP TABLE IF EXISTS indexed_units; DROP TABLE IF EXISTS git_occurrences; DROP TABLE IF EXISTS blob_contents; DROP TABLE IF EXISTS git_commits;
         CREATE TABLE git_commits(commit_id TEXT PRIMARY KEY NOT NULL, timestamp INTEGER NOT NULL);
         CREATE TABLE blob_contents(blob_id TEXT PRIMARY KEY NOT NULL, content TEXT, status TEXT NOT NULL);
