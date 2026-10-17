@@ -21,6 +21,20 @@ pub(super) fn init(c: &Connection) -> Result<()> {
         )?;
         c.execute("UPDATE imported_git_units SET line_end=line", [])?;
     }
+    if !primary_key_matches(
+        c,
+        "imported_units",
+        &["source_id", "version", "line", "text"],
+    )? {
+        c.execute_batch("CREATE TABLE imported_units_new(source_id TEXT NOT NULL,version TEXT NOT NULL,line INTEGER NOT NULL,line_end INTEGER NOT NULL,text TEXT NOT NULL,vector BLOB,page INTEGER,PRIMARY KEY(source_id,version,line,text)); INSERT INTO imported_units_new SELECT source_id,version,line,line_end,text,vector,page FROM imported_units; DROP TABLE imported_units; ALTER TABLE imported_units_new RENAME TO imported_units;")?;
+    }
+    if !primary_key_matches(
+        c,
+        "imported_git_units",
+        &["source_id", "commit_id", "path", "line", "text"],
+    )? {
+        c.execute_batch("CREATE TABLE imported_git_units_new(source_id TEXT NOT NULL,commit_id TEXT NOT NULL,path TEXT NOT NULL,line INTEGER NOT NULL,line_end INTEGER NOT NULL,text TEXT NOT NULL,vector BLOB,PRIMARY KEY(source_id,commit_id,path,line,text)); INSERT INTO imported_git_units_new SELECT source_id,commit_id,path,line,line_end,text,vector FROM imported_git_units; DROP TABLE imported_git_units; ALTER TABLE imported_git_units_new RENAME TO imported_git_units;")?;
+    }
     if !column_exists(c, "imported_versions", "fetched_order")? {
         c.execute(
             "ALTER TABLE imported_versions ADD COLUMN fetched_order INTEGER NOT NULL DEFAULT 0",
@@ -33,6 +47,20 @@ pub(super) fn init(c: &Connection) -> Result<()> {
         [],
     )?;
     Ok(())
+}
+
+fn primary_key_matches(c: &Connection, table: &str, expected: &[&str]) -> Result<bool> {
+    let mut stmt = c.prepare(&format!("PRAGMA table_info({table})"))?;
+    let rows = stmt.query_map([], |row| {
+        Ok((row.get::<_, String>(1)?, row.get::<_, usize>(5)?))
+    })?;
+    let mut columns = rows.collect::<std::result::Result<Vec<_>, _>>()?;
+    columns.retain(|(_, order)| *order > 0);
+    columns.sort_by_key(|(_, order)| *order);
+    Ok(columns
+        .iter()
+        .map(|(name, _)| name.as_str())
+        .eq(expected.iter().copied()))
 }
 
 fn column_exists(c: &Connection, table: &str, column: &str) -> Result<bool> {
@@ -107,4 +135,44 @@ pub(crate) fn set_retention(c: &Connection, value: &str) -> Result<()> {
         c.execute("DELETE FROM imported_git_units WHERE NOT EXISTS (SELECT 1 FROM imported_versions v WHERE v.source_id=imported_git_units.source_id AND v.version=imported_git_units.commit_id)", [])?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::init;
+    use rusqlite::Connection;
+
+    #[test]
+    fn init_migrates_legacy_unit_keys_without_losing_rows() {
+        let connection = Connection::open_in_memory().unwrap();
+        connection.execute_batch(
+            "CREATE TABLE imported_units(source_id TEXT NOT NULL,version TEXT NOT NULL,line INTEGER NOT NULL,text TEXT NOT NULL,vector BLOB,page INTEGER,PRIMARY KEY(source_id,version,line));
+             CREATE TABLE imported_git_units(source_id TEXT NOT NULL,commit_id TEXT NOT NULL,path TEXT NOT NULL,line INTEGER NOT NULL,text TEXT NOT NULL,vector BLOB,PRIMARY KEY(source_id,commit_id,path,line));
+             INSERT INTO imported_units VALUES('s','v',4,'legacy file',X'0102',NULL);
+             INSERT INTO imported_git_units VALUES('s','c','a.rs',4,'legacy git',X'0304');",
+        ).unwrap();
+
+        init(&connection).unwrap();
+        connection.execute("INSERT OR REPLACE INTO imported_units(source_id,version,line,line_end,text,vector,page) VALUES('s','v',4,4,'second file',X'0506',NULL)", []).unwrap();
+        connection.execute("INSERT OR REPLACE INTO imported_git_units(source_id,commit_id,path,line,line_end,text,vector) VALUES('s','c','a.rs',4,4,'second git',X'0708')", []).unwrap();
+        let file_rows: i64 = connection.query_row(
+            "SELECT count(*) FROM imported_units WHERE source_id='s' AND version='v' AND line=4",
+            [],
+            |row| row.get(0),
+        ).unwrap();
+        let git_rows: i64 = connection.query_row(
+            "SELECT count(*) FROM imported_git_units WHERE source_id='s' AND commit_id='c' AND path='a.rs' AND line=4",
+            [],
+            |row| row.get(0),
+        ).unwrap();
+        assert_eq!((file_rows, git_rows), (2, 2));
+        let old_vector: Vec<u8> = connection
+            .query_row(
+                "SELECT vector FROM imported_units WHERE text='legacy file'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(old_vector, [1, 2]);
+    }
 }

@@ -472,13 +472,13 @@ pub fn refresh(c: &Connection) -> Result<()> {
 
 pub fn reembed(c: &Connection, command: &str, model: &str) -> Result<Option<usize>> {
     init(c)?;
-    c.execute_batch("PRAGMA temp_store=FILE; DROP TABLE IF EXISTS temp.import_reembed_vectors; CREATE TEMP TABLE import_reembed_vectors(kind TEXT NOT NULL, source_id TEXT NOT NULL, version TEXT NOT NULL, line INTEGER NOT NULL, path TEXT, vector BLOB NOT NULL);")?;
+    c.execute_batch("PRAGMA temp_store=FILE; DROP TABLE IF EXISTS temp.import_reembed_vectors; CREATE TEMP TABLE import_reembed_vectors(kind TEXT NOT NULL, source_id TEXT NOT NULL, version TEXT NOT NULL, line INTEGER NOT NULL, text TEXT NOT NULL, path TEXT, vector BLOB NOT NULL);")?;
     let mut dimension = None;
     {
         let mut stmt = c.prepare("SELECT source_id,version,line,text,'file',NULL FROM imported_units UNION ALL SELECT source_id,commit_id,line,text,'git',path FROM imported_git_units ORDER BY 1,2,3")?;
         let mut rows = stmt.query([])?;
         let mut staged =
-            c.prepare("INSERT INTO temp.import_reembed_vectors VALUES(?1,?2,?3,?4,?5,?6)")?;
+            c.prepare("INSERT INTO temp.import_reembed_vectors VALUES(?1,?2,?3,?4,?5,?6,?7)")?;
         while let Some(row) = rows.next()? {
             let source: String = row.get(0)?;
             let version: String = row.get(1)?;
@@ -496,13 +496,14 @@ pub fn reembed(c: &Connection, command: &str, model: &str) -> Result<Option<usiz
                 source,
                 version,
                 line,
+                text,
                 path,
                 as_bytes(&vector)
             ])?;
         }
     }
-    c.execute("UPDATE imported_units SET vector=(SELECT vector FROM temp.import_reembed_vectors v WHERE v.kind='file' AND v.source_id=imported_units.source_id AND v.version=imported_units.version AND v.line=imported_units.line)", [])?;
-    c.execute("UPDATE imported_git_units SET vector=(SELECT vector FROM temp.import_reembed_vectors v WHERE v.kind='git' AND v.source_id=imported_git_units.source_id AND v.version=imported_git_units.commit_id AND v.line=imported_git_units.line AND v.path=imported_git_units.path)", [])?;
+    c.execute("UPDATE imported_units SET vector=(SELECT vector FROM temp.import_reembed_vectors v WHERE v.kind='file' AND v.source_id=imported_units.source_id AND v.version=imported_units.version AND v.line=imported_units.line AND v.text=imported_units.text)", [])?;
+    c.execute("UPDATE imported_git_units SET vector=(SELECT vector FROM temp.import_reembed_vectors v WHERE v.kind='git' AND v.source_id=imported_git_units.source_id AND v.version=imported_git_units.commit_id AND v.line=imported_git_units.line AND v.path=imported_git_units.path AND v.text=imported_git_units.text)", [])?;
     c.execute_batch("DROP TABLE temp.import_reembed_vectors")?;
     Ok(dimension)
 }
