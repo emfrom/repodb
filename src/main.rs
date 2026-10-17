@@ -12,6 +12,7 @@ mod history;
 mod imports;
 mod process;
 mod segmentation;
+mod semgrep_languages;
 
 type Result<T> = std::result::Result<T, Box<dyn Error>>;
 

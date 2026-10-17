@@ -10,10 +10,16 @@ pub fn kind(path: &[u8]) -> &'static str {
         .iter()
         .rposition(|b| *b == b'.')
         .map(|i| &name[i + 1..]);
+    if name == b"Dockerfile" {
+        return "dockerfile";
+    }
+    if extension == Some(b"move".as_slice()) {
+        return "move";
+    }
     match extension {
         Some(b"md" | b"markdown" | b"txt") => "paragraph",
         Some(b"rs") => "rust",
-        _ => "fallback",
+        _ => crate::semgrep_languages::language_for_extension(extension),
     }
 }
 
@@ -106,25 +112,184 @@ pub fn visit(kind: &str, text: &str, mut visitor: impl FnMut(Unit<'_>) -> bool) 
         && let Some(command) = std::env::var_os("REPODB_SEGMENTER")
         && let Some(ranges) = external_ranges(&command, kind, text.as_bytes())
     {
-        let mut line = 1;
-        for (start, end) in ranges {
-            let piece = &text[start..end];
-            let newlines = piece.bytes().filter(|byte| *byte == b'\n').count();
-            if !visitor(Unit {
-                text: piece,
-                line_start: line,
-                line_end: line + newlines - usize::from(piece.ends_with('\n')),
-            }) {
-                return;
-            }
-            line += newlines;
-        }
+        visit_ranges(text, &ranges, &mut visitor);
+        return;
+    }
+    if !matches!(kind, "paragraph" | "fallback" | "rust")
+        && let Some(command) = std::env::var_os("REPODB_SEMGREP_CORE")
+        && let Some(ranges) = semgrep_ranges(&command, kind, text.as_bytes())
+    {
+        visit_ranges(text, &ranges, &mut visitor);
         return;
     }
     if kind == "rust" && rust(text, &mut visitor).is_some() {
         return;
     }
     paragraphs(text, 1, &mut visitor);
+}
+
+fn visit_ranges(text: &str, ranges: &[(usize, usize)], visitor: &mut impl FnMut(Unit<'_>) -> bool) {
+    let mut line = 1;
+    for &(start, end) in ranges {
+        let piece = &text[start..end];
+        let newlines = piece.bytes().filter(|byte| *byte == b'\n').count();
+        if !visitor(Unit {
+            text: piece,
+            line_start: line,
+            line_end: line + newlines - usize::from(piece.ends_with('\n')),
+        }) {
+            return;
+        }
+        line += newlines;
+    }
+}
+
+fn semgrep_ranges(
+    executable: &std::ffi::OsStr,
+    language: &str,
+    source: &[u8],
+) -> Option<Vec<(usize, usize)>> {
+    if language != "move" {
+        return semgrep_ranges_for_language(executable, language, source);
+    }
+    let sui = semgrep_ranges_for_language(executable, "move_on_sui", source);
+    let aptos = semgrep_ranges_for_language(executable, "move_on_aptos", source);
+    match (sui, aptos) {
+        (Some(ranges), None) | (None, Some(ranges)) => Some(ranges),
+        (Some(sui), Some(aptos)) if sui == aptos => Some(sui),
+        _ => None,
+    }
+}
+
+fn semgrep_ranges_for_language(
+    executable: &std::ffi::OsStr,
+    language: &str,
+    source: &[u8],
+) -> Option<Vec<(usize, usize)>> {
+    use std::{
+        fs::OpenOptions,
+        process::{Command, Stdio},
+        time::Duration,
+    };
+    static TEMP_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+    struct TemporarySource(std::path::PathBuf);
+    impl Drop for TemporarySource {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_file(&self.0);
+        }
+    }
+
+    if !semgrep_core_is_pinned(executable) {
+        return None;
+    }
+
+    let path = (0..16).find_map(|_| {
+        let id = TEMP_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let path =
+            std::env::temp_dir().join(format!("repodb-semgrep-{}-{id}.src", std::process::id()));
+        let mut options = OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        match options.open(&path) {
+            Ok(mut file) => {
+                use std::io::Write;
+                let temp = TemporarySource(path);
+                file.write_all(source).ok()?;
+                Some(temp)
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => None,
+            Err(_) => None,
+        }
+    })?;
+
+    let mut command = Command::new(executable);
+    command
+        .args(["-l", language, "-json", "-full_token_info", "-dump_ast"])
+        .arg(&path.0)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        command.process_group(0);
+    }
+    let mut child = command.spawn().ok()?;
+    let output = crate::process::capture_with_input_timeout(
+        &mut child,
+        &[],
+        8 * 1024 * 1024,
+        64 * 1024,
+        Duration::from_secs(10),
+    )
+    .ok()?;
+    if !output.status.success() || output.exceeded {
+        return None;
+    }
+    let ast: serde_json::Value = serde_json::from_slice(&output.stdout).ok()?;
+    let syntax = crate::semgrep_languages::syntax_ranges_from_ast(language, &ast, source)?;
+    let mut ranges = Vec::with_capacity(syntax.len() * 2 + 1);
+    let mut cursor = 0;
+    for [start, end] in syntax {
+        if start < cursor || start >= end || end > source.len() {
+            return None;
+        }
+        if cursor < start {
+            ranges.push([cursor, start]);
+        }
+        ranges.push([start, end]);
+        cursor = end;
+    }
+    if cursor < source.len() {
+        ranges.push([cursor, source.len()]);
+    }
+    validate_partition(source, ranges)
+}
+
+fn semgrep_core_is_pinned(executable: &std::ffi::OsStr) -> bool {
+    use std::process::{Command, Stdio};
+    use std::sync::OnceLock;
+    use std::time::Duration;
+    static VERSION_OK: OnceLock<bool> = OnceLock::new();
+    *VERSION_OK.get_or_init(|| {
+        let mut command = Command::new(executable);
+        command
+            .arg("-version")
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        #[cfg(unix)]
+        {
+            use std::os::unix::process::CommandExt;
+            command.process_group(0);
+        }
+        let Ok(mut child) = command.spawn() else {
+            return false;
+        };
+        let Ok(output) = crate::process::capture_with_input_timeout(
+            &mut child,
+            &[],
+            8 * 1024,
+            8 * 1024,
+            Duration::from_secs(3),
+        ) else {
+            return false;
+        };
+        if !output.status.success() || output.exceeded {
+            return false;
+        }
+        let version = format!(
+            "{}{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        version
+            .split(|character: char| !character.is_ascii_alphanumeric() && character != '.')
+            .any(|part| part == "1.181.0")
+    })
 }
 
 fn external_ranges(
@@ -160,15 +325,19 @@ fn external_ranges(
         return None;
     }
     let ranges: Vec<[usize; 2]> = serde_json::from_slice(&output.stdout).ok()?;
-    let source = std::str::from_utf8(source).ok()?;
+    validate_partition(source, ranges)
+}
+
+fn validate_partition(source: &[u8], ranges: Vec<[usize; 2]>) -> Option<Vec<(usize, usize)>> {
+    let text = std::str::from_utf8(source).ok()?;
     let mut cursor = 0;
     let mut validated = Vec::with_capacity(ranges.len());
     for [start, end] in ranges {
         if start != cursor
             || start >= end
             || end > source.len()
-            || !source.is_char_boundary(start)
-            || !source.is_char_boundary(end)
+            || !text.is_char_boundary(start)
+            || !text.is_char_boundary(end)
         {
             return None;
         }
@@ -194,5 +363,31 @@ mod tests {
             false
         });
         assert_eq!(visited, [(5, 1, 1)]);
+    }
+
+    #[test]
+    fn selected_semgrep_languages_are_routed_by_source_extension() {
+        assert_eq!(super::kind(b"src/lib.rs"), "rust");
+        assert_eq!(super::kind(b"Dockerfile"), "dockerfile");
+        assert_eq!(super::kind(b"src/module.move"), "move");
+        for language in crate::semgrep_languages::LANGUAGES {
+            for extension in language.extensions {
+                assert_eq!(
+                    super::kind(format!("source.{extension}").as_bytes()),
+                    language.semgrep_name,
+                    "extension {extension} must route to {}",
+                    language.semgrep_name,
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn ambiguous_and_unavailable_extensions_keep_fallback() {
+        assert_eq!(super::kind(b"source.h"), "fallback");
+        assert_eq!(super::kind(b"source.move"), "move");
+        assert_eq!(super::kind(b"source.vue"), "fallback");
+        assert_eq!(super::kind(b"source.ps1"), "fallback");
+        assert_eq!(super::kind(b"source.md"), "paragraph");
     }
 }
