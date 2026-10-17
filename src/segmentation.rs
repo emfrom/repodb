@@ -154,6 +154,13 @@ fn semgrep_ranges(
     }
     let sui = semgrep_ranges_for_language(executable, "move_on_sui", source);
     let aptos = semgrep_ranges_for_language(executable, "move_on_aptos", source);
+    reconcile_move_ranges(sui, aptos)
+}
+
+fn reconcile_move_ranges(
+    sui: Option<Vec<(usize, usize)>>,
+    aptos: Option<Vec<(usize, usize)>>,
+) -> Option<Vec<(usize, usize)>> {
     match (sui, aptos) {
         (Some(ranges), None) | (None, Some(ranges)) => Some(ranges),
         (Some(sui), Some(aptos)) if sui == aptos => Some(sui),
@@ -380,6 +387,28 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn move_parser_results_require_consensus_or_one_success() {
+        let ranges = vec![(0, 12), (12, 20)];
+        assert_eq!(
+            super::reconcile_move_ranges(Some(ranges.clone()), Some(ranges.clone())),
+            Some(ranges.clone())
+        );
+        assert_eq!(
+            super::reconcile_move_ranges(Some(ranges.clone()), None),
+            Some(ranges.clone())
+        );
+        assert_eq!(
+            super::reconcile_move_ranges(None, Some(ranges.clone())),
+            Some(ranges)
+        );
+        assert_eq!(
+            super::reconcile_move_ranges(Some(vec![(0, 20)]), Some(vec![(0, 12), (12, 20)])),
+            None
+        );
+        assert_eq!(super::reconcile_move_ranges(None, None), None);
     }
 
     #[test]

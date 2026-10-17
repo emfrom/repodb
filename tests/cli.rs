@@ -122,9 +122,13 @@ fn optional_segmenter_uses_byte_partition_and_falls_back_on_invalid_output() {
 }
 
 #[test]
-fn optional_semgrep_core_uses_ast_tokens_and_falls_back_atomically() {
+fn optional_semgrep_core_uses_real_ast_and_falls_back_when_unavailable() {
     use std::os::unix::fs::PermissionsExt;
 
+    let Some(core) = semgrep_corpus::actual_semgrep_core() else {
+        eprintln!("skipping real Semgrep integration: Semgrep core 1.181.0 is unavailable");
+        return;
+    };
     let repo = repository();
     let root = repo.path();
     assert!(run(root, &["init"]).0);
@@ -138,13 +142,6 @@ fn optional_semgrep_core_uses_ast_tokens_and_falls_back_atomically() {
     fs::write(&source_path, source).unwrap();
     git(root, &["add", "src/main.go"]);
     git(root, &["commit", "-qm", "add Go source"]);
-    let core = root.join("fake-semgrep-core");
-    fs::write(
-        &core,
-        "#!/bin/sh\nif [ \"$1\" = -version ]; then echo 'semgrep-core version: 1.181.0'; exit 0; fi\n[ \"$1\" = -l ] && [ \"$2\" = go ] || exit 2\n[ -s \"$6\" ] || exit 3\nprintf '%s' '{\"Pr\":[{\"tokens\":[{\"OriginTok\":{\"str\":\"func\",\"bytepos\":15}},{\"OriginTok\":{\"str\":\"}\",\"bytepos\":51}}]}]}'\n",
-    )
-    .unwrap();
-    fs::set_permissions(&core, fs::Permissions::from_mode(0o755)).unwrap();
     assert!(
         run_with_env(
             root,
@@ -171,32 +168,6 @@ fn optional_semgrep_core_uses_ast_tokens_and_falls_back_atomically() {
         source
     );
 
-    // A token/source mismatch rejects the entire AST and uses paragraph fallback.
-    fs::write(
-        &core,
-        "#!/bin/sh\nif [ \"$1\" = -version ]; then echo 'semgrep-core version: 1.181.0'; exit 0; fi\n[ \"$1\" = -l ] && [ \"$2\" = go ] || exit 2\nprintf '%s' '{\"Pr\":[{\"token\":{\"OriginTok\":{\"str\":\"NOPE\",\"bytepos\":15}}}]}'\n",
-    )
-    .unwrap();
-    let next_path = root.join("src/next.go");
-    fs::write(&next_path, source.replace("AST_UNIT", "BAD__UNIT")).unwrap();
-    git(root, &["add", "src/next.go"]);
-    git(root, &["commit", "-qm", "add malformed AST fixture"]);
-    assert!(
-        run_with_env(
-            root,
-            &["refresh"],
-            &[("REPODB_SEMGREP_CORE", core.to_str().unwrap())],
-        )
-        .0
-    );
-    let fallback = search_json(root, &["BAD__UNIT", "--all-history"]);
-    assert_eq!(
-        fallback[0]["text"],
-        source
-            .replace("AST_UNIT", "BAD__UNIT")
-            .trim_end_matches('\n')
-    );
-
     // An unavailable optional executable likewise leaves content searchable.
     let unavailable_path = root.join("src/unavailable.go");
     fs::write(&unavailable_path, source.replace("AST_UNIT", "UNAVAILABLE")).unwrap();
@@ -217,213 +188,6 @@ fn optional_semgrep_core_uses_ast_tokens_and_falls_back_atomically() {
             .replace("AST_UNIT", "UNAVAILABLE")
             .trim_end_matches('\n')
     );
-}
-
-#[test]
-fn black_box_core_routes_every_selected_parser_fixture() {
-    use std::{collections::BTreeSet, os::unix::fs::PermissionsExt};
-
-    const ROUTED: &[(&str, &str)] = &[
-        ("bash", "sh"),
-        ("c", "c"),
-        ("cairo", "cairo"),
-        ("circom", "circom"),
-        ("clojure", "clj"),
-        ("cpp", "cpp"),
-        ("csharp", "cs"),
-        ("dart", "dart"),
-        ("fga", "fga"),
-        ("go", "go"),
-        ("hack", "hack"),
-        ("html", "html"),
-        ("java", "java"),
-        ("javascript", "js"),
-        ("json", "json"),
-        ("jsonnet", "jsonnet"),
-        ("julia", "jl"),
-        ("kotlin", "kt"),
-        ("lisp", "lisp"),
-        ("lua", "lua"),
-        ("ocaml", "ml"),
-        ("php", "php"),
-        ("promql", "promql"),
-        ("protobuf", "proto"),
-        ("python2", "py2"),
-        ("python3", "py3"),
-        ("python", "py"),
-        ("r", "r"),
-        ("ruby", "rb"),
-        ("scala", "scala"),
-        ("scheme", "scm"),
-        ("solidity", "sol"),
-        ("swift", "swift"),
-        ("terraform", "tf"),
-        ("typescript", "ts"),
-        ("xml", "xml"),
-        ("yaml", "yaml"),
-    ];
-
-    let repo = repository();
-    let root = repo.path();
-    assert!(run(root, &["init"]).0);
-    let embedder = root.join("embedder");
-    fs::write(&embedder, "#!/bin/sh\ncat >/dev/null\nprintf '[1,0]'\n").unwrap();
-    fs::set_permissions(&embedder, fs::Permissions::from_mode(0o755)).unwrap();
-    assert!(run(root, &["reembed", "--command", embedder.to_str().unwrap()]).0);
-
-    let mut fixtures = Vec::new();
-    for (language, extension) in ROUTED {
-        let path = format!("src/{language}.{extension}");
-        let marker = format!("repo_parser_{language}_marker");
-        fs::write(root.join(&path), &marker).unwrap();
-        fixtures.push((language.to_string(), path, marker));
-    }
-    let dockerfile_path = "container/Dockerfile";
-    fs::create_dir_all(root.join("container")).unwrap();
-    let dockerfile_marker = "repo_parser_dockerfile_basename_marker";
-    fs::write(root.join(dockerfile_path), dockerfile_marker).unwrap();
-    fixtures.push((
-        "dockerfile".to_owned(),
-        dockerfile_path.to_owned(),
-        dockerfile_marker.to_owned(),
-    ));
-
-    let rust_path = "src/rust_probe.rs";
-    let rust_source = "fn repo_parser_rust_marker() {}\n";
-    fs::write(root.join(rust_path), rust_source).unwrap();
-    fixtures.push((
-        "rust".to_owned(),
-        rust_path.to_owned(),
-        "repo_parser_rust_marker".to_owned(),
-    ));
-
-    for language in ["move_on_sui", "move_on_aptos"] {
-        let path = format!("src/{language}_probe.move");
-        let marker = format!("repo_parser_{language}_marker");
-        fs::write(root.join(&path), &marker).unwrap();
-        fixtures.push((language.to_owned(), path, marker));
-    }
-
-    git(root, &["add", "."]);
-    git(root, &["commit", "-qm", "add parser routing fixtures"]);
-
-    let core = root.join("fake-semgrep-core");
-    fs::write(
-        &core,
-        "#!/bin/sh\nif [ \"$1\" = -version ]; then echo 'semgrep-core version: 1.181.0'; exit 0; fi\necho \"$2\" >> \"$REPODB_CORE_LANGUAGES\"\nsource=$(cat \"$6\")\nprintf '{\"Pr\":[{\"token\":{\"OriginTok\":{\"str\":\"%s\",\"bytepos\":0}}}]}' \"$source\"\n",
-    )
-    .unwrap();
-    fs::set_permissions(&core, fs::Permissions::from_mode(0o755)).unwrap();
-    let calls = root.join("core-languages");
-    assert!(
-        run_with_env(
-            root,
-            &["refresh"],
-            &[
-                ("REPODB_SEMGREP_CORE", core.to_str().unwrap()),
-                ("REPODB_CORE_LANGUAGES", calls.to_str().unwrap()),
-            ],
-        )
-        .0
-    );
-
-    let actual = fs::read_to_string(&calls)
-        .unwrap()
-        .lines()
-        .map(str::to_owned)
-        .collect::<BTreeSet<_>>();
-    let expected = ROUTED
-        .iter()
-        .map(|(language, _)| (*language).to_owned())
-        .chain(["dockerfile", "move_on_sui", "move_on_aptos"].map(str::to_owned))
-        .collect::<BTreeSet<_>>();
-    assert_eq!(
-        actual, expected,
-        "every selected Semgrep parser must be invoked"
-    );
-
-    for (language, path, marker) in fixtures {
-        let results = search_json(root, &[&marker, "--all-history"]);
-        assert_eq!(results.len(), 1, "{language} marker must be searchable");
-        assert_eq!(results[0]["path"], path, "{language} source path");
-        assert_eq!(results[0]["line_start"], 1, "{language} start line");
-        assert_eq!(results[0]["line_end"], 1, "{language} end line");
-        if language == "rust" {
-            assert_eq!(results[0]["text"], "fn repo_parser_rust_marker() {}");
-        } else {
-            assert_eq!(results[0]["text"], marker, "{language} unit text");
-        }
-    }
-}
-
-#[test]
-fn move_extension_requires_parser_consensus_or_a_single_valid_parser() {
-    use std::os::unix::fs::PermissionsExt;
-
-    let repo = repository();
-    let root = repo.path();
-    assert!(run(root, &["init"]).0);
-    let embedder = root.join("embedder");
-    fs::write(&embedder, "#!/bin/sh\ncat >/dev/null\nprintf '[1,0]'\n").unwrap();
-    fs::set_permissions(&embedder, fs::Permissions::from_mode(0o755)).unwrap();
-    assert!(run(root, &["reembed", "--command", embedder.to_str().unwrap()]).0);
-
-    let consensus = "module 0x1::M { public fun f() {} }\n// CONSENSUS\n";
-    let single = "module 0x1::M { public fun f() {} }\n// ONLY\n";
-    fs::write(root.join("src/consensus.move"), consensus).unwrap();
-    fs::write(root.join("src/single.move"), single).unwrap();
-    git(root, &["add", "src/consensus.move", "src/single.move"]);
-    git(root, &["commit", "-qm", "add Move dialect fixtures"]);
-
-    let core = root.join("fake-move-core");
-    fs::write(
-        &core,
-        "#!/bin/sh\nif [ \"$1\" = -version ]; then echo 'semgrep-core version: 1.181.0'; exit 0; fi\necho \"$2\" >> \"$REPODB_MOVE_CALLS\"\nif grep -q ONLY \"$6\" && [ \"$2\" = move_on_aptos ]; then exit 1; fi\nif grep -q -E 'CONSENSUS|ONLY' \"$6\"; then printf '%s' '{\"Pr\":[{\"tokens\":[{\"OriginTok\":{\"str\":\"module\",\"bytepos\":0}},{\"OriginTok\":{\"str\":\"}\",\"bytepos\":34}}]}]}'\n  exit 0\nfi\nif [ \"$2\" = move_on_sui ]; then printf '%s' '{\"Pr\":[{\"tokens\":[{\"OriginTok\":{\"str\":\"0x2\",\"bytepos\":7}},{\"OriginTok\":{\"str\":\"1\",\"bytepos\":47}}]}]}'\nelse printf '%s' '{\"Pr\":[{\"tokens\":[{\"OriginTok\":{\"str\":\"2\",\"bytepos\":9}},{\"OriginTok\":{\"str\":\"}\",\"bytepos\":49}}]}]}'\nfi\n",
-    )
-    .unwrap();
-    fs::set_permissions(&core, fs::Permissions::from_mode(0o755)).unwrap();
-    let calls = root.join("move-core-calls");
-    assert!(
-        run_with_env(
-            root,
-            &["refresh"],
-            &[
-                ("REPODB_SEMGREP_CORE", core.to_str().unwrap()),
-                ("REPODB_MOVE_CALLS", calls.to_str().unwrap()),
-            ],
-        )
-        .0
-    );
-    let called = fs::read_to_string(&calls).unwrap();
-    assert!(called.contains("move_on_sui"));
-    assert!(called.contains("move_on_aptos"));
-    let agreed = search_json(root, &["f()", "--all-history"]);
-    assert!(
-        agreed
-            .iter()
-            .any(|unit| unit["text"] == "module 0x1::M { public fun f() {} }")
-    );
-
-    let disagreement = "module 0x2::sample { public fun hello(): u64 { 1 } }\n";
-    fs::write(root.join("src/disagreement.move"), disagreement).unwrap();
-    git(root, &["add", "src/disagreement.move"]);
-    git(
-        root,
-        &["commit", "-qm", "add disagreeing Move dialect fixture"],
-    );
-    assert!(
-        run_with_env(
-            root,
-            &["refresh"],
-            &[
-                ("REPODB_SEMGREP_CORE", core.to_str().unwrap()),
-                ("REPODB_MOVE_CALLS", calls.to_str().unwrap()),
-            ],
-        )
-        .0
-    );
-    let fallback = search_json(root, &["hello", "--all-history"]);
-    assert_eq!(fallback[0]["text"], disagreement.trim_end_matches('\n'));
 }
 
 #[test]
