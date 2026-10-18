@@ -2,7 +2,7 @@
 
 A repository search CLI with exact and embedding-based search.
 
-This is something I cooked up to give agents faster understanding of codebases and codebase operations. Usable, but integrations are not finished. Depends a script generate-embeddings, ask you local llm to adapt it yo your circumstances.
+This is something I cooked up to give agents faster understanding of codebases and codebase operations. Usable, but integrations are not finished. Depends a script generate-embeddings, ask you local llm to adapt it to your circumstances.
 
 **Alpha-yolo software, use at your own risk.**
 
