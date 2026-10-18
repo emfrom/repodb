@@ -10,10 +10,12 @@ permissions:
 
 jobs:
   real-semgrep-core:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7.0.1
       - uses: dtolnay/rust-toolchain@stable
-      - uses: astral-sh/setup-uv@v6
+      - uses: astral-sh/setup-uv@v10.3.0
+        with:
+          cache-dependency-glob: .github/workflows/semgrep-core.yml
       - name: Run corpus against bundled Semgrep core 1.181.0
         run: uv run --no-project --with semgrep==1.181.0 -- bash scripts/test-semgrep-core.sh
