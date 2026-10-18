@@ -10,6 +10,8 @@ use std::{
 };
 
 const EMBEDDING_STDERR_BYTES: usize = 64 * 1024;
+// Match the built-in generate_embeddings wrapper's maximum request batch.
+const EMBEDDING_BATCH_SIZE: usize = 10_000;
 
 fn memory_limit() -> Box<dyn std::error::Error> {
     "history refresh preparation size overflow".into()
@@ -292,6 +294,73 @@ pub(crate) fn configuration(c: &Connection) -> Result<(String, String, usize)> {
     ))
 }
 
+fn vectors_batch(
+    texts: &[&str],
+    command: &str,
+    model: &str,
+    dimension: usize,
+    budget: &mut Budget,
+) -> Result<(Vec<Vec<u8>>, usize)> {
+    if !crate::is_builtin_embedding_command(command) || texts.len() < 2 {
+        return vectors(texts.iter().copied(), command, model, dimension, budget);
+    }
+    let input_bytes = texts
+        .iter()
+        .map(|text| {
+            if text.trim().is_empty() {
+                "<empty RepoDB unit>".len()
+            } else {
+                text.len()
+            }
+        })
+        .sum::<usize>()
+        .saturating_add(texts.len().saturating_sub(1));
+    budget.charge(input_bytes, "embedding batch input")?;
+    let output_limit = budget.remaining().saturating_sub(EMBEDDING_STDERR_BYTES) / 17;
+    let workspace = output_limit
+        .checked_mul(17)
+        .and_then(|bytes| bytes.checked_add(EMBEDDING_STDERR_BYTES))
+        .ok_or_else(memory_limit)?;
+    if let Err(error) = budget.charge(workspace, "embedding batch workspace") {
+        budget.release(input_bytes);
+        return Err(error);
+    }
+    let vectors = match crate::embed_many_with_output_limit(command, model, texts, output_limit) {
+        Ok(vectors) => vectors,
+        Err(error) => {
+            budget.release(input_bytes + workspace);
+            return Err(error);
+        }
+    };
+    budget.release(input_bytes);
+    let decoded_capacity = vectors
+        .iter()
+        .map(|vector| vector.capacity() * std::mem::size_of::<f32>())
+        .sum::<usize>();
+    budget.release(workspace.saturating_sub(decoded_capacity));
+    let mut encoded = Vec::with_capacity(vectors.len());
+    let mut dim = dimension;
+    for vector in vectors {
+        if dim != 0 && dim != vector.len() {
+            budget.release(decoded_capacity);
+            return Err("embedding dimension mismatch".into());
+        }
+        dim = vector.len();
+        let payload = vector.len() * std::mem::size_of::<f32>();
+        let mut bytes = Vec::new();
+        if let Err(error) = budget.reserve_vec(&mut bytes, payload, "encoded history vector") {
+            budget.release(decoded_capacity);
+            return Err(error);
+        }
+        for value in &vector {
+            bytes.extend_from_slice(&value.to_le_bytes());
+        }
+        encoded.push(bytes);
+    }
+    budget.release(decoded_capacity);
+    Ok((encoded, dim))
+}
+
 fn vectors<'a>(
     texts: impl Iterator<Item = &'a str>,
     command: &str,
@@ -343,6 +412,36 @@ fn vectors<'a>(
         out.push(encoded);
     }
     Ok((out, dim))
+}
+
+fn flush_embedding_batch(
+    batch: &mut Vec<(i64, String)>,
+    command: &str,
+    model: &str,
+    configured_dimension: usize,
+    embedding_dimension: &mut Option<usize>,
+    statement: &mut rusqlite::Statement<'_>,
+    budget: &mut Budget,
+) -> Result<()> {
+    if batch.is_empty() {
+        return Ok(());
+    }
+    let texts: Vec<&str> = batch.iter().map(|(_, text)| text.as_str()).collect();
+    let (encoded, dimension) = vectors_batch(
+        &texts,
+        command,
+        model,
+        embedding_dimension.unwrap_or(configured_dimension),
+        budget,
+    )?;
+    for ((unit_id, _), vector) in batch.iter().zip(encoded) {
+        statement.execute(params![unit_id, vector])?;
+    }
+    let batch_bytes = batch.iter().map(|(_, text)| text.len()).sum();
+    budget.release(batch_bytes);
+    batch.clear();
+    *embedding_dimension = Some(dimension);
+    Ok(())
 }
 
 #[cfg(test)]
@@ -549,22 +648,33 @@ pub fn prepare_refresh(c: &Connection) -> Result<()> {
         c.prepare("SELECT unit_id,text FROM temp.refresh_units ORDER BY unit_id")?;
     let mut embedding_statement = c.prepare("INSERT INTO temp.refresh_embeddings VALUES(?1,?2)")?;
     let mut rows = statement.query([])?;
+    let mut batch = Vec::with_capacity(EMBEDDING_BATCH_SIZE);
     while let Some(row) = rows.next()? {
         let unit_id: i64 = row.get(0)?;
         let text: String = row.get(1)?;
-        let (mut encoded, dimension) = vectors(
-            std::iter::once(text.as_str()),
-            &command,
-            &model,
-            embedding_dimension.unwrap_or(configured_dimension),
-            &mut preparation_bytes,
-        )?;
-        embedding_statement.execute(params![
-            unit_id,
-            encoded.pop().ok_or("embedding produced no vector")?
-        ])?;
-        embedding_dimension = Some(dimension);
+        preparation_bytes.charge(text.len(), "history embedding batch text")?;
+        batch.push((unit_id, text));
+        if batch.len() == EMBEDDING_BATCH_SIZE {
+            flush_embedding_batch(
+                &mut batch,
+                &command,
+                &model,
+                configured_dimension,
+                &mut embedding_dimension,
+                &mut embedding_statement,
+                &mut preparation_bytes,
+            )?;
+        }
     }
+    flush_embedding_batch(
+        &mut batch,
+        &command,
+        &model,
+        configured_dimension,
+        &mut embedding_dimension,
+        &mut embedding_statement,
+        &mut preparation_bytes,
+    )?;
     if let Some(dimension) = embedding_dimension {
         c.execute(
             "INSERT INTO temp.refresh_dimension VALUES(?1)",

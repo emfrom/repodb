@@ -150,6 +150,78 @@ pub(crate) fn embed_with_output_limit(
     validate_vector(&v)?;
     Ok(v)
 }
+pub(crate) fn embed_many_with_output_limit(
+    command: &str,
+    model: &str,
+    texts: &[&str],
+    output_limit: usize,
+) -> Result<Vec<Vec<f32>>> {
+    if !is_builtin_embedding_command(command)
+        || texts.len() < 2
+        || texts.iter().any(|text| text.contains('\0'))
+    {
+        return texts
+            .iter()
+            .map(|text| embed_with_output_limit(command, model, text, Some(output_limit)))
+            .collect();
+    }
+    if model != config::DEFAULT_EMBEDDING_MODEL {
+        return Err(
+            "the built-in generate_embeddings command only supports all-MiniLM-L6-v2".into(),
+        );
+    }
+    let mut input = Vec::new();
+    for (index, text) in texts.iter().enumerate() {
+        if index != 0 {
+            input.push(0);
+        }
+        input.extend_from_slice(if text.trim().is_empty() {
+            b"<empty RepoDB unit>"
+        } else {
+            text.as_bytes()
+        });
+    }
+    const MAX_BATCH_OUTPUT_BYTES: usize = 256 * 1024 * 1024;
+    let output_limit = output_limit.min(MAX_BATCH_OUTPUT_BYTES);
+    let mut child = Command::new(command)
+        .env("REPODB_EMBEDDING_MODEL", model)
+        .args(["--json", "-0", "-"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()?;
+    let mut vectors = Vec::with_capacity(texts.len());
+    let output =
+        process::capture_lines_with_input(&mut child, input, output_limit, 64 * 1024, |line| {
+            if line.iter().all(u8::is_ascii_whitespace) {
+                return Ok(());
+            }
+            let vector: Vec<f32> = serde_json::from_slice(line).map_err(std::io::Error::other)?;
+            validate_vector(&vector).map_err(|error| {
+                std::io::Error::new(std::io::ErrorKind::InvalidData, error.to_string())
+            })?;
+            vectors.push(vector);
+            Ok(())
+        })?;
+    if output.exceeded {
+        return Err(format!(
+            "embedding command output exceeded the {output_limit}-byte capture limit"
+        )
+        .into());
+    }
+    if !output.status.success() {
+        return Err(format!(
+            "embedding command failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        )
+        .into());
+    }
+    if vectors.len() != texts.len() {
+        return Err("embedding command returned the wrong number of vectors".into());
+    }
+    Ok(vectors)
+}
+
 fn validate_vector(v: &[f32]) -> Result<()> {
     if v.is_empty() || v.iter().any(|x| !x.is_finite()) {
         return Err("embedding must be a nonempty finite vector".into());

@@ -1,11 +1,17 @@
 use std::{
-    io::{Read, Write},
+    io::{BufRead, BufReader, Read, Write},
     process::{Child, ExitStatus},
 };
 
 pub(crate) struct Output {
     pub status: ExitStatus,
     pub stdout: Vec<u8>,
+    pub stderr: Vec<u8>,
+    pub exceeded: bool,
+}
+
+pub(crate) struct StreamOutput {
+    pub status: ExitStatus,
     pub stderr: Vec<u8>,
     pub exceeded: bool,
 }
@@ -56,6 +62,93 @@ pub(crate) fn capture_with_input_unbounded(
     input: &[u8],
 ) -> std::io::Result<Output> {
     capture_streams(child, input, None, None)
+}
+
+/// Feeds stdin, drains stderr, and delivers newline-delimited stdout records
+/// incrementally while enforcing a total stdout byte limit.
+pub(crate) fn capture_lines_with_input(
+    child: &mut Child,
+    input: Vec<u8>,
+    stdout_limit: usize,
+    stderr_limit: usize,
+    mut on_line: impl FnMut(&[u8]) -> std::io::Result<()>,
+) -> std::io::Result<StreamOutput> {
+    enum Event {
+        Line(Vec<u8>),
+        StdoutError(std::io::Error),
+        Done(bool),
+    }
+
+    let (sender, receiver) = std::sync::mpsc::sync_channel(8);
+    let stdout = child.stdout.take().expect("captured stdout");
+    let stdout_thread = std::thread::spawn(move || {
+        let mut reader = BufReader::new(stdout);
+        let mut total = 0usize;
+        let mut exceeded = false;
+        loop {
+            let mut line = Vec::new();
+            match reader.read_until(b'\n', &mut line) {
+                Ok(0) => break,
+                Ok(count) => {
+                    total = total.saturating_add(count);
+                    if total > stdout_limit {
+                        exceeded = true;
+                    } else if sender.send(Event::Line(line)).is_err() {
+                        break;
+                    }
+                }
+                Err(error) => {
+                    let _ = sender.send(Event::StdoutError(error));
+                    break;
+                }
+            }
+        }
+        let _ = sender.send(Event::Done(exceeded));
+    });
+    let stderr = child.stderr.take().expect("captured stderr");
+    let stderr_thread = std::thread::spawn(move || drain_bounded(stderr, stderr_limit));
+    let mut stdin = child.stdin.take().expect("captured stdin");
+    let stdin_thread = std::thread::spawn(move || stdin.write_all(&input));
+    let mut callback_error = None;
+    let mut exceeded = false;
+    let mut stdout_error = None;
+    while let Ok(event) = receiver.recv() {
+        match event {
+            Event::Line(line) if callback_error.is_none() => {
+                if let Err(error) = on_line(&line) {
+                    callback_error = Some(error);
+                }
+            }
+            Event::Line(_) => {}
+            Event::StdoutError(error) => stdout_error = Some(error),
+            Event::Done(was_exceeded) => {
+                exceeded = was_exceeded;
+                break;
+            }
+        }
+    }
+    let status = child.wait()?;
+    stdout_thread
+        .join()
+        .map_err(|_| std::io::Error::other("stdout reader panicked"))?;
+    let stderr = stderr_thread
+        .join()
+        .map_err(|_| std::io::Error::other("stderr reader panicked"))??
+        .0;
+    stdin_thread
+        .join()
+        .map_err(|_| std::io::Error::other("stdin writer panicked"))??;
+    if let Some(error) = stdout_error {
+        return Err(error);
+    }
+    if let Some(error) = callback_error {
+        return Err(error);
+    }
+    Ok(StreamOutput {
+        status,
+        stderr,
+        exceeded,
+    })
 }
 
 /// Captures a process launched in its own process group and enforces a deadline
@@ -231,6 +324,36 @@ fn capture_streams(
 mod tests {
     use super::*;
     use std::process::{Command, Stdio};
+
+    #[test]
+    fn streamed_stdout_handles_ten_thousand_records_and_large_stdin() {
+        let mut command = std::process::Command::new("sh");
+        command
+            .args([
+                "-c",
+                "cat >/dev/null; i=0; while [ $i -lt 10000 ]; do printf '[1,0]\\n'; i=$((i+1)); done",
+            ])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        let mut child = command.spawn().unwrap();
+        let mut records = 0;
+        let output = capture_lines_with_input(
+            &mut child,
+            vec![b'x'; 128 * 1024],
+            1024 * 1024,
+            64 * 1024,
+            |line| {
+                assert_eq!(line, b"[1,0]\n");
+                records += 1;
+                Ok(())
+            },
+        )
+        .unwrap();
+        assert!(output.status.success());
+        assert!(!output.exceeded);
+        assert_eq!(records, 10_000);
+    }
 
     #[test]
     fn bounded_drain_capacity_never_exceeds_limit() {

@@ -131,6 +131,57 @@ fn default_embedding_command_is_used_on_first_scan_and_saved_for_search() {
 }
 
 #[test]
+fn default_embedding_batch_handles_ten_thousand_vectors() {
+    let repo = repository();
+    let root = repo.path();
+    let content = (0..10_000)
+        .map(|index| format!("large-batch-unit-{index}\n"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    fs::write(root.join("batch.txt"), content).unwrap();
+    git(root, &["add", "batch.txt"]);
+    git(root, &["commit", "-qm", "large embedding batch"]);
+
+    let home = tempfile::tempdir().unwrap();
+    let bin = home.path().join("bin");
+    fs::create_dir(&bin).unwrap();
+    let embedder = bin.join("generate_embeddings");
+    fs::write(
+        &embedder,
+        "#!/usr/bin/env python3\nimport sys\nfor _ in sys.stdin.buffer.read().split(b'\\0'):\n    print('[1,0]')\n",
+    )
+    .unwrap();
+    use std::os::unix::fs::PermissionsExt;
+    fs::set_permissions(&embedder, fs::Permissions::from_mode(0o755)).unwrap();
+    let config_dir = home.path().join(".config/repodb");
+    fs::create_dir_all(&config_dir).unwrap();
+    fs::write(
+        config_dir.join("config.toml"),
+        format!(
+            "[tools]\nsemgrep_core = {:?}\n",
+            semgrep_corpus::required_semgrep_core().to_string_lossy()
+        ),
+    )
+    .unwrap();
+    let vars = [
+        ("HOME", home.path().to_str().unwrap()),
+        ("XDG_CONFIG_HOME", ""),
+    ];
+    let (ok, output) = run_with_env(root, &["init"], &vars);
+    assert!(ok, "{output}");
+    let db = rusqlite::Connection::open(root.join(".git/repodb.sqlite")).unwrap();
+    let (units, vectors): (i64, i64) = db
+        .query_row(
+            "SELECT (SELECT count(*) FROM indexed_units),(SELECT count(*) FROM unit_embeddings)",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    assert!(units >= 10_000);
+    assert_eq!(units, vectors);
+}
+
+#[test]
 fn init_and_refresh_populate_semantic_vectors_automatically() {
     let repo = repository();
     let root = repo.path();
