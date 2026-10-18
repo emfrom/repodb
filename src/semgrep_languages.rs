@@ -11,9 +11,8 @@ pub struct Language {
 }
 
 /// OSS dedicated parser inventory in Semgrep v1.181.0 after excluding
-/// proprietary and unavailable parsers. Rust is already handled by RepoDB's
-/// built-in parser; the remaining names are routed by an unambiguous suffix
-/// where one exists.
+/// proprietary and unavailable parsers. Targets with an unambiguous suffix
+/// are routed directly; Move is resolved through its two dialect parsers.
 pub const PARSER_LANGUAGES: &[&str] = &[
     "bash",
     "c",
@@ -178,6 +177,10 @@ pub const LANGUAGES: &[Language] = &[
     Language {
         semgrep_name: "ruby",
         extensions: &["rb"],
+    },
+    Language {
+        semgrep_name: "rust",
+        extensions: &["rs"],
     },
     Language {
         semgrep_name: "scala",
@@ -364,8 +367,7 @@ mod tests {
         assert!(!PARSER_LANGUAGES.contains(&"vue"));
         for language in PARSER_LANGUAGES {
             assert!(
-                *language == "rust"
-                    || language.starts_with("move_on_")
+                language.starts_with("move_on_")
                     || super::LANGUAGES
                         .iter()
                         .any(|routed| routed.semgrep_name == *language),

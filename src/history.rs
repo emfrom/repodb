@@ -517,7 +517,7 @@ pub fn prepare_refresh(c: &Connection) -> Result<()> {
             let content: String = row.get(1)?;
             let kind: String = row.get(2)?;
             let mut staging_error = None;
-            segmentation::visit(&kind, &content, |unit| {
+            let segmentation_result = segmentation::visit(&kind, &content, |unit| {
                 unit_count += 1;
                 if let Err(error) = unit_stage.execute(params![
                     unit_count,
@@ -532,6 +532,7 @@ pub fn prepare_refresh(c: &Connection) -> Result<()> {
                 }
                 true
             });
+            segmentation_result?;
             if let Some(error) = staging_error {
                 return Err(error.into());
             }

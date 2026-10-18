@@ -8,6 +8,7 @@ use std::{
 };
 
 mod budget;
+mod config;
 mod history;
 mod imports;
 mod process;
@@ -333,8 +334,8 @@ fn execute() -> Result<()> {
             imports::set_retention(&open_db()?, &value)?;
         }
         "reembed" => {
-            let mut command = env::var("HOME").map(|h| format!("{h}/bin/generate_embeddings"))?;
-            let mut model = "all-MiniLM-L6-v2".to_owned();
+            let mut command = config::embedding_command()?;
+            let mut model = config::DEFAULT_EMBEDDING_MODEL.to_owned();
             while let Some(x) = a.next() {
                 match x.as_str() {
                     "--command" => command = a.next().ok_or("--command requires path")?,

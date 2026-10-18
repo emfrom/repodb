@@ -18,7 +18,6 @@ pub fn kind(path: &[u8]) -> &'static str {
     }
     match extension {
         Some(b"md" | b"markdown" | b"txt") => "paragraph",
-        Some(b"rs") => "rust",
         _ => crate::semgrep_languages::language_for_extension(extension),
     }
 }
@@ -79,68 +78,75 @@ fn paragraphs(text: &str, base_line: usize, visit: &mut impl FnMut(Unit<'_>) -> 
     true
 }
 
-fn rust(text: &str, visit: &mut impl FnMut(Unit<'_>) -> bool) -> Option<bool> {
-    use syn::spanned::Spanned;
-
-    let file = syn::parse_file(text).ok()?;
-    // syn removes these prefixes before parsing; spans address the remainder.
-    let prefix = usize::from(text.starts_with('\u{feff}')) * '\u{feff}'.len_utf8()
-        + file.shebang.as_ref().map_or(0, String::len);
-    let mut cursor = 0;
-    let mut line = 1;
-    for item in file.items {
-        let range = item.span().byte_range();
-        let start = prefix + range.start;
-        let end = prefix + range.end;
-        // Retain all text outside syntax spans, including comments and file attrs.
-        if !paragraphs(&text[cursor..start], line, visit) {
-            return Some(false);
-        }
-        line += text[cursor..start].bytes().filter(|b| *b == b'\n').count();
-        if !bounded(&text[start..end], line, visit) {
-            return Some(false);
-        }
-        line += text[start..end].bytes().filter(|b| *b == b'\n').count();
-        cursor = end;
-    }
-    Some(paragraphs(&text[cursor..], line, visit))
-}
-
 /// Visits borrowed units in segmentation order; returning false stops before any later unit is staged.
-pub fn visit(kind: &str, text: &str, mut visitor: impl FnMut(Unit<'_>) -> bool) {
-    if !matches!(kind, "paragraph" | "fallback")
-        && let Some(command) = std::env::var_os("REPODB_SEGMENTER")
-        && let Some(ranges) = external_ranges(&command, kind, text.as_bytes())
+pub fn visit(
+    kind: &str,
+    text: &str,
+    mut visitor: impl FnMut(Unit<'_>) -> bool,
+) -> Result<(), String> {
+    if matches!(kind, "paragraph" | "fallback") {
+        paragraphs(text, 1, &mut visitor);
+        return Ok(());
+    }
+
+    let command = match crate::config::semgrep_core()? {
+        Some(command) => command,
+        None => {
+            let config_path = crate::config::config_path()?;
+            return Err(format!(
+                "Semgrep core v1.181.0 is required for source parsing; set REPODB_SEMGREP_CORE or [tools].semgrep_core in {}",
+                config_path.display()
+            ));
+        }
+    };
+    if !semgrep_core_is_pinned(&command) {
+        return Err("configured Semgrep core must be version 1.181.0".into());
+    }
+
+    if let Some(segmenter) = crate::config::segmenter()?
+        && let Some(ranges) = external_ranges(&segmenter, kind, text.as_bytes())
     {
         visit_ranges(text, &ranges, &mut visitor);
-        return;
+        return Ok(());
     }
-    if !matches!(kind, "paragraph" | "fallback" | "rust")
-        && let Some(command) = std::env::var_os("REPODB_SEMGREP_CORE")
-        && let Some(ranges) = semgrep_ranges(&command, kind, text.as_bytes())
-    {
+    if let Some(ranges) = semgrep_ranges(&command, kind, text.as_bytes()) {
         visit_ranges(text, &ranges, &mut visitor);
-        return;
+    } else {
+        paragraphs(text, 1, &mut visitor);
     }
-    if kind == "rust" && rust(text, &mut visitor).is_some() {
-        return;
-    }
-    paragraphs(text, 1, &mut visitor);
+    Ok(())
 }
 
 fn visit_ranges(text: &str, ranges: &[(usize, usize)], visitor: &mut impl FnMut(Unit<'_>) -> bool) {
     let mut line = 1;
     for &(start, end) in ranges {
-        let piece = &text[start..end];
-        let newlines = piece.bytes().filter(|byte| *byte == b'\n').count();
-        if !visitor(Unit {
-            text: piece,
-            line_start: line,
-            line_end: line + newlines - usize::from(piece.ends_with('\n')),
-        }) {
-            return;
+        let mut remaining = &text[start..end];
+        while !remaining.is_empty() {
+            let mut length = remaining.len().min(MAX_UNIT_BYTES);
+            while !remaining.is_char_boundary(length) {
+                length -= 1;
+            }
+            if length < remaining.len() {
+                if let Some(newline) = remaining[..length].rfind('\n') {
+                    length = newline + 1;
+                } else if remaining.as_bytes()[length - 1] == b'\r'
+                    && remaining.as_bytes()[length] == b'\n'
+                {
+                    length -= 1;
+                }
+            }
+            let piece = &remaining[..length];
+            let newlines = piece.bytes().filter(|byte| *byte == b'\n').count();
+            if !visitor(Unit {
+                text: piece,
+                line_start: line,
+                line_end: line + newlines - usize::from(piece.ends_with('\n')),
+            }) {
+                return;
+            }
+            line += newlines;
+            remaining = &remaining[length..];
         }
-        line += newlines;
     }
 }
 
@@ -368,8 +374,28 @@ mod tests {
         visit("paragraph", text, |unit| {
             visited.push((unit.text.len(), unit.line_start, unit.line_end));
             false
-        });
+        })
+        .unwrap();
         assert_eq!(visited, [(5, 1, 1)]);
+    }
+
+    #[test]
+    fn parser_ranges_split_losslessly_at_utf8_boundaries() {
+        let source = format!("{}é\n{}", "a".repeat(4095), "b".repeat(5000));
+        let mut units = Vec::new();
+        super::visit_ranges(&source, &[(0, source.len())], &mut |unit| {
+            units.push((unit.text.to_owned(), unit.line_start, unit.line_end));
+            true
+        });
+        assert_eq!(
+            units
+                .iter()
+                .map(|(text, _, _)| text.as_str())
+                .collect::<String>(),
+            source
+        );
+        assert!(units.iter().all(|(text, _, _)| text.len() <= 4096));
+        assert_eq!(units.first().unwrap().1..=units.last().unwrap().2, 1..=2);
     }
 
     #[test]

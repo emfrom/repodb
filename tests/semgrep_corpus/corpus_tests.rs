@@ -101,17 +101,10 @@ fn empty_repository() -> tempfile::TempDir {
     dir
 }
 
-pub(super) fn semgrep_core_or_skip(context: &str) -> Option<PathBuf> {
-    let core = actual_semgrep_core();
-    if core.is_none() {
-        if env::var_os("REPODB_REQUIRE_SEMGREP_CORE").is_some() {
-            panic!(
-                "{context} requires Semgrep core 1.181.0; set REPODB_SEMGREP_CORE or put semgrep on PATH"
-            );
-        }
-        eprintln!("skipping {context}: Semgrep core 1.181.0 is unavailable");
-    }
-    core
+pub(super) fn required_semgrep_core() -> PathBuf {
+    actual_semgrep_core().unwrap_or_else(|| {
+        panic!("Semgrep core v1.181.0 is required; set REPODB_SEMGREP_CORE or put semgrep on PATH")
+    })
 }
 
 fn actual_semgrep_core() -> Option<PathBuf> {
@@ -266,24 +259,7 @@ fn assert_marker_result(fixture: &Fixture, root: &Path, marker: &str, commit: &s
 
 fn verify_fixture(fixture: &Fixture) {
     assert!(fixture.source.lines().count() >= 200, "{}", fixture.path());
-    if fixture.parsers.is_empty() {
-        let repo = empty_repository();
-        let root = repo.path();
-        prepare_empty_database(root);
-        let source_path = root.join(fixture.path());
-        fs::create_dir_all(source_path.parent().unwrap()).unwrap();
-        fs::write(&source_path, fixture.source).unwrap();
-        git(root, &["add", fixture.path().as_str()]);
-        git(root, &["commit", "-qm", "add built-in Rust fixture"]);
-        let commit = git_text(root, &["rev-parse", "HEAD"]);
-        assert!(run(root, &["refresh"]).0);
-        assert_marker_result(fixture, root, &fixture.entity_v1(), &commit);
-        return;
-    }
-
-    let Some(core) = semgrep_core_or_skip(&fixture.path()) else {
-        return;
-    };
+    let core = required_semgrep_core();
     let root = tempfile::tempdir().unwrap();
     let source_path = root.path().join(fixture.path());
     fs::create_dir_all(source_path.parent().unwrap()).unwrap();
@@ -423,7 +399,7 @@ define_corpus![
         corpus_rust_beta_fixture,
         "rust",
         "rs",
-        &[]
+        &["rust"]
     ),
     (
         corpus_scala_alpha_fixture,
@@ -471,7 +447,7 @@ define_corpus![
 
 #[test]
 fn all_candidate_languages_keep_both_entity_versions_in_reachable_history() {
-    let core = semgrep_core_or_skip("corpus history");
+    let core = required_semgrep_core();
     let fixtures = fixtures();
     assert_eq!(fixtures.len(), 50);
     let repo = empty_repository();
@@ -489,10 +465,7 @@ fn all_candidate_languages_keep_both_entity_versions_in_reachable_history() {
         &["commit", "-qm", "add full version-one language corpus"],
     );
     let version_one = git_text(root, &["rev-parse", "HEAD"]);
-    let core_path = core
-        .as_deref()
-        .unwrap_or_else(|| Path::new("/no/such/semgrep-core"));
-    let env = [("REPODB_SEMGREP_CORE", core_path.to_str().unwrap())];
+    let env = [("REPODB_SEMGREP_CORE", core.to_str().unwrap())];
     assert!(run_with_env(root, &["refresh"], &env).0);
 
     for fixture in &fixtures {
@@ -515,14 +488,7 @@ fn all_candidate_languages_keep_both_entity_versions_in_reachable_history() {
     );
     let version_two = git_text(root, &["rev-parse", "HEAD"]);
     assert_ne!(version_one, version_two);
-    assert!(
-        run_with_env(
-            root,
-            &["refresh"],
-            &[("REPODB_SEMGREP_CORE", "/no/such/semgrep-core")],
-        )
-        .0
-    );
+    assert!(run_with_env(root, &["refresh"], &env).0);
 
     for fixture in &fixtures {
         assert_marker_result(fixture, root, &fixture.entity_v1(), &version_one);

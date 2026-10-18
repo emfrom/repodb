@@ -300,7 +300,7 @@ pub fn refresh(c: &Connection) -> Result<()> {
                     };
                     refresh_memory_bytes.charge(text.len(), "Git blob text")?;
                     let mut unit_error = None;
-                    segmentation::visit(segmentation::kind(path.as_bytes()), &text, |unit| {
+                    let segmentation_result = segmentation::visit(segmentation::kind(path.as_bytes()), &text, |unit| {
                         let result = (|| -> Result<()> {
                             let vector = cfg
                                 .as_ref()
@@ -332,6 +332,7 @@ pub fn refresh(c: &Connection) -> Result<()> {
                         }
                         true
                     });
+                    segmentation_result?;
                     if let Some(error) = unit_error {
                         return Err(error);
                     }
@@ -493,7 +494,7 @@ pub fn refresh(c: &Connection) -> Result<()> {
             let content = content.expect("non-PDF content exists");
             let kind = segmentation::kind(Path::new(&locator).as_os_str().as_encoded_bytes());
             let mut unit_error = None;
-            segmentation::visit(kind, &content, |unit| {
+            let segmentation_result = segmentation::visit(kind, &content, |unit| {
                 let result = (|| -> Result<()> {
                     let vector = cfg
                         .as_ref()
@@ -521,6 +522,7 @@ pub fn refresh(c: &Connection) -> Result<()> {
                 }
                 true
             });
+            segmentation_result?;
             if let Some(error) = unit_error {
                 return Err(error);
             }
