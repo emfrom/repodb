@@ -202,3 +202,8 @@ requires its established vector dimension; changing models requires `reembed`.
 If another writer publishes during refresh/reembed preparation, the stale command
 fails with a retry message instead of mixing snapshots or embedding models.
 Search reads scope, model configuration, and results from one database snapshot.
+
+## License
+
+RepoDB is licensed under the GNU General Public License v2 only (`GPL-2.0-only`).
+See [LICENSE](LICENSE) for the full text.
