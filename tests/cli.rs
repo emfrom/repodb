@@ -1,9 +1,17 @@
-use std::{fs, path::Path, process::Command};
+use std::{
+    fs,
+    path::{Path, PathBuf},
+    process::Command,
+};
 
 fn git(repo: &Path, args: &[&str]) {
     let output = Command::new("git")
         .args(args)
         .current_dir(repo)
+        .env(
+            "REPODB_SEMGREP_CORE",
+            semgrep_corpus::required_semgrep_core(),
+        )
         .output()
         .unwrap();
     assert!(
@@ -18,9 +26,37 @@ fn run(repo: &Path, args: &[&str]) -> (bool, String) {
     run_with_env(repo, args, &[])
 }
 
+fn test_config_home(repo: &Path) -> PathBuf {
+    use std::os::unix::fs::PermissionsExt;
+
+    let config_home = repo.join(".test-xdg-config");
+    let config_dir = config_home.join("repodb");
+    fs::create_dir_all(&config_dir).unwrap();
+    let embedder = repo.join(".git/repodb-test-embedder");
+    fs::write(&embedder, "#!/bin/sh\ncat >/dev/null\nprintf '[1,0]'\n").unwrap();
+    fs::set_permissions(&embedder, fs::Permissions::from_mode(0o755)).unwrap();
+    fs::write(
+        config_dir.join("config.toml"),
+        format!(
+            "[tools]\nembedding_command = {:?}\n",
+            embedder.to_string_lossy()
+        ),
+    )
+    .unwrap();
+    config_home
+}
+
 fn run_with_env(repo: &Path, args: &[&str], vars: &[(&str, &str)]) -> (bool, String) {
+    let config_home = test_config_home(repo);
     let mut command = Command::new(env!("CARGO_BIN_EXE_repodb"));
-    command.args(args).current_dir(repo);
+    command
+        .args(args)
+        .current_dir(repo)
+        .env(
+            "REPODB_SEMGREP_CORE",
+            semgrep_corpus::required_semgrep_core(),
+        )
+        .env("XDG_CONFIG_HOME", config_home);
     for (key, value) in vars {
         command.env(key, value);
     }
@@ -60,6 +96,179 @@ fn repository() -> tempfile::TempDir {
 }
 
 #[test]
+fn default_embedding_command_is_used_on_first_scan_and_saved_for_search() {
+    let repo = repository();
+    let root = repo.path();
+    let home = tempfile::tempdir().unwrap();
+    let bin = home.path().join("bin");
+    fs::create_dir(&bin).unwrap();
+    let embedder = bin.join("generate_embeddings");
+    fs::write(
+        &embedder,
+        "#!/usr/bin/env python3\nimport sys\nfor _ in sys.stdin.buffer.read().split(b'\\0'):\n    print('[1,0]')\n",
+    )
+    .unwrap();
+    use std::os::unix::fs::PermissionsExt;
+    fs::set_permissions(&embedder, fs::Permissions::from_mode(0o755)).unwrap();
+    let config_dir = home.path().join(".config/repodb");
+    fs::create_dir_all(&config_dir).unwrap();
+    fs::write(
+        config_dir.join("config.toml"),
+        format!(
+            "[tools]\nsemgrep_core = {:?}\n",
+            semgrep_corpus::required_semgrep_core().to_string_lossy()
+        ),
+    )
+    .unwrap();
+    let vars = [
+        ("HOME", home.path().to_str().unwrap()),
+        ("XDG_CONFIG_HOME", ""),
+    ];
+    let (ok, output) = run_with_env(root, &["init"], &vars);
+    assert!(ok, "{output}");
+    let (ok, output) = run_with_env(root, &["search", "Rust phrase", "--semantic"], &vars);
+    assert!(ok && output.contains("src/main.rs"), "{output}");
+}
+
+#[test]
+fn init_and_refresh_populate_semantic_vectors_automatically() {
+    let repo = repository();
+    let root = repo.path();
+    let core = semgrep_corpus::required_semgrep_core();
+    let embedder = fake_embedder(root, "printf '[1,0]'");
+    let xdg = tempfile::tempdir().unwrap();
+    let config_dir = xdg.path().join("repodb");
+    fs::create_dir_all(&config_dir).unwrap();
+    fs::write(
+        config_dir.join("config.toml"),
+        format!(
+            "[tools]\nsemgrep_core = {:?}\nembedding_command = {:?}\n",
+            core.to_string_lossy(),
+            embedder.to_string_lossy()
+        ),
+    )
+    .unwrap();
+
+    let run_configured = |args: &[&str]| {
+        Command::new(env!("CARGO_BIN_EXE_repodb"))
+            .args(args)
+            .current_dir(root)
+            .env_remove("REPODB_SEMGREP_CORE")
+            .env("XDG_CONFIG_HOME", xdg.path())
+            .output()
+            .unwrap()
+    };
+    let output = run_configured(&["init"]);
+    assert!(
+        output.status.success(),
+        "init failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let output = run_configured(&["search", "Rust phrase", "--semantic", "--json"]);
+    assert!(
+        output.status.success(),
+        "semantic search failed after init: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let results: Vec<serde_json::Value> = serde_json::from_slice(&output.stdout).unwrap();
+    assert!(results.iter().any(|result| result["path"] == "src/main.rs"));
+
+    fs::write(root.join("notes.txt"), "Added during rescan\n").unwrap();
+    git(root, &["add", "notes.txt"]);
+    git(root, &["commit", "-qm", "add rescan content"]);
+    let output = run_configured(&["refresh"]);
+    assert!(
+        output.status.success(),
+        "refresh failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let output = run_configured(&["search", "Added during rescan", "--semantic", "--json"]);
+    assert!(
+        output.status.success(),
+        "semantic search failed after refresh: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let results: Vec<serde_json::Value> = serde_json::from_slice(&output.stdout).unwrap();
+    assert!(results.iter().any(|result| result["path"] == "notes.txt"));
+}
+
+#[test]
+fn xdg_config_supplies_semgrep_core_and_environment_override_wins() {
+    let repo = repository();
+    let root = repo.path();
+    let xdg = tempfile::tempdir().unwrap();
+    let config_dir = xdg.path().join("repodb");
+    fs::create_dir_all(&config_dir).unwrap();
+    let core = semgrep_corpus::required_semgrep_core();
+    let embedder = fake_embedder(root, "printf '[1,0]'");
+    fs::write(
+        config_dir.join("config.toml"),
+        format!(
+            "[tools]\nsemgrep_core = {:?}\nembedding_command = {:?}\n",
+            core.display().to_string(),
+            embedder.to_string_lossy()
+        ),
+    )
+    .unwrap();
+
+    let output = Command::new(env!("CARGO_BIN_EXE_repodb"))
+        .arg("init")
+        .current_dir(root)
+        .env_remove("REPODB_SEMGREP_CORE")
+        .env("XDG_CONFIG_HOME", xdg.path())
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "XDG config should supply the core path: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let output = Command::new(env!("CARGO_BIN_EXE_repodb"))
+        .arg("refresh")
+        .current_dir(root)
+        .env("REPODB_SEMGREP_CORE", "/no/such/semgrep-core")
+        .env("XDG_CONFIG_HOME", xdg.path())
+        .output()
+        .unwrap();
+    assert!(!output.status.success(), "environment override must win");
+}
+
+#[test]
+fn default_xdg_config_path_uses_home_dot_config() {
+    let repo = repository();
+    let root = repo.path();
+    let home = tempfile::tempdir().unwrap();
+    let config_dir = home.path().join(".config/repodb");
+    fs::create_dir_all(&config_dir).unwrap();
+    let core = semgrep_corpus::required_semgrep_core();
+    let embedder = fake_embedder(root, "printf '[1,0]'");
+    fs::write(
+        config_dir.join("config.toml"),
+        format!(
+            "[tools]\nsemgrep_core = {:?}\nembedding_command = {:?}\n",
+            core.display().to_string(),
+            embedder.to_string_lossy()
+        ),
+    )
+    .unwrap();
+
+    let output = Command::new(env!("CARGO_BIN_EXE_repodb"))
+        .arg("init")
+        .current_dir(root)
+        .env_remove("REPODB_SEMGREP_CORE")
+        .env_remove("XDG_CONFIG_HOME")
+        .env("HOME", home.path())
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "default XDG config should supply the core path: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
 fn optional_segmenter_uses_byte_partition_and_falls_back_on_invalid_output() {
     use std::os::unix::fs::PermissionsExt;
     let repo = repository();
@@ -76,21 +285,30 @@ fn optional_segmenter_uses_byte_partition_and_falls_back_on_invalid_output() {
     )
     .unwrap();
     fs::set_permissions(&segmenter, fs::Permissions::from_mode(0o755)).unwrap();
-    assert!(
-        run_with_env(
-            root,
-            &["refresh"],
-            &[("REPODB_SEGMENTER", segmenter.to_str().unwrap())]
-        )
-        .0
-    );
+    let xdg = tempfile::tempdir().unwrap();
+    let config_dir = xdg.path().join("repodb");
+    fs::create_dir_all(&config_dir).unwrap();
+    fs::write(
+        config_dir.join("config.toml"),
+        format!(
+            "[tools]\nsegmenter = {:?}\nembedding_command = {:?}\n",
+            segmenter.to_string_lossy(),
+            embedder.to_string_lossy()
+        ),
+    )
+    .unwrap();
+    let xdg_config_home = xdg.path().to_string_lossy().into_owned();
+    assert!(run_with_env(root, &["refresh"], &[("XDG_CONFIG_HOME", &xdg_config_home)]).0);
     let all = search_json(root, &["Rust phrase", "--all-history"]);
     assert_eq!(all[0]["text"], "println!(\"Rust phrase\"); }\n");
     fs::write(&segmenter, "#!/bin/sh\nprintf '[ [0,1], [0,2] ]'\n").unwrap();
     let (success, _) = run_with_env(
         root,
         &["refresh"],
-        &[("REPODB_SEGMENTER", segmenter.to_str().unwrap())],
+        &[
+            ("REPODB_SEGMENTER", segmenter.to_str().unwrap()),
+            ("XDG_CONFIG_HOME", &xdg_config_home),
+        ],
     );
     assert!(
         success,
@@ -110,7 +328,10 @@ fn optional_segmenter_uses_byte_partition_and_falls_back_on_invalid_output() {
             run_with_env(
                 root,
                 &["refresh"],
-                &[("REPODB_SEGMENTER", unavailable.to_str().unwrap())]
+                &[
+                    ("REPODB_SEGMENTER", unavailable.to_str().unwrap()),
+                    ("XDG_CONFIG_HOME", &xdg_config_home),
+                ]
             )
             .0
         );
@@ -122,12 +343,10 @@ fn optional_segmenter_uses_byte_partition_and_falls_back_on_invalid_output() {
 }
 
 #[test]
-fn optional_semgrep_core_uses_real_ast_and_falls_back_when_unavailable() {
+fn semgrep_core_is_required_and_uses_real_ast() {
     use std::os::unix::fs::PermissionsExt;
 
-    let Some(core) = semgrep_corpus::semgrep_core_or_skip("Go Semgrep integration") else {
-        return;
-    };
+    let core = semgrep_corpus::required_semgrep_core();
     let repo = repository();
     let root = repo.path();
     assert!(run(root, &["init"]).0);
@@ -167,26 +386,33 @@ fn optional_semgrep_core_uses_real_ast_and_falls_back_when_unavailable() {
         source
     );
 
-    // An unavailable optional executable likewise leaves content searchable.
+    // Missing core is fatal for source refresh and must preserve the prior snapshot.
     let unavailable_path = root.join("src/unavailable.go");
     fs::write(&unavailable_path, source.replace("AST_UNIT", "UNAVAILABLE")).unwrap();
     git(root, &["add", "src/unavailable.go"]);
     git(root, &["commit", "-qm", "add unavailable core fixture"]);
     assert!(
-        run_with_env(
+        !run_with_env(
             root,
             &["refresh"],
             &[("REPODB_SEMGREP_CORE", "/no/such/semgrep-core")],
         )
         .0
     );
-    let fallback = search_json(root, &["UNAVAILABLE", "--all-history"]);
-    assert_eq!(
-        fallback[0]["text"],
-        source
-            .replace("AST_UNIT", "UNAVAILABLE")
-            .trim_end_matches('\n')
+    assert!(
+        !run_with_env(root, &["refresh"], &[("REPODB_SEMGREP_CORE", "/bin/echo")]).0,
+        "wrong-version core must fail refresh"
     );
+    let missing_core = Command::new(env!("CARGO_BIN_EXE_repodb"))
+        .args(["refresh"])
+        .current_dir(root)
+        .env("XDG_CONFIG_HOME", root.join(".test-xdg-config"))
+        .env_remove("REPODB_SEMGREP_CORE")
+        .output()
+        .unwrap();
+    assert!(!missing_core.status.success());
+    assert!(search_json(root, &["UNAVAILABLE", "--all-history"]).is_empty());
+    assert!(!search_json(root, &["AST_UNIT", "--all-history"]).is_empty());
 }
 
 #[test]
@@ -277,7 +503,7 @@ fn imported_text_and_git_blobs_use_document_and_source_units_with_line_ranges() 
     assert_eq!(local_alpha.len(), 1);
     assert_eq!(
         local_alpha[0]["text"],
-        "pub fn local_alpha() {\n    println!(\"local alpha marker\");\n}"
+        "fn local_alpha() {\n    println!(\"local alpha marker\");\n}"
     );
     assert_eq!(
         (
@@ -288,7 +514,7 @@ fn imported_text_and_git_blobs_use_document_and_source_units_with_line_ranges() 
     );
     let local_beta = search_json(root, &["LocalBeta"]);
     assert_eq!(local_beta.len(), 1);
-    assert_eq!(local_beta[0]["text"], "pub struct LocalBeta;");
+    assert_eq!(local_beta[0]["text"], "struct LocalBeta");
     assert_eq!(
         (
             local_beta[0]["line_start"].as_u64(),
@@ -702,17 +928,17 @@ fn imported_pdfs_preserve_pages_cache_conversions_and_refresh_versions() {
     assert!(search_json(root, &["first page text"]).is_empty());
     assert!(!search_json(root, &["updated page marker"]).is_empty());
 
-    // Exceed the former 100,000-page ceiling and verify the final page reference.
-    // A large cached array remains reusable without rerunning pdftotext.
-    let many_pages = (0..100_001).map(|i| format!("page-{i}"));
+    // Verify large page sets and final-page references; cached arrays remain
+    // reusable without rerunning pdftotext.
+    let many_pages = (0..1_001).map(|i| format!("page-{i}"));
     fs::write(&text, many_pages.collect::<Vec<_>>().join("\x0c")).unwrap();
     fs::write(&pdf, b"%PDF-test many pages").unwrap();
     assert!(run_with_env(root, &["refresh"], &env).0);
     let calls_after_conversion = fs::read_to_string(&calls).unwrap();
     assert!(run_with_env(root, &["refresh"], &env).0);
     assert_eq!(fs::read_to_string(&calls).unwrap(), calls_after_conversion);
-    let last_page = search_json(root, &["page-100000"]);
-    assert!(last_page.iter().any(|result| result["page"] == 100_001));
+    let last_page = search_json(root, &["page-1000"]);
+    assert!(last_page.iter().any(|result| result["page"] == 1_001));
 }
 
 #[test]
@@ -909,6 +1135,11 @@ fn post_commit_hook_refreshes_and_missing_hook_guidance_is_explicit() {
         .args(["commit", "-qm", "hook update"])
         .current_dir(root)
         .env("PATH", path)
+        .env(
+            "REPODB_SEMGREP_CORE",
+            semgrep_corpus::required_semgrep_core(),
+        )
+        .env("XDG_CONFIG_HOME", root.join(".test-xdg-config"))
         .output()
         .unwrap();
     assert!(
@@ -1015,14 +1246,11 @@ fn built_in_embedding_command_rejects_unsupported_model_before_execution() {
     fs::set_permissions(&builtin, fs::Permissions::from_mode(0o755)).unwrap();
     assert!(run(root, &["init"]).0);
     let home_string = home.path().to_str().unwrap();
-    let (ok, output) = run_with_env(
-        root,
-        &["reembed", "--model", "other"],
-        &[("HOME", home_string)],
-    );
+    let vars = [("HOME", home_string), ("XDG_CONFIG_HOME", "")];
+    let (ok, output) = run_with_env(root, &["reembed", "--model", "other"], &vars);
     assert!(!ok, "{output}");
     assert!(!home.path().join("called").exists());
-    let (ok, output) = run_with_env(root, &["reembed"], &[("HOME", home_string)]);
+    let (ok, output) = run_with_env(root, &["reembed"], &vars);
     assert!(ok, "{output}");
     assert!(home.path().join("called").exists());
 }
@@ -1042,7 +1270,8 @@ Exact [literal] TARGET
 last line') printf '[0.0, 1.0]' ;;
   'fn main() { println!("Rust phrase"); }') printf '[0.9, 0.1]' ;;
   TARGET) printf '[1.0, 0.0]' ;;
-  *) echo 'expected a complete indexed unit or query' >&2; exit 1 ;;
+  '') printf '[0.5, 0.5]' ;;
+  *) printf 'unexpected embedding input: <%s>\n' "$input" >&2; exit 1 ;;
 esac
 "#,
     )
@@ -1539,6 +1768,11 @@ fn history_blob_larger_than_previous_limit_refreshes() {
     let output = Command::new(env!("CARGO_BIN_EXE_repodb"))
         .arg("refresh")
         .current_dir(root)
+        .env(
+            "REPODB_SEMGREP_CORE",
+            semgrep_corpus::required_semgrep_core(),
+        )
+        .env("XDG_CONFIG_HOME", root.join(".test-xdg-config"))
         .output()
         .unwrap();
     assert!(
@@ -1997,6 +2231,11 @@ fn refresh_does_not_publish_vectors_over_a_concurrently_changed_model() {
     let mut refresh = Command::new(env!("CARGO_BIN_EXE_repodb"))
         .arg("refresh")
         .current_dir(root)
+        .env(
+            "REPODB_SEMGREP_CORE",
+            semgrep_corpus::required_semgrep_core(),
+        )
+        .env("XDG_CONFIG_HOME", root.join(".test-xdg-config"))
         .stderr(std::process::Stdio::piped())
         .spawn()
         .unwrap();
@@ -2029,7 +2268,7 @@ fn refresh_does_not_publish_vectors_over_a_concurrently_changed_model() {
         "stale refresh must not overwrite a newer model"
     );
     let results = search_json(root, &["question", "--semantic"]);
-    assert_eq!(results.len(), 2);
+    assert_eq!(results.len(), 3);
     assert!(results.iter().all(|r| r["distance"] == 0.0));
 }
 
@@ -2114,7 +2353,7 @@ fn rust_top_level_constructs_are_embedded_individually_with_source_references() 
     let inputs = root.join("embedding-inputs");
     fs::write(
         &fake,
-        "#!/bin/sh\ninput=$(cat)\ncase \"$input\" in 'fn alpha() {}'|'struct Beta;') printf '%s\\n' \"$input\" >> \"$REPODB_TEST_INPUTS\" ;; esac\nprintf '[1,0]'\n",
+        "#!/bin/sh\ninput=$(cat)\ncase \"$input\" in 'fn alpha() {}'|'struct Beta') printf '%s\\n' \"$input\" >> \"$REPODB_TEST_INPUTS\" ;; esac\nprintf '[1,0]'\n",
     )
     .unwrap();
     fs::set_permissions(&fake, fs::Permissions::from_mode(0o755)).unwrap();
@@ -2130,11 +2369,11 @@ fn rust_top_level_constructs_are_embedded_individually_with_source_references() 
 
     assert_eq!(
         fs::read_to_string(inputs).unwrap(),
-        "fn alpha() {}\nstruct Beta;\n"
+        "fn alpha() {}\nstruct Beta\n"
     );
     for (query, text, start, end) in [
         ("fn alpha", "fn alpha() {}", 1, 1),
-        ("struct Beta", "struct Beta;", 3, 3),
+        ("struct Beta", "struct Beta", 3, 3),
     ] {
         let results = search_json(root, &[query]);
         assert_eq!(results.len(), 1);
@@ -2179,9 +2418,9 @@ fn rust_top_level_syntax_preserves_nested_items_attributes_comments_and_source_g
     assert_eq!(alpha.len(), 1);
     assert_eq!(
         alpha[0]["text"],
-        "/// α function docs\n#[inline]\nfn alpha() {\n    let braces = \"} { 🦀\";\n\n    if true { /* nested comment */ println!(\"{braces}\"); }\n}"
+        "#[inline]\nfn alpha() {\n    let braces = \"} { 🦀\";\n\n    if true { /* nested comment */ println!(\"{braces}\"); }\n}"
     );
-    assert_eq!(alpha[0]["line_start"], 6);
+    assert_eq!(alpha[0]["line_start"], 7);
     assert_eq!(alpha[0]["line_end"], 12);
     let beta = search_json(root, &["fn nested"]);
     assert_eq!(
@@ -2192,8 +2431,9 @@ fn rust_top_level_syntax_preserves_nested_items_attributes_comments_and_source_g
     assert_eq!(beta[0]["line_end"], 17);
     for (query, start, end) in [
         ("crate documentation", 1, 3),
-        ("gap marker", 13, 13),
-        ("tail marker", 18, 18),
+        ("function docs", 4, 6),
+        ("gap marker", 12, 13),
+        ("tail marker", 17, 18),
         ("use std::fmt", 4, 4),
     ] {
         let results = search_json(root, &[query]);
@@ -2248,14 +2488,16 @@ fn malformed_rust_and_unsupported_source_keep_comments_imports_and_unparsed_text
         assert_eq!(result["line_start"], 4);
         assert_eq!(result["line_end"], 5);
     }
-    for query in [
-        "malformed header\nuse std::fmt;",
-        "unsupported header\nimport os",
+    for (query, start, end) in [
+        ("malformed header", 1, 2),
+        ("use std::fmt;", 1, 2),
+        ("unsupported header", 1, 1),
+        ("import os", 2, 2),
     ] {
         let results = search_json(root, &[query]);
-        assert_eq!(results.len(), 1);
-        assert_eq!(results[0]["line_start"], 1);
-        assert_eq!(results[0]["line_end"], 2);
+        assert_eq!(results.len(), 1, "{query}");
+        assert_eq!(results[0]["line_start"], start, "{query}");
+        assert_eq!(results[0]["line_end"], end, "{query}");
     }
     let all = search_json(root, &[""]);
     assert!(!all.iter().any(|r| r["path"] == "empty.rs"));

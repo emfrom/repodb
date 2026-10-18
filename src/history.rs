@@ -269,10 +269,14 @@ fn for_each_reachable_commit(
     Ok(())
 }
 
-fn configuration(c: &Connection) -> Result<Option<(String, String, usize)>> {
+pub(crate) fn configuration(c: &Connection) -> Result<(String, String, usize)> {
     let count: usize = c.query_row("SELECT count(*) FROM embedding_config", [], |r| r.get(0))?;
     if count == 0 {
-        return Ok(None);
+        return Ok((
+            crate::config::embedding_command()?,
+            crate::config::DEFAULT_EMBEDDING_MODEL.to_owned(),
+            0,
+        ));
     }
     let value = |key| -> Result<String> {
         Ok(c.query_row(
@@ -281,11 +285,11 @@ fn configuration(c: &Connection) -> Result<Option<(String, String, usize)>> {
             |r| r.get(0),
         )?)
     };
-    Ok(Some((
+    Ok((
         value("command")?,
         value("model")?,
         value("dimension")?.parse()?,
-    )))
+    ))
 }
 
 fn vectors<'a>(
@@ -451,7 +455,8 @@ pub fn prepare_refresh(c: &Connection) -> Result<()> {
         CREATE TEMP TABLE refresh_occurrences(commit_id TEXT NOT NULL, blob_id TEXT NOT NULL, path BLOB NOT NULL, segmentation_kind TEXT NOT NULL, PRIMARY KEY(commit_id,path));
         CREATE TEMP TABLE refresh_units(unit_id INTEGER PRIMARY KEY, blob_id TEXT NOT NULL, segmentation_kind TEXT NOT NULL, text TEXT NOT NULL, line_start INTEGER NOT NULL, line_end INTEGER NOT NULL);
         CREATE TEMP TABLE refresh_embeddings(unit_id INTEGER PRIMARY KEY, vector BLOB NOT NULL);
-        DROP TABLE IF EXISTS temp.refresh_dimension; CREATE TEMP TABLE refresh_dimension(value INTEGER);")?;
+        DROP TABLE IF EXISTS temp.refresh_dimension; CREATE TEMP TABLE refresh_dimension(value INTEGER);
+        DROP TABLE IF EXISTS temp.refresh_config; CREATE TEMP TABLE refresh_config(key TEXT PRIMARY KEY,value TEXT NOT NULL);")?;
     {
         let mut commit_stage =
             c.prepare("INSERT OR IGNORE INTO temp.refresh_commits VALUES(?1,?2)")?;
@@ -538,35 +543,53 @@ pub fn prepare_refresh(c: &Connection) -> Result<()> {
             }
         }
     }
-    let cfg = configuration(c)?;
+    let (command, model, configured_dimension) = configuration(c)?;
     let mut embedding_dimension = None;
-    if let Some((command, model, configured_dimension)) = &cfg {
-        let mut statement =
-            c.prepare("SELECT unit_id,text FROM temp.refresh_units ORDER BY unit_id")?;
-        let mut embedding_statement =
-            c.prepare("INSERT INTO temp.refresh_embeddings VALUES(?1,?2)")?;
-        let mut rows = statement.query([])?;
-        while let Some(row) = rows.next()? {
-            let unit_id: i64 = row.get(0)?;
-            let text: String = row.get(1)?;
-            let (mut encoded, dimension) = vectors(
-                std::iter::once(text.as_str()),
-                command,
-                model,
-                embedding_dimension.unwrap_or(*configured_dimension),
-                &mut preparation_bytes,
-            )?;
-            embedding_statement.execute(params![
-                unit_id,
-                encoded.pop().ok_or("embedding produced no vector")?
-            ])?;
-            embedding_dimension = Some(dimension);
-        }
+    let mut statement =
+        c.prepare("SELECT unit_id,text FROM temp.refresh_units ORDER BY unit_id")?;
+    let mut embedding_statement = c.prepare("INSERT INTO temp.refresh_embeddings VALUES(?1,?2)")?;
+    let mut rows = statement.query([])?;
+    while let Some(row) = rows.next()? {
+        let unit_id: i64 = row.get(0)?;
+        let text: String = row.get(1)?;
+        let (mut encoded, dimension) = vectors(
+            std::iter::once(text.as_str()),
+            &command,
+            &model,
+            embedding_dimension.unwrap_or(configured_dimension),
+            &mut preparation_bytes,
+        )?;
+        embedding_statement.execute(params![
+            unit_id,
+            encoded.pop().ok_or("embedding produced no vector")?
+        ])?;
+        embedding_dimension = Some(dimension);
     }
     if let Some(dimension) = embedding_dimension {
         c.execute(
             "INSERT INTO temp.refresh_dimension VALUES(?1)",
             [dimension as i64],
+        )?;
+    }
+    let imported_dimension = c
+        .query_row(
+            "SELECT value FROM temp.import_refresh_dimension LIMIT 1",
+            [],
+            |row| row.get::<_, i64>(0),
+        )
+        .optional()?
+        .map(|dimension| dimension as usize);
+    let dimension = embedding_dimension
+        .or(imported_dimension)
+        .unwrap_or(configured_dimension);
+    for (key, value) in [
+        ("command", command),
+        ("model", model),
+        ("dimension", dimension.to_string()),
+    ] {
+        c.execute(
+            "INSERT INTO temp.refresh_config VALUES(?1,?2)",
+            params![key, value],
         )?;
     }
     Ok(())
@@ -601,17 +624,18 @@ pub fn publish_refresh(tx: &Transaction<'_>) -> Result<()> {
         "INSERT INTO unit_embeddings SELECT * FROM temp.refresh_embeddings",
         [],
     )?;
-    let dimension: Option<i64> = tx
-        .query_row(
-            "SELECT value FROM temp.refresh_dimension LIMIT 1",
-            [],
-            |row| row.get(0),
-        )
-        .optional()?;
-    if let Some(dim) = dimension {
+    let config = {
+        let mut statement = tx.prepare("SELECT key,value FROM temp.refresh_config ORDER BY key")?;
+        statement
+            .query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })?
+            .collect::<std::result::Result<Vec<_>, _>>()?
+    };
+    for (key, value) in config {
         tx.execute(
-            "UPDATE embedding_config SET value=?1 WHERE key='dimension'",
-            [dim.to_string()],
+            "INSERT INTO embedding_config(key,value) VALUES(?1,?2) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+            params![key, value],
         )?;
     }
     tx.execute_batch("DROP TABLE IF EXISTS indexed_files; DROP TABLE IF EXISTS embeddings; PRAGMA user_version=3;")?;

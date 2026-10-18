@@ -46,8 +46,13 @@ and ranges are not accepted. A deleted ref's captured commit remains selectable
 until a successful explicit refresh removes it.
 
 All scopes and filters apply equally to exact, semantic, and combined search.
-Exact search remains a case-insensitive literal substring search. Embedding
-search requires `reembed [--command PATH] [--model ID]`; `--semantic-limit N`
+Exact search remains a case-insensitive literal substring search. Every `init` or
+`refresh` builds both plaintext units and embeddings in one atomic snapshot, so
+semantic search works immediately afterward. The first scan uses
+`[tools].embedding_command` from the XDG RepoDB config, or defaults to
+`~/bin/generate_embeddings` with `all-MiniLM-L6-v2`; the selected command/model
+are stored per database and reused on later scans. Use
+`reembed [--command PATH] [--model ID]` to change them. `--semantic-limit N`
 (default 20) limits semantic candidates, not exact matches in combined search.
 
 ### Imported sources
@@ -87,29 +92,46 @@ configured embedding command:
 - `.md`, `.markdown`, and `.txt`: paragraphs delimited by blank or whitespace-only
   lines (including CRLF input). Separating blank lines and the paragraph's final
   line terminator are excluded; internal whitespace and line endings are retained.
-- `.rs`: Rust top-level items parsed by `syn`, including attributes and doc comments.
-  Nested constructs stay within their top-level item. Units slice original source
-  spans, not reformatted tokens; even two items on one line remain distinct.
-  Comments, file attributes, imports, and text between/after items are retained;
-  non-item text uses the paragraph heuristic rather than being silently dropped.
-- All other extensions, extensionless files, and malformed Rust: a bounded
-  blank-line paragraph heuristic, without guessing language syntax. Extension
-  matching is case-sensitive. No PDF extraction/page references are added here.
+- Source extensions with a dedicated Semgrep v1.181.0 parser: top-level syntax
+  units plus all source gaps, validated against exact UTF-8 token offsets. Rust
+  is parsed through Semgrep's `rust` target, not a separate parser.
+- Unsupported or ambiguous extensions, and sources Semgrep cannot parse
+  consistently: a bounded blank-line paragraph heuristic. Extension matching is
+  case-sensitive. No PDF extraction/page references are added here.
 
-Every unit is at most **4096 UTF-8 bytes**. Oversized paragraphs, Rust items, and
-fallback units split at the last complete newline within that bound, otherwise
-at a UTF-8 character boundary (never between CR and LF). Split pieces retain all
-text, including internal line endings. Ranges refer to the original one-based,
-inclusive source lines; pieces of a long single line share its line range.
-Whitespace-only separators are not standalone units.
+A Semgrep core v1.181.0 executable is required when refreshing any supported
+source-code file. Configure it in `$XDG_CONFIG_HOME/repodb/config.toml`, or
+`~/.config/repodb/config.toml` when `XDG_CONFIG_HOME` is unset:
+
+```toml
+[tools]
+semgrep_core = "/path/to/semgrep-core"
+embedding_command = "/path/to/generate_embeddings"
+# Optional override for source byte ranges:
+# segmenter = "/path/to/segmenter"
+```
+
+`REPODB_SEMGREP_CORE` and `REPODB_SEGMENTER`, when set, override their config
+values. Missing or wrong-version Semgrep cores fail refresh instead of silently
+switching the source index to heuristic chunks. Unsupported extensions and
+parser failures still use the fallback above.
+
+Every unit is at most **4096 UTF-8 bytes**. Oversized paragraphs, Semgrep syntax
+ranges, and fallback units split at the last complete newline within that bound,
+otherwise at a UTF-8 character boundary (never between CR and LF). Split pieces
+retain all text, including internal line endings. Ranges refer to the original
+one-based, inclusive source lines; pieces of a long single line share its line
+range. Whitespace-only separators between document paragraphs are not standalone
+units; source gaps are preserved as returned by Semgrep.
 
 Exact matching is still literal and case-insensitive, including punctuation and
 newlines within a unit. A query spanning separate units (including size-imposed
 boundaries) cannot match. Distinct units with the same starting line retain source
 order when other ordering keys tie. Binary/invalid UTF-8 blobs have no text units.
 
-An optional external segmenter can be selected with `REPODB_SEGMENTER=/path/to/tool`.
-For source segmentation kinds (currently `rust`), RepoDB invokes that executable
+An explicit external range segmenter can override the source partition with
+`REPODB_SEGMENTER=/path/to/tool` or `tools.segmenter` in the config file, but the
+required Semgrep runtime is still validated first. RepoDB invokes the segmenter
 directly with the kind as its sole argument and sends the exact UTF-8 source bytes
 on stdin. It must print a JSON array of `[start,end]` half-open byte-offset pairs
 on stdout. The ranges must form an ordered, non-overlapping, UTF-8-aligned full

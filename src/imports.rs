@@ -71,6 +71,11 @@ fn bounded_command_output_with_input(
 }
 
 fn import_embed(command: &str, model: &str, text: &str, used: &mut Budget) -> Result<Vec<f32>> {
+    let input = if crate::is_builtin_embedding_command(command) && text.trim().is_empty() {
+        "<empty RepoDB unit>"
+    } else {
+        text
+    };
     let mut child = Command::new(command)
         .env("REPODB_EMBEDDING_MODEL", model)
         .args(["--json", "-"])
@@ -83,7 +88,7 @@ fn import_embed(command: &str, model: &str, text: &str, used: &mut Budget) -> Re
     // captured stdout byte while stdout remains live.
     let output_limit = used.remaining().saturating_sub(MAX_COMMAND_STDERR_BYTES) / 9;
     let (status, stdout, stderr) =
-        bounded_command_output_with_input(&mut child, text.as_bytes(), output_limit, used)?;
+        bounded_command_output_with_input(&mut child, input.as_bytes(), output_limit, used)?;
     if !status.success() {
         return Err(format!(
             "embedding command failed: {}",
@@ -186,16 +191,9 @@ pub fn refresh(c: &Connection) -> Result<()> {
         .collect::<std::result::Result<Vec<_>, _>>()?
     };
     c.execute_batch("DROP TABLE IF EXISTS temp.import_refresh_dimension; CREATE TEMP TABLE import_refresh_dimension(value INTEGER);")?;
-    let cfg: Option<(String,String)> = c.query_row("SELECT (SELECT value FROM embedding_config WHERE key='command'),(SELECT value FROM embedding_config WHERE key='model')", [], |r| Ok((r.get(0)?,r.get(1)?))).ok();
-    let configured_dimension = c
-        .query_row(
-            "SELECT value FROM embedding_config WHERE key='dimension'",
-            [],
-            |r| r.get::<_, String>(0),
-        )
-        .ok()
-        .and_then(|v| v.parse::<usize>().ok())
-        .filter(|d| *d != 0);
+    let (command, model, configured_dimension) = crate::history::configuration(c)?;
+    let cfg = Some((command, model));
+    let configured_dimension = (configured_dimension != 0).then_some(configured_dimension);
     let retention: String = c
         .query_row(
             "SELECT value FROM import_config WHERE key='retention'",
@@ -300,38 +298,48 @@ pub fn refresh(c: &Connection) -> Result<()> {
                     };
                     refresh_memory_bytes.charge(text.len(), "Git blob text")?;
                     let mut unit_error = None;
-                    let segmentation_result = segmentation::visit(segmentation::kind(path.as_bytes()), &text, |unit| {
-                        let result = (|| -> Result<()> {
-                            let vector = cfg
-                                .as_ref()
-                                .map(|(cmd, model)| {
-                                    import_embed(cmd, model, unit.text, &mut refresh_memory_bytes)
-                                })
-                                .transpose()?;
-                            if let Some(vector) = &vector {
-                                if configured_dimension.is_some_and(|d| d != vector.len())
-                                    || dimension.is_some_and(|d| d != vector.len())
-                                {
-                                    return Err("embedding dimension mismatch".into());
+                    let segmentation_result = segmentation::visit(
+                        segmentation::kind(path.as_bytes()),
+                        &text,
+                        |unit| {
+                            let result = (|| -> Result<()> {
+                                let vector = cfg
+                                    .as_ref()
+                                    .map(|(cmd, model)| {
+                                        import_embed(
+                                            cmd,
+                                            model,
+                                            unit.text,
+                                            &mut refresh_memory_bytes,
+                                        )
+                                    })
+                                    .transpose()?;
+                                if let Some(vector) = &vector {
+                                    if configured_dimension.is_some_and(|d| d != vector.len())
+                                        || dimension.is_some_and(|d| d != vector.len())
+                                    {
+                                        return Err("embedding dimension mismatch".into());
+                                    }
+                                    dimension = Some(vector.len());
                                 }
-                                dimension = Some(vector.len());
+                                refresh_memory_bytes
+                                    .charge(unit.text.len(), "Git indexed unit text")?;
+                                refresh_memory_bytes.charge(path.len(), "Git unit path")?;
+                                let vector_bytes = vector.as_ref().map_or(0, |v| v.len() * 4);
+                                refresh_memory_bytes
+                                    .charge(vector_bytes, "Git stored vector bytes")?;
+                                c.execute("INSERT OR REPLACE INTO temp.import_stage_git_units(source_id,commit_id,path,line,line_end,text,vector) VALUES(?1,?2,?3,?4,?5,?6,?7)", params![id, commit, path, unit.line_start, unit.line_end, unit.text, vector.map(|v| as_bytes(&v))])?;
+                                refresh_memory_bytes
+                                    .release(unit.text.len() + path.len() + vector_bytes);
+                                Ok(())
+                            })();
+                            if let Err(error) = result {
+                                unit_error = Some(error);
+                                return false;
                             }
-                            refresh_memory_bytes
-                                .charge(unit.text.len(), "Git indexed unit text")?;
-                            refresh_memory_bytes.charge(path.len(), "Git unit path")?;
-                            let vector_bytes = vector.as_ref().map_or(0, |v| v.len() * 4);
-                            refresh_memory_bytes.charge(vector_bytes, "Git stored vector bytes")?;
-                            c.execute("INSERT OR REPLACE INTO temp.import_stage_git_units(source_id,commit_id,path,line,line_end,text,vector) VALUES(?1,?2,?3,?4,?5,?6,?7)", params![id, commit, path, unit.line_start, unit.line_end, unit.text, vector.map(|v| as_bytes(&v))])?;
-                            refresh_memory_bytes
-                                .release(unit.text.len() + path.len() + vector_bytes);
-                            Ok(())
-                        })();
-                        if let Err(error) = result {
-                            unit_error = Some(error);
-                            return false;
-                        }
-                        true
-                    });
+                            true
+                        },
+                    );
                     segmentation_result?;
                     if let Some(error) = unit_error {
                         return Err(error);
@@ -646,7 +654,7 @@ pub fn search(c: &Connection, query: &str, mode: &str, limit: usize) -> Result<V
     let semantic = mode != "exact";
     let mut vector = None;
     if semantic {
-        let (cmd,model): (String,String) = c.query_row("SELECT (SELECT value FROM embedding_config WHERE key='command'),(SELECT value FROM embedding_config WHERE key='model')", [], |r| Ok((r.get(0)?,r.get(1)?))).map_err(|_| "no embeddings; run reembed")?;
+        let (cmd,model): (String,String) = c.query_row("SELECT (SELECT value FROM embedding_config WHERE key='command'),(SELECT value FROM embedding_config WHERE key='model')", [], |r| Ok((r.get(0)?,r.get(1)?))).map_err(|_| "no embeddings; run refresh")?;
         vector = Some(as_bytes(&embed(&cmd, &model, query)?));
         let dimension: i64 = c
             .query_row(

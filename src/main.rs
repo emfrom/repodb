@@ -95,7 +95,7 @@ fn resolved_executable(command: &str) -> Option<PathBuf> {
     })
 }
 
-fn is_builtin_embedding_command(command: &str) -> bool {
+pub(crate) fn is_builtin_embedding_command(command: &str) -> bool {
     let Ok(home) = env::var("HOME") else {
         return false;
     };
@@ -125,9 +125,16 @@ pub(crate) fn embed_with_output_limit(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()?;
+    // Some embedders return no row for empty/whitespace input. Preserve a
+    // searchable vector for every indexed unit with a stable sentinel instead.
+    let input = if is_builtin_embedding_command(command) && text.trim().is_empty() {
+        "<empty RepoDB unit>"
+    } else {
+        text
+    };
     let output = match output_limit {
-        Some(limit) => process::capture_with_input(&mut child, text.as_bytes(), limit, 64 * 1024)?,
-        None => process::capture_with_input_unbounded(&mut child, text.as_bytes())?,
+        Some(limit) => process::capture_with_input(&mut child, input.as_bytes(), limit, 64 * 1024)?,
+        None => process::capture_with_input_unbounded(&mut child, input.as_bytes())?,
     };
     if output.exceeded {
         let limit = output_limit.expect("bounded capture has a limit");
@@ -244,7 +251,7 @@ fn query_vector(c: &Connection, q: &str) -> Result<Vec<f32>> {
             [],
             |r| r.get(0),
         )
-        .map_err(|_| "no embeddings; run reembed")?;
+        .map_err(|_| "no embeddings; run refresh")?;
     let model: String = c.query_row(
         "SELECT value FROM embedding_config WHERE key='model'",
         [],
