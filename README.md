@@ -2,13 +2,13 @@
 
 A repository search CLI with exact and embedding-based search.
 
-This is something I cooked up to give agents faster understanding of codebases and codebase operations. Usable, but integrations are not finished. Depends a script generate-embeddings, ask you local llm to adapt it to your circumstances.
+I built RepoDB to help agents understand codebases and work with them more quickly. It is usable, but integrations are not finished. It depends on the [`generate-embeddings` script](https://github.com/emfrom/generate_embeddings); ask your local LLM to adapt the script to your needs.
 
-**Alpha-yolo software, use at your own risk.**
+**Alpha-yolo software; use at your own risk.**
 
 See [CHANGELOG.md](CHANGELOG.md) for version history.
 
-Custom embedding commands receive each text on stdin and must print a JSON numeric vector on stdout. RepoDB invokes them as `COMMAND --json -` and sets `REPODB_EMBEDDING_MODEL` to the configured model ID for every indexing and query invocation. Commands must produce vectors consistent with that model ID. The built-in `~/bin/generate_embeddings` supports only `all-MiniLM-L6-v2`.
+Custom embedding commands receive each text on stdin and must print a JSON numeric vector on stdout. RepoDB invokes them as `COMMAND --json -` and sets `REPODB_EMBEDDING_MODEL` to the configured model ID for every indexing and query invocation. Commands must produce vectors consistent with that model ID. The built-in [`~/bin/generate_embeddings`](https://github.com/emfrom/generate_embeddings) supports only `all-MiniLM-L6-v2`.
 
 ## Git history and scopes
 
@@ -65,7 +65,7 @@ full `refresh` prepare searchable units and embeddings for the captured history
 in one atomic snapshot. `refresh --changed` atomically indexes the new commit, embeds changed or
 previously unindexed content, and reuses unchanged units and vectors. Semantic search works after either mode. The first scan uses
 `[tools].embedding_command` from the XDG RepoDB config, or defaults to
-`~/bin/generate_embeddings` with `all-MiniLM-L6-v2`; the selected command/model
+[`~/bin/generate_embeddings`](https://github.com/emfrom/generate_embeddings) with `all-MiniLM-L6-v2`; the selected command/model
 are stored per database and reused on later scans. Use
 `reembed [--command PATH] [--model ID]` to change them. `--semantic-limit N`
 (default 20) limits semantic candidates, not exact matches in combined search.
