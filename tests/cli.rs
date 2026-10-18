@@ -993,6 +993,150 @@ fn imported_pdfs_preserve_pages_cache_conversions_and_refresh_versions() {
 }
 
 #[test]
+fn imported_pdf_splits_paragraphs_with_shared_page_metadata() {
+    use std::os::unix::fs::PermissionsExt;
+    let repo = repository();
+    let root = repo.path();
+    assert!(run(root, &["init"]).0);
+    let bin = root.join("bin");
+    fs::create_dir(&bin).unwrap();
+    let converter = bin.join("pdftotext");
+    fs::write(&converter, "#!/bin/sh\ncat \"$PDF_TEXT\"\n").unwrap();
+    fs::set_permissions(&converter, fs::Permissions::from_mode(0o755)).unwrap();
+    let pdf = root.join("paragraphs.pdf");
+    fs::write(&pdf, b"%PDF-test paragraphs").unwrap();
+    let pdf_string = pdf.to_string_lossy().into_owned();
+    assert!(run(root, &["import", &pdf_string]).0);
+    let path = format!("{}:{}", bin.display(), std::env::var("PATH").unwrap());
+    let text = root.join("converter-text");
+    let long_paragraph = "x".repeat(5_000);
+    fs::write(
+        &text,
+        format!(
+            "cross-page duplicate marker\n\nrepeated paragraph marker\n\nrepeated paragraph marker\n\nwrapped line one\r\nwrapped line two\r\n \t\r\nUnicode café 🌍\n\x0c \t\n\x0c cross-page duplicate marker\n\nrepeated paragraph marker\n\n{long_paragraph}\x0cfinal page marker\n"
+        ),
+    )
+    .unwrap();
+    let env = [
+        ("PATH", path.as_str()),
+        ("PDF_TEXT", text.to_str().unwrap()),
+    ];
+    assert!(run_with_env(root, &["refresh"], &env).0);
+    let rust = search_json(root, &["Rust phrase"]);
+    assert_eq!(rust.len(), 1);
+    assert_eq!(rust[0]["text"], "fn main() { println!(\"Rust phrase\"); }");
+
+    let cross_page = search_json(root, &["cross-page duplicate marker"]);
+    assert_eq!(cross_page.len(), 2);
+    assert_eq!(
+        cross_page
+            .iter()
+            .map(|result| result["page"].as_u64().unwrap())
+            .collect::<Vec<_>>(),
+        vec![1, 3]
+    );
+    assert_ne!(cross_page[0]["line_start"], cross_page[1]["line_start"]);
+
+    let repeated = search_json(root, &["repeated paragraph marker"]);
+    assert_eq!(repeated.len(), 3);
+    let page_one_repeated = repeated
+        .iter()
+        .filter(|result| result["page"] == 1)
+        .collect::<Vec<_>>();
+    assert_eq!(page_one_repeated.len(), 2);
+    assert_ne!(
+        page_one_repeated[0]["line_start"],
+        page_one_repeated[1]["line_start"]
+    );
+    let wrapped = search_json(root, &["wrapped"]);
+    assert_eq!(wrapped.len(), 1);
+    assert_eq!(wrapped[0]["page"], 1);
+    assert_eq!(wrapped[0]["text"], "wrapped line one\r\nwrapped line two");
+    let unicode = search_json(root, &["café"]);
+    assert_eq!(unicode.len(), 1);
+    assert_eq!(unicode[0]["page"], 1);
+    let oversized = search_json(root, &["x"])
+        .into_iter()
+        .filter(|result| result["path"] == pdf_string)
+        .collect::<Vec<_>>();
+    assert_eq!(oversized.len(), 2);
+    assert!(oversized.iter().all(|result| result["page"] == 3));
+    assert!(
+        oversized
+            .iter()
+            .all(|result| result["text"].as_str().unwrap().len() <= 4096)
+    );
+    assert_eq!(search_json(root, &["final page marker"])[0]["page"], 4);
+    assert!(
+        search_json(root, &["wrapped"])
+            .iter()
+            .all(|result| result["page"] == 1)
+    );
+
+    // Refresh reads the cached extracted pages and preserves the same page units.
+    assert!(run_with_env(root, &["refresh"], &env).0);
+    let cached_cross_page = search_json(root, &["cross-page duplicate marker"]);
+    assert_eq!(
+        cached_cross_page
+            .iter()
+            .map(|result| result["page"].as_u64().unwrap())
+            .collect::<Vec<_>>(),
+        vec![1, 3]
+    );
+    assert_ne!(
+        cached_cross_page[0]["line_start"],
+        cached_cross_page[1]["line_start"]
+    );
+    assert_eq!(search_json(root, &["repeated paragraph marker"]).len(), 3);
+    assert_eq!(search_json(root, &["wrapped"]).len(), 1);
+    assert_eq!(search_json(root, &["final page marker"])[0]["page"], 4);
+
+    // Reembedding updates each persisted PDF unit without merging page units.
+    let embedder = root.join("embedder");
+    fs::write(
+        &embedder,
+        "#!/bin/sh\ncat >/dev/null\nprintf '[1.0, 0.0]'\n",
+    )
+    .unwrap();
+    fs::set_permissions(&embedder, fs::Permissions::from_mode(0o755)).unwrap();
+    assert!(run(root, &["reembed", "--command", embedder.to_str().unwrap()],).0);
+    let reembedded_cross_page = search_json(root, &["cross-page duplicate marker"]);
+    assert_eq!(
+        reembedded_cross_page
+            .iter()
+            .map(|result| result["page"].as_u64().unwrap())
+            .collect::<Vec<_>>(),
+        vec![1, 3]
+    );
+    assert_ne!(
+        reembedded_cross_page[0]["line_start"],
+        reembedded_cross_page[1]["line_start"]
+    );
+    assert_eq!(search_json(root, &["repeated paragraph marker"]).len(), 3);
+    assert_eq!(search_json(root, &["wrapped"]).len(), 1);
+    assert_eq!(search_json(root, &["final page marker"])[0]["page"], 4);
+    for mode in ["--semantic", "--combined"] {
+        let mut args = vec!["repeated paragraph marker", mode];
+        if mode == "--combined" {
+            args.extend(["--semantic-limit", "10"]);
+        }
+        let results = search_json(root, &args);
+        assert_eq!(
+            results
+                .iter()
+                .filter(|result| {
+                    result["path"] == pdf_string
+                        && result["page"] == 1
+                        && result["text"] == "repeated paragraph marker"
+                })
+                .count(),
+            2,
+            "{mode}: {results:?}"
+        );
+    }
+}
+
+#[test]
 fn imports_retain_latest_fetch_and_reembed_backfills_and_refreshes_vectors() {
     let repo = repository();
     let root = repo.path();

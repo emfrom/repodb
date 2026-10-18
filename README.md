@@ -59,7 +59,7 @@ are stored per database and reused on later scans. Use
 
 Register one local file, HTTP(S) URL, local Git repository, or remote Git URL at a time with `repodb import PATH_OR_URL`. Git remotes can use SSH, Git, `file://`, or HTTP(S) URLs ending in `.git`; ordinary directories are rejected. `repodb retention latest` (the default) keeps only the newest fetched version per source, while `repodb retention all` retains prior versions. `repodb refresh` explicitly reads registered files, fetches registered URLs, and updates registered Git repositories; searches never fetch. Imported Git results include the repository locator, commit ID, repository-relative path, and one-based line reference. Semantic imported search uses the repository's configured embedding command.
 
-Refresh does not impose fixed per-file, URL, PDF-text, page-count, unit-count, or aggregate preparation-byte ceilings. Subprocess stderr is drained while retaining only a bounded diagnostic excerpt; large stderr streams do not reject otherwise valid output. Git tree records are processed incrementally, and failed reads/conversions still leave the prior searchable snapshot intact. PDF conversion caches are reused when available. Importing PDF files requires the `pdftotext` executable (from Poppler) to be installed and available on `PATH` when `repodb refresh` converts a PDF; a missing converter is reported with an installation requirement. Extracted PDF text is indexed one unit per page; JSON search results include the one-based `page` number, and human-readable results include the page reference. Imported sources are processed sequentially, with PDF pages and content units handled one at a time; this does not promise a fixed maximum memory footprint.
+Refresh does not impose fixed per-file, URL, PDF-text, page-count, unit-count, or aggregate preparation-byte ceilings. Subprocess stderr is drained while retaining only a bounded diagnostic excerpt; large stderr streams do not reject otherwise valid output. Git tree records are processed incrementally, and failed reads/conversions still leave the prior searchable snapshot intact. PDF conversion caches are reused when available. Importing PDF files requires the `pdftotext` executable (from Poppler) to be installed and available on `PATH` when `repodb refresh` converts a PDF; a missing converter is reported with an installation requirement. Extracted PDF text is indexed as bounded paragraph units within each page; JSON search results include the one-based `page` number, and human-readable results include the page reference. Imported sources are processed sequentially, with PDF pages and content units handled one at a time; this does not promise a fixed maximum memory footprint.
 
 ### References, duplicates, and ordering
 
@@ -89,15 +89,18 @@ starting line, then blob ID ascending.
 All three search modes use the same units, including the full text sent to the
 configured embedding command:
 
-- `.md`, `.markdown`, and `.txt`: paragraphs delimited by blank or whitespace-only
-  lines (including CRLF input). Separating blank lines and the paragraph's final
-  line terminator are excluded; internal whitespace and line endings are retained.
+- Supported documentation formats (`.md`, `.markdown`, `.txt`, and extracted PDF
+  pages): paragraphs delimited by blank or whitespace-only lines (including CRLF
+  input). PDF page boundaries always remain separate, even when adjacent pages
+  contain text that would otherwise form one paragraph; indexed PDF results carry
+  page metadata. Separating blank lines are excluded, while internal whitespace
+  and line endings are retained.
 - Source extensions with a dedicated Semgrep v1.181.0 parser: top-level syntax
   units plus all source gaps, validated against exact UTF-8 token offsets. Rust
   is parsed through Semgrep's `rust` target, not a separate parser.
 - Unsupported or ambiguous extensions, and sources Semgrep cannot parse
   consistently: a bounded blank-line paragraph heuristic. Extension matching is
-  case-sensitive. No PDF extraction/page references are added here.
+  case-sensitive.
 
 A Semgrep core v1.181.0 executable is required when refreshing any supported
 source-code file. Configure it in `$XDG_CONFIG_HOME/repodb/config.toml`, or

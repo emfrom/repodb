@@ -471,32 +471,50 @@ pub fn refresh(c: &Connection) -> Result<()> {
             let mut stmt =
                 c.prepare("SELECT page,text FROM temp.import_pdf_pages ORDER BY page")?;
             let mut rows = stmt.query([])?;
+            let mut last_line = 0;
             while let Some(row) = rows.next()? {
                 let page: usize = row.get(0)?;
                 let text: String = row.get(1)?;
-                if text.trim().is_empty() {
-                    continue;
-                }
-                refresh_memory_bytes.charge(text.len(), "PDF indexed unit text")?;
-                let vector = cfg
-                    .as_ref()
-                    .map(|(cmd, model)| import_embed(cmd, model, &text, &mut refresh_memory_bytes))
-                    .transpose()?;
-                if let Some(vector) = &vector {
-                    if dimension.is_some_and(|d| d != vector.len())
-                        || configured_dimension.is_some_and(|d| d != vector.len())
-                    {
-                        return Err("embedding dimension mismatch".into());
+                let mut failure = None;
+                crate::segmentation::visit("paragraph", &text, |unit| {
+                    let result = (|| -> Result<()> {
+                        refresh_memory_bytes.charge(unit.text.len(), "PDF indexed unit text")?;
+                        let vector = cfg
+                            .as_ref()
+                            .map(|(cmd, model)| {
+                                import_embed(cmd, model, unit.text, &mut refresh_memory_bytes)
+                            })
+                            .transpose()?;
+                        if let Some(vector) = &vector {
+                            if dimension.is_some_and(|d| d != vector.len())
+                                || configured_dimension.is_some_and(|d| d != vector.len())
+                            {
+                                return Err("embedding dimension mismatch".into());
+                            }
+                            dimension = Some(vector.len());
+                        }
+                        let vector_bytes = vector.as_ref().map_or(0, |v| v.len() * 4);
+                        refresh_memory_bytes.charge(vector_bytes, "PDF stored vector bytes")?;
+                        let line = unit.line_start.max(last_line + 1);
+                        let line_end = line + unit.line_end.saturating_sub(unit.line_start);
+                        last_line = line_end;
+                        c.execute(
+                            "INSERT OR REPLACE INTO temp.import_stage_units(source_id,version,line,line_end,text,vector,page) VALUES(?1,?2,?3,?4,?5,?6,?7)",
+                            params![id, version, line, line_end, unit.text, vector.map(|v| as_bytes(&v)), page],
+                        )?;
+                        refresh_memory_bytes.release(unit.text.len() + vector_bytes);
+                        Ok(())
+                    })();
+                    if let Err(error) = result {
+                        failure = Some(error);
+                        false
+                    } else {
+                        true
                     }
-                    dimension = Some(vector.len());
+                })?;
+                if let Some(error) = failure {
+                    return Err(error);
                 }
-                let vector_bytes = vector.as_ref().map_or(0, |v| v.len() * 4);
-                refresh_memory_bytes.charge(vector_bytes, "PDF stored vector bytes")?;
-                c.execute(
-                    "INSERT OR REPLACE INTO temp.import_stage_units(source_id,version,line,line_end,text,vector,page) VALUES(?1,?2,?3,?3,?4,?5,?6)",
-                    params![id, version, page, text, vector.map(|v| as_bytes(&v)), page],
-                )?;
-                refresh_memory_bytes.release(text.len() + vector_bytes);
             }
         } else {
             let content = content.expect("non-PDF content exists");

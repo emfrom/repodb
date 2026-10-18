@@ -148,7 +148,7 @@ mod tests {
         connection.execute_batch(
             "CREATE TABLE imported_units(source_id TEXT NOT NULL,version TEXT NOT NULL,line INTEGER NOT NULL,text TEXT NOT NULL,vector BLOB,page INTEGER,PRIMARY KEY(source_id,version,line));
              CREATE TABLE imported_git_units(source_id TEXT NOT NULL,commit_id TEXT NOT NULL,path TEXT NOT NULL,line INTEGER NOT NULL,text TEXT NOT NULL,vector BLOB,PRIMARY KEY(source_id,commit_id,path,line));
-             INSERT INTO imported_units VALUES('s','v',4,'legacy file',X'0102',NULL);
+             INSERT INTO imported_units VALUES('s','v',4,'legacy file',X'0102',7);
              INSERT INTO imported_git_units VALUES('s','c','a.rs',4,'legacy git',X'0304');",
         ).unwrap();
 
@@ -174,5 +174,13 @@ mod tests {
             )
             .unwrap();
         assert_eq!(old_vector, [1, 2]);
+        let page: i64 = connection
+            .query_row(
+                "SELECT page FROM imported_units WHERE text='legacy file'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(page, 7);
     }
 }
