@@ -2,7 +2,9 @@
 
 A repository search CLI with exact and embedding-based search.
 
-This is something I cooked up to give agents faster understanding of codebases and codebase operations. Usable but integrations are not finished. Alpha-yolo software, use at your own risk.
+This is something I cooked up to give agents faster understanding of codebases and codebase operations. Usable, but integrations are not finished. Depends on 
+
+**Alpha-yolo software, use at your own risk.**
 
 See [CHANGELOG.md](CHANGELOG.md) for version history.
 
