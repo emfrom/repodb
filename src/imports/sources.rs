@@ -3,7 +3,13 @@ use rusqlite::{Connection, params};
 use std::{path::Path, process::Command};
 
 pub(super) fn init(c: &Connection) -> Result<()> {
-    c.execute_batch("CREATE TABLE IF NOT EXISTS imported_sources(id TEXT PRIMARY KEY, locator TEXT NOT NULL UNIQUE, kind TEXT NOT NULL); CREATE TABLE IF NOT EXISTS imported_versions(source_id TEXT NOT NULL, version TEXT NOT NULL, content TEXT NOT NULL, fetched_order INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(source_id,version)); CREATE TABLE IF NOT EXISTS imported_units(source_id TEXT NOT NULL, version TEXT NOT NULL, line INTEGER NOT NULL, text TEXT NOT NULL, vector BLOB, page INTEGER, line_end INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(source_id,version,line,text)); CREATE TABLE IF NOT EXISTS import_config(key TEXT PRIMARY KEY,value TEXT NOT NULL); CREATE TABLE IF NOT EXISTS imported_git_units(source_id TEXT NOT NULL,commit_id TEXT NOT NULL,path TEXT NOT NULL,line INTEGER NOT NULL,line_end INTEGER NOT NULL DEFAULT 0,text TEXT NOT NULL,vector BLOB,PRIMARY KEY(source_id,commit_id,path,line,text));")?;
+    c.execute_batch("CREATE TABLE IF NOT EXISTS imported_sources(id TEXT PRIMARY KEY, locator TEXT NOT NULL UNIQUE, kind TEXT NOT NULL, object_store TEXT); CREATE TABLE IF NOT EXISTS imported_versions(source_id TEXT NOT NULL, version TEXT NOT NULL, content TEXT NOT NULL, fetched_order INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(source_id,version)); CREATE TABLE IF NOT EXISTS imported_units(source_id TEXT NOT NULL, version TEXT NOT NULL, line INTEGER NOT NULL, text TEXT NOT NULL, vector BLOB, page INTEGER, line_end INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(source_id,version,line,text)); CREATE TABLE IF NOT EXISTS import_config(key TEXT PRIMARY KEY,value TEXT NOT NULL); CREATE TABLE IF NOT EXISTS imported_git_units(source_id TEXT NOT NULL,commit_id TEXT NOT NULL,path TEXT NOT NULL,blob_id TEXT NOT NULL,segmentation_kind TEXT NOT NULL,byte_start INTEGER NOT NULL,byte_end INTEGER NOT NULL,line INTEGER NOT NULL,line_end INTEGER NOT NULL,vector BLOB,PRIMARY KEY(source_id,commit_id,path,byte_start));")?;
+    if !column_exists(c, "imported_sources", "object_store")? {
+        c.execute(
+            "ALTER TABLE imported_sources ADD COLUMN object_store TEXT",
+            [],
+        )?;
+    }
     if !column_exists(c, "imported_units", "page")? {
         c.execute("ALTER TABLE imported_units ADD COLUMN page INTEGER", [])?;
     }
@@ -14,7 +20,9 @@ pub(super) fn init(c: &Connection) -> Result<()> {
         )?;
         c.execute("UPDATE imported_units SET line_end=line", [])?;
     }
-    if !column_exists(c, "imported_git_units", "line_end")? {
+    if !column_exists(c, "imported_git_units", "blob_id")?
+        && !column_exists(c, "imported_git_units", "line_end")?
+    {
         c.execute(
             "ALTER TABLE imported_git_units ADD COLUMN line_end INTEGER NOT NULL DEFAULT 0",
             [],
@@ -28,11 +36,13 @@ pub(super) fn init(c: &Connection) -> Result<()> {
     )? {
         c.execute_batch("CREATE TABLE imported_units_new(source_id TEXT NOT NULL,version TEXT NOT NULL,line INTEGER NOT NULL,line_end INTEGER NOT NULL,text TEXT NOT NULL,vector BLOB,page INTEGER,PRIMARY KEY(source_id,version,line,text)); INSERT INTO imported_units_new SELECT source_id,version,line,line_end,text,vector,page FROM imported_units; DROP TABLE imported_units; ALTER TABLE imported_units_new RENAME TO imported_units;")?;
     }
-    if !primary_key_matches(
-        c,
-        "imported_git_units",
-        &["source_id", "commit_id", "path", "line", "text"],
-    )? {
+    if !column_exists(c, "imported_git_units", "blob_id")?
+        && !primary_key_matches(
+            c,
+            "imported_git_units",
+            &["source_id", "commit_id", "path", "line", "text"],
+        )?
+    {
         c.execute_batch("CREATE TABLE imported_git_units_new(source_id TEXT NOT NULL,commit_id TEXT NOT NULL,path TEXT NOT NULL,line INTEGER NOT NULL,line_end INTEGER NOT NULL,text TEXT NOT NULL,vector BLOB,PRIMARY KEY(source_id,commit_id,path,line,text)); INSERT INTO imported_git_units_new SELECT source_id,commit_id,path,line,line_end,text,vector FROM imported_git_units; DROP TABLE imported_git_units; ALTER TABLE imported_git_units_new RENAME TO imported_git_units;")?;
     }
     if !column_exists(c, "imported_versions", "fetched_order")? {
@@ -114,7 +124,7 @@ pub(crate) fn register(c: &Connection, locator: &str) -> Result<()> {
         "file"
     };
     c.execute(
-        "INSERT OR IGNORE INTO imported_sources VALUES(?1,?2,?3)",
+        "INSERT OR IGNORE INTO imported_sources(id,locator,kind) VALUES(?1,?2,?3)",
         params![identity(locator), locator, kind],
     )?;
     Ok(())

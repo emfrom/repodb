@@ -135,17 +135,71 @@ fn git_output(repo: &str, args: &[&str], limit: usize, used: &mut Budget) -> Res
     Ok(stdout)
 }
 
+fn stage_legacy_git_units(
+    c: &Connection,
+    source_id: &str,
+    repository: &str,
+    retain_all: bool,
+    retained_commit: Option<&str>,
+    memory: &mut Budget,
+) -> Result<()> {
+    let legacy = {
+        let mut stmt = c.prepare("SELECT commit_id,path,line,line_end,text,vector FROM imported_git_units WHERE source_id=?1 AND (?2 OR (?3 IS NOT NULL AND commit_id=?3))")?;
+        stmt.query_map(params![source_id, retain_all, retained_commit], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, usize>(2)?,
+                row.get::<_, usize>(3)?,
+                row.get::<_, String>(4)?,
+                row.get::<_, Option<Vec<u8>>>(5)?,
+            ))
+        })?
+        .collect::<std::result::Result<Vec<_>, _>>()?
+    };
+    for (commit, path, line, line_end, legacy_text, vector) in legacy {
+        let spec = format!("{commit}:{path}");
+        let text = String::from_utf8(git_output(
+            repository,
+            &["show", &spec],
+            memory.remaining().saturating_sub(MAX_COMMAND_STDERR_BYTES),
+            memory,
+        )?)?;
+        memory.charge(text.len(), "legacy Git blob text")?;
+        let blob_id =
+            String::from_utf8(git_output(repository, &["rev-parse", &spec], 128, memory)?)?
+                .trim()
+                .to_owned();
+        let kind = segmentation::kind(path.as_bytes());
+        let mut found = None;
+        segmentation::visit(kind, &text, |unit| {
+            if unit.text == legacy_text && unit.line_start == line && unit.line_end == line_end {
+                found = Some((unit.byte_start, unit.byte_end));
+                false
+            } else {
+                true
+            }
+        })?;
+        let (start, end) =
+            found.ok_or_else(|| format!("legacy imported Git unit not found in {spec}"))?;
+        c.execute("INSERT OR REPLACE INTO temp.import_stage_git_units(source_id,commit_id,path,blob_id,segmentation_kind,byte_start,byte_end,line,line_end,vector) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)", params![source_id, commit, path, blob_id, kind, start, end, line, line_end, vector])?;
+        memory.release(text.len());
+    }
+    Ok(())
+}
+
 pub fn refresh(c: &Connection) -> Result<()> {
+    init(c)?;
     c.execute_batch("PRAGMA temp_store=FILE;
         DROP TABLE IF EXISTS temp.import_stage_sources; DROP TABLE IF EXISTS temp.import_stage_versions;
         DROP TABLE IF EXISTS temp.import_stage_units; DROP TABLE IF EXISTS temp.import_stage_git_units;
-        CREATE TEMP TABLE import_stage_sources(id TEXT PRIMARY KEY,locator TEXT NOT NULL,kind TEXT NOT NULL);
+        CREATE TEMP TABLE import_stage_sources(id TEXT PRIMARY KEY,locator TEXT NOT NULL,kind TEXT NOT NULL,object_store TEXT);
         CREATE TEMP TABLE import_stage_versions(source_id TEXT NOT NULL,version TEXT NOT NULL,content TEXT NOT NULL,fetched_order INTEGER NOT NULL,PRIMARY KEY(source_id,version));
         CREATE TEMP TABLE import_stage_units(source_id TEXT NOT NULL,version TEXT NOT NULL,line INTEGER NOT NULL,line_end INTEGER NOT NULL,text TEXT NOT NULL,vector BLOB,page INTEGER,PRIMARY KEY(source_id,version,line,text));
-        CREATE TEMP TABLE import_stage_git_units(source_id TEXT NOT NULL,commit_id TEXT NOT NULL,path TEXT NOT NULL,line INTEGER NOT NULL,line_end INTEGER NOT NULL,text TEXT NOT NULL,vector BLOB,PRIMARY KEY(source_id,commit_id,path,line,text));")?;
+        CREATE TEMP TABLE import_stage_git_units(source_id TEXT NOT NULL,commit_id TEXT NOT NULL,path TEXT NOT NULL,blob_id TEXT NOT NULL,segmentation_kind TEXT NOT NULL,byte_start INTEGER NOT NULL,byte_end INTEGER NOT NULL,line INTEGER NOT NULL,line_end INTEGER NOT NULL,vector BLOB,PRIMARY KEY(source_id,commit_id,path,byte_start));")?;
     if table_exists(c, "imported_sources")? {
         c.execute(
-            "INSERT INTO temp.import_stage_sources SELECT id,locator,kind FROM imported_sources",
+            "INSERT INTO temp.import_stage_sources SELECT id,locator,kind,object_store FROM imported_sources",
             [],
         )?;
     }
@@ -170,13 +224,10 @@ pub fn refresh(c: &Connection) -> Result<()> {
         };
         c.execute(&format!("INSERT INTO temp.import_stage_units SELECT source_id,version,line,{line_end},text,vector,{page} FROM imported_units"), [])?;
     }
-    if table_exists(c, "imported_git_units")? {
-        let line_end = if column_exists(c, "imported_git_units", "line_end")? {
-            "line_end"
-        } else {
-            "line"
-        };
-        c.execute(&format!("INSERT INTO temp.import_stage_git_units SELECT source_id,commit_id,path,line,{line_end},text,vector FROM imported_git_units"), [])?;
+    let legacy_git_units = table_exists(c, "imported_git_units")?
+        && !column_exists(c, "imported_git_units", "blob_id")?;
+    if table_exists(c, "imported_git_units")? && !legacy_git_units {
+        c.execute("INSERT INTO temp.import_stage_git_units SELECT source_id,commit_id,path,blob_id,segmentation_kind,byte_start,byte_end,line,line_end,vector FROM imported_git_units", [])?;
     }
     let source_rows = {
         let mut st =
@@ -251,6 +302,10 @@ pub fn refresh(c: &Connection) -> Result<()> {
                 }
                 mirror.to_string_lossy().into_owned()
             };
+            c.execute(
+                "UPDATE temp.import_stage_sources SET object_store=?1 WHERE id=?2",
+                params![repository, id],
+            )?;
             let commits_bytes = git_output(
                 &repository,
                 &["rev-list", "--all", "--date-order"],
@@ -273,7 +328,21 @@ pub fn refresh(c: &Connection) -> Result<()> {
                 commits.reverse();
                 commits
             };
+            if retention == "latest" && selected.is_empty() {
+                c.execute(
+                    "DELETE FROM temp.import_stage_versions WHERE source_id=?1",
+                    [&id],
+                )?;
+                c.execute(
+                    "DELETE FROM temp.import_stage_git_units WHERE source_id=?1",
+                    [&id],
+                )?;
+            }
+            let mut retained_commit = None;
             for commit in selected {
+                if retention == "latest" {
+                    retained_commit = Some(commit.as_str().to_owned());
+                }
                 let paths = git_output(
                     &repository,
                     &["ls-tree", "-r", "--name-only", "-z", &commit],
@@ -283,7 +352,9 @@ pub fn refresh(c: &Connection) -> Result<()> {
                     &mut refresh_memory_bytes,
                 )?;
                 for path in paths.split(|b| *b == 0).filter(|p| !p.is_empty()) {
-                    let path = String::from_utf8(path.to_vec())?;
+                    let Ok(path) = String::from_utf8(path.to_vec()) else {
+                        continue;
+                    };
                     let spec = format!("{commit}:{path}");
                     let bytes = git_output(
                         &repository,
@@ -297,9 +368,18 @@ pub fn refresh(c: &Connection) -> Result<()> {
                         continue;
                     };
                     refresh_memory_bytes.charge(text.len(), "Git blob text")?;
+                    let blob_id = String::from_utf8(git_output(
+                        &repository,
+                        &["rev-parse", &spec],
+                        128,
+                        &mut refresh_memory_bytes,
+                    )?)?
+                    .trim()
+                    .to_owned();
+                    let segmentation_kind = segmentation::kind(path.as_bytes());
                     let mut unit_error = None;
                     let segmentation_result = segmentation::visit(
-                        segmentation::kind(path.as_bytes()),
+                        segmentation_kind,
                         &text,
                         |unit| {
                             let result = (|| -> Result<()> {
@@ -322,15 +402,12 @@ pub fn refresh(c: &Connection) -> Result<()> {
                                     }
                                     dimension = Some(vector.len());
                                 }
-                                refresh_memory_bytes
-                                    .charge(unit.text.len(), "Git indexed unit text")?;
                                 refresh_memory_bytes.charge(path.len(), "Git unit path")?;
                                 let vector_bytes = vector.as_ref().map_or(0, |v| v.len() * 4);
                                 refresh_memory_bytes
                                     .charge(vector_bytes, "Git stored vector bytes")?;
-                                c.execute("INSERT OR REPLACE INTO temp.import_stage_git_units(source_id,commit_id,path,line,line_end,text,vector) VALUES(?1,?2,?3,?4,?5,?6,?7)", params![id, commit, path, unit.line_start, unit.line_end, unit.text, vector.map(|v| as_bytes(&v))])?;
-                                refresh_memory_bytes
-                                    .release(unit.text.len() + path.len() + vector_bytes);
+                                c.execute("INSERT OR REPLACE INTO temp.import_stage_git_units(source_id,commit_id,path,blob_id,segmentation_kind,byte_start,byte_end,line,line_end,vector) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)", params![id, commit, path, blob_id, segmentation_kind, unit.byte_start, unit.byte_end, unit.line_start, unit.line_end, vector.map(|v| as_bytes(&v))])?;
+                                refresh_memory_bytes.release(path.len() + vector_bytes);
                                 Ok(())
                             })();
                             if let Err(error) = result {
@@ -352,6 +429,16 @@ pub fn refresh(c: &Connection) -> Result<()> {
                     |r| r.get(0),
                 )?;
                 c.execute("INSERT INTO temp.import_stage_versions(source_id,version,content,fetched_order) VALUES(?1,?2,'',?3) ON CONFLICT(source_id,version) DO UPDATE SET content=excluded.content,fetched_order=excluded.fetched_order", params![id, commit, fetched_order])?;
+            }
+            if legacy_git_units {
+                stage_legacy_git_units(
+                    c,
+                    &id,
+                    &repository,
+                    retention == "all",
+                    retained_commit.as_deref(),
+                    &mut refresh_memory_bytes,
+                )?;
             }
             if retention == "latest" {
                 c.execute("DELETE FROM temp.import_stage_versions WHERE source_id=?1 AND version NOT IN (SELECT version FROM temp.import_stage_versions WHERE source_id=?1 ORDER BY fetched_order DESC LIMIT 1)", [&id])?;
@@ -596,6 +683,9 @@ pub fn validate_dimensions(c: &Connection) -> Result<()> {
 
 pub fn publish(tx: &rusqlite::Transaction<'_>) -> Result<()> {
     init(tx)?;
+    if !column_exists(tx, "imported_git_units", "blob_id")? {
+        tx.execute_batch("DROP TABLE imported_git_units; CREATE TABLE imported_git_units(source_id TEXT NOT NULL,commit_id TEXT NOT NULL,path TEXT NOT NULL,blob_id TEXT NOT NULL,segmentation_kind TEXT NOT NULL,byte_start INTEGER NOT NULL,byte_end INTEGER NOT NULL,line INTEGER NOT NULL,line_end INTEGER NOT NULL,vector BLOB,PRIMARY KEY(source_id,commit_id,path,byte_start));")?;
+    }
     if let Some(dimension) = tx
         .query_row(
             "SELECT value FROM temp.import_refresh_dimension LIMIT 1",
@@ -609,6 +699,7 @@ pub fn publish(tx: &rusqlite::Transaction<'_>) -> Result<()> {
             [dimension.to_string()],
         )?;
     }
+    tx.execute("UPDATE imported_sources SET object_store=(SELECT object_store FROM temp.import_stage_sources s WHERE s.id=imported_sources.id)", [])?;
     for (table, stage) in [
         ("imported_versions", "import_stage_versions"),
         ("imported_units", "import_stage_units"),
@@ -618,7 +709,9 @@ pub fn publish(tx: &rusqlite::Transaction<'_>) -> Result<()> {
         let columns = match table {
             "imported_versions" => "source_id,version,content,fetched_order",
             "imported_units" => "source_id,version,line,line_end,text,vector,page",
-            "imported_git_units" => "source_id,commit_id,path,line,line_end,text,vector",
+            "imported_git_units" => {
+                "source_id,commit_id,path,blob_id,segmentation_kind,byte_start,byte_end,line,line_end,vector"
+            }
             _ => unreachable!(),
         };
         tx.execute(
@@ -631,20 +724,41 @@ pub fn publish(tx: &rusqlite::Transaction<'_>) -> Result<()> {
 
 pub fn reembed(c: &Connection, command: &str, model: &str) -> Result<Option<usize>> {
     init(c)?;
-    c.execute_batch("PRAGMA temp_store=FILE; DROP TABLE IF EXISTS temp.import_reembed_vectors; CREATE TEMP TABLE import_reembed_vectors(kind TEXT NOT NULL, source_id TEXT NOT NULL, version TEXT NOT NULL, line INTEGER NOT NULL, text TEXT NOT NULL, path TEXT, vector BLOB NOT NULL);")?;
+    c.execute_batch("PRAGMA temp_store=FILE; DROP TABLE IF EXISTS temp.import_reembed_vectors; CREATE TEMP TABLE import_reembed_vectors(kind TEXT NOT NULL, source_id TEXT NOT NULL, version TEXT NOT NULL, line INTEGER NOT NULL, text TEXT NOT NULL, path TEXT, byte_start INTEGER, vector BLOB NOT NULL);")?;
     let mut dimension = None;
     {
-        let mut stmt = c.prepare("SELECT source_id,version,line,text,'file',NULL FROM imported_units UNION ALL SELECT source_id,commit_id,line,text,'git',path FROM imported_git_units ORDER BY 1,2,3")?;
+        let current = column_exists(c, "imported_git_units", "blob_id")?;
+        let sql = if current {
+            "SELECT source_id,version,line,text,'file',NULL,NULL,NULL,NULL FROM imported_units UNION ALL SELECT u.source_id,u.commit_id,u.line,NULL,'git',u.path,u.blob_id,u.byte_start,u.byte_end FROM imported_git_units u ORDER BY 1,2,3"
+        } else {
+            "SELECT source_id,version,line,text,'file',NULL,NULL,NULL,NULL FROM imported_units UNION ALL SELECT source_id,commit_id,line,text,'git',path,NULL,NULL,NULL FROM imported_git_units ORDER BY 1,2,3"
+        };
+        let mut stmt = c.prepare(sql)?;
         let mut rows = stmt.query([])?;
         let mut staged =
-            c.prepare("INSERT INTO temp.import_reembed_vectors VALUES(?1,?2,?3,?4,?5,?6,?7)")?;
+            c.prepare("INSERT INTO temp.import_reembed_vectors VALUES(?1,?2,?3,?4,?5,?6,?7,?8)")?;
         while let Some(row) = rows.next()? {
             let source: String = row.get(0)?;
             let version: String = row.get(1)?;
             let line: usize = row.get(2)?;
-            let text: String = row.get(3)?;
             let kind: String = row.get(4)?;
             let path: Option<String> = row.get(5)?;
+            let blob_id: Option<String> = row.get(6)?;
+            let byte_start: Option<usize> = row.get(7)?;
+            let text: String = if let (Some(blob), Some(start), Some(end)) = (
+                blob_id.as_deref(),
+                byte_start,
+                row.get::<_, Option<usize>>(8)?,
+            ) {
+                let locator: String = c.query_row(
+                    "SELECT COALESCE(object_store,locator) FROM imported_sources WHERE id=?1",
+                    [&source],
+                    |r| r.get(0),
+                )?;
+                hydrate_git_unit(&locator, blob, start, end)?
+            } else {
+                row.get::<_, String>(3)?
+            };
             let vector = embed(command, model, &text)?;
             if dimension.is_some_and(|d| d != vector.len()) {
                 return Err("embedding dimension mismatch".into());
@@ -657,14 +771,43 @@ pub fn reembed(c: &Connection, command: &str, model: &str) -> Result<Option<usiz
                 line,
                 text,
                 path,
+                byte_start,
                 as_bytes(&vector)
             ])?;
         }
     }
     c.execute("UPDATE imported_units SET vector=(SELECT vector FROM temp.import_reembed_vectors v WHERE v.kind='file' AND v.source_id=imported_units.source_id AND v.version=imported_units.version AND v.line=imported_units.line AND v.text=imported_units.text)", [])?;
-    c.execute("UPDATE imported_git_units SET vector=(SELECT vector FROM temp.import_reembed_vectors v WHERE v.kind='git' AND v.source_id=imported_git_units.source_id AND v.version=imported_git_units.commit_id AND v.line=imported_git_units.line AND v.path=imported_git_units.path AND v.text=imported_git_units.text)", [])?;
+    if column_exists(c, "imported_git_units", "blob_id")? {
+        c.execute("UPDATE imported_git_units SET vector=(SELECT vector FROM temp.import_reembed_vectors v WHERE v.kind='git' AND v.source_id=imported_git_units.source_id AND v.version=imported_git_units.commit_id AND v.line=imported_git_units.line AND v.path=imported_git_units.path AND v.byte_start=imported_git_units.byte_start)", [])?;
+    } else {
+        c.execute("UPDATE imported_git_units SET vector=(SELECT vector FROM temp.import_reembed_vectors v WHERE v.kind='git' AND v.source_id=imported_git_units.source_id AND v.version=imported_git_units.commit_id AND v.line=imported_git_units.line AND v.path=imported_git_units.path AND v.text=imported_git_units.text)", [])?;
+    }
     c.execute_batch("DROP TABLE temp.import_reembed_vectors")?;
     Ok(dimension)
+}
+
+fn hydrate_git_unit(locator: &str, blob_id: &str, start: usize, end: usize) -> Result<String> {
+    if start > end {
+        return Err(format!("invalid imported Git byte range {start}..{end}").into());
+    }
+    let output = Command::new("git")
+        .args(["-C", locator, "cat-file", "blob", blob_id])
+        .output()?;
+    if !output.status.success() {
+        return Err(format!(
+            "cannot hydrate imported Git blob {blob_id} from {locator}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        )
+        .into());
+    }
+    let blob = std::str::from_utf8(&output.stdout)
+        .map_err(|_| format!("imported Git blob {blob_id} is no longer valid UTF-8"))?;
+    Ok(blob
+        .get(start..end)
+        .ok_or_else(|| {
+            format!("invalid imported Git byte range {start}..{end} for blob {blob_id}")
+        })?
+        .to_owned())
 }
 
 pub fn search(c: &Connection, query: &str, mode: &str, limit: usize) -> Result<Vec<SearchResult>> {
@@ -722,6 +865,7 @@ pub fn search(c: &Connection, query: &str, mode: &str, limit: usize) -> Result<V
                         page,
                         repo_id: None,
                     },
+                    None,
                 ));
             }
         } else if text.to_lowercase().contains(&query.to_lowercase()) {
@@ -738,23 +882,67 @@ pub fn search(c: &Connection, query: &str, mode: &str, limit: usize) -> Result<V
                     page,
                     repo_id: None,
                 },
+                None,
             ));
         }
     }
-    let mut git_rows = c.prepare("SELECT s.locator,u.path,u.line,u.line_end,u.text,u.commit_id,u.vector FROM imported_git_units u JOIN imported_sources s ON s.id=u.source_id")?;
+    let git_current = column_exists(c, "imported_git_units", "blob_id")?;
+    let sql = if git_current {
+        "SELECT s.locator,COALESCE(s.object_store,s.locator),u.path,u.line,u.line_end,u.blob_id,u.byte_start,u.byte_end,u.commit_id,u.vector,NULL FROM imported_git_units u JOIN imported_sources s ON s.id=u.source_id"
+    } else {
+        "SELECT s.locator,COALESCE(s.object_store,s.locator),u.path,u.line,u.line_end,NULL,NULL,NULL,u.commit_id,u.vector,u.text FROM imported_git_units u JOIN imported_sources s ON s.id=u.source_id"
+    };
+    let mut git_rows = c.prepare(sql)?;
     let rows = git_rows.query_map([], |r| {
         Ok((
             r.get::<_, String>(0)?,
             r.get::<_, String>(1)?,
-            r.get::<_, usize>(2)?,
+            r.get::<_, String>(2)?,
             r.get::<_, usize>(3)?,
-            r.get::<_, String>(4)?,
-            r.get::<_, String>(5)?,
-            r.get::<_, Option<Vec<u8>>>(6)?,
+            r.get::<_, usize>(4)?,
+            r.get::<_, Option<String>>(5)?,
+            r.get::<_, Option<usize>>(6)?,
+            r.get::<_, Option<usize>>(7)?,
+            r.get::<_, String>(8)?,
+            r.get::<_, Option<Vec<u8>>>(9)?,
+            r.get::<_, Option<String>>(10)?,
         ))
     })?;
     for row in rows {
-        let (repo_id, path, line, line_end, text, commit, stored) = row?;
+        let (
+            repo_id,
+            object_store,
+            path,
+            line,
+            line_end,
+            blob_id,
+            byte_start,
+            byte_end,
+            commit,
+            stored,
+            legacy_text,
+        ) = row?;
+        let deferred = semantic && mode != "combined" && blob_id.is_some();
+        let deferred_payload = if deferred {
+            let (Some(blob), Some(start), Some(end)) = (blob_id.clone(), byte_start, byte_end)
+            else {
+                return Err("invalid imported Git byte range".into());
+            };
+            Some((object_store.clone(), blob, start, end))
+        } else {
+            None
+        };
+        let text = if deferred {
+            String::new()
+        } else {
+            match (blob_id.as_deref(), byte_start, byte_end) {
+                (Some(blob), Some(start), Some(end)) => {
+                    hydrate_git_unit(&object_store, blob, start, end)?
+                }
+                (None, None, None) => legacy_text.ok_or("missing legacy imported Git text")?,
+                _ => return Err("invalid imported Git byte range".into()),
+            }
+        };
         if semantic {
             if let (Some(stored), Some(query_vector)) = (stored.as_deref(), vector.as_deref()) {
                 let distance: f64 = c.query_row(
@@ -775,6 +963,7 @@ pub fn search(c: &Connection, query: &str, mode: &str, limit: usize) -> Result<V
                         page: None,
                         repo_id: Some(repo_id),
                     },
+                    deferred_payload,
                 ));
             }
         } else if text.to_lowercase().contains(&query.to_lowercase()) {
@@ -791,6 +980,7 @@ pub fn search(c: &Connection, query: &str, mode: &str, limit: usize) -> Result<V
                     page: None,
                     repo_id: Some(repo_id),
                 },
+                None,
             ));
         }
     }
@@ -798,7 +988,7 @@ pub fn search(c: &Connection, query: &str, mode: &str, limit: usize) -> Result<V
         out.sort_by(|a, b| a.0.total_cmp(&b.0));
         if mode == "combined" {
             let mut rank = 0;
-            out.retain(|(_, result)| {
+            out.retain(|(_, result, _)| {
                 let keep =
                     rank < limit || result.text.to_lowercase().contains(&query.to_lowercase());
                 rank += 1;
@@ -808,7 +998,14 @@ pub fn search(c: &Connection, query: &str, mode: &str, limit: usize) -> Result<V
             out.truncate(limit);
         }
     }
-    Ok(out.into_iter().map(|x| x.1).collect())
+    out.into_iter()
+        .map(|(_, mut result, deferred)| {
+            if let Some((store, blob, start, end)) = deferred {
+                result.text = hydrate_git_unit(&store, &blob, start, end)?;
+            }
+            Ok(result)
+        })
+        .collect()
 }
 
 #[cfg(test)]

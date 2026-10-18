@@ -96,6 +96,69 @@ fn repository() -> tempfile::TempDir {
 }
 
 #[test]
+fn history_search_skips_non_utf8_paths_and_returns_valid_paths() {
+    use std::os::unix::ffi::OsStrExt;
+
+    let repo = repository();
+    let root = repo.path();
+    let invalid_path = std::ffi::OsStr::from_bytes(b"invalid-\xff.txt");
+    fs::write(root.join(invalid_path), "nonutf marker\n").unwrap();
+    fs::write(root.join("valid.txt"), "valid history marker\n").unwrap();
+    git(root, &["add", "."]);
+    git(root, &["commit", "-qm", "non-UTF-8 path"]);
+    assert!(run(root, &["init"]).0);
+
+    let results = search_json(root, &["valid history marker"]);
+    assert_eq!(results.len(), 1);
+    assert_eq!(results[0]["path"], "valid.txt");
+}
+
+#[test]
+fn git_snapshot_stores_ranges_not_verbatim_text_and_hydrates_search_results() {
+    let repo = repository();
+    let root = repo.path();
+    assert!(run(root, &["init"]).0);
+
+    let database = rusqlite::Connection::open(root.join(".git/repodb.sqlite")).unwrap();
+    let indexed_columns = database
+        .prepare("PRAGMA table_info(indexed_units)")
+        .unwrap()
+        .query_map([], |row| row.get::<_, String>(1))
+        .unwrap()
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap();
+    assert!(!indexed_columns.iter().any(|column| column == "text"));
+    assert!(indexed_columns.iter().any(|column| column == "byte_start"));
+    assert!(indexed_columns.iter().any(|column| column == "byte_end"));
+    let blob_columns = database
+        .prepare("PRAGMA table_info(blob_contents)")
+        .unwrap()
+        .query_map([], |row| row.get::<_, String>(1))
+        .unwrap()
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap();
+    assert!(!blob_columns.iter().any(|column| column == "content"));
+    drop(database);
+
+    let results = search_json(root, &["Exact [literal] TARGET"]);
+    assert_eq!(
+        results[0]["text"],
+        "First line\nExact [literal] TARGET\nlast line"
+    );
+
+    let blob_id = results[0]["blob_id"].as_str().unwrap();
+    let object = root
+        .join(".git/objects")
+        .join(&blob_id[..2])
+        .join(&blob_id[2..]);
+    fs::remove_file(object).unwrap();
+    assert!(
+        !run(root, &["search", "Exact [literal] TARGET"]).0,
+        "missing indexed Git objects must fail instead of silently omitting results"
+    );
+}
+
+#[test]
 fn default_embedding_command_is_used_on_first_scan_and_saved_for_search() {
     let repo = repository();
     let root = repo.path();
@@ -436,6 +499,23 @@ fn semgrep_core_is_required_and_uses_real_ast() {
         ),
         source
     );
+    let database = rusqlite::Connection::open(root.join(".git/repodb.sqlite")).unwrap();
+    let ranges = database
+        .prepare("SELECT u.byte_start,u.byte_end FROM indexed_units u JOIN git_blob_units bu USING(unit_id) JOIN git_occurrences o USING(blob_id) WHERE CAST(o.path AS TEXT)='src/main.go' ORDER BY u.byte_start")
+        .unwrap()
+        .query_map([], |row| Ok((row.get::<_, usize>(0)?, row.get::<_, usize>(1)?)))
+        .unwrap()
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap();
+    assert_eq!(ranges.len(), 3);
+    let mut stored_text = Vec::new();
+    for (start, end) in ranges {
+        stored_text.push(&source[start..end]);
+    }
+    assert_eq!(stored_text.concat(), source);
+    for result in [&gap[0], &syntax[0], &trailing[0]] {
+        assert!(stored_text.contains(&result["text"].as_str().unwrap()));
+    }
 
     // Missing core is fatal for source refresh and must preserve the prior snapshot.
     let unavailable_path = root.join("src/unavailable.go");
@@ -811,6 +891,521 @@ fn oversized_import_embedding_output_does_not_replace_imported_snapshot() {
 }
 
 #[test]
+fn imported_git_retention_all_preserves_unreachable_commit_after_refresh() {
+    let repo = repository();
+    let root = repo.path();
+    let external = tempfile::tempdir().unwrap();
+    git(external.path(), &["init", "-q"]);
+    git(
+        external.path(),
+        &["config", "user.email", "test@example.com"],
+    );
+    git(external.path(), &["config", "user.name", "Test"]);
+    fs::create_dir(external.path().join("history")).unwrap();
+    fs::write(
+        external.path().join("history/old.md"),
+        "unreachable imported marker\n",
+    )
+    .unwrap();
+    git(external.path(), &["add", "."]);
+    git(external.path(), &["commit", "-qm", "old source commit"]);
+    let old_commit = git_text(external.path(), &["rev-parse", "HEAD"]);
+    let old_branch = git_text(external.path(), &["branch", "--show-current"]);
+    let locator = external.path().to_string_lossy().into_owned();
+
+    assert!(run(root, &["import", &locator]).0);
+    assert!(run(root, &["retention", "all"]).0);
+    assert!(run(root, &["refresh"]).0);
+    let before = search_json(root, &["unreachable imported marker"]);
+    assert_eq!(before.len(), 1, "{before:?}");
+    assert_eq!(before[0]["commit_id"], old_commit);
+    assert_eq!(before[0]["path"], "history/old.md");
+    assert_eq!(before[0]["text"], "unreachable imported marker");
+
+    let database = rusqlite::Connection::open(root.join(".git/repodb.sqlite")).unwrap();
+    let old_vector: Option<Vec<u8>> = database
+        .query_row(
+            "SELECT vector FROM imported_git_units WHERE commit_id=?1",
+            [&old_commit],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert!(
+        old_vector.is_some(),
+        "fixture must contain a populated vector"
+    );
+    database.execute_batch(&format!(
+        "CREATE TABLE imported_git_units_legacy(source_id TEXT NOT NULL,commit_id TEXT NOT NULL,path TEXT NOT NULL,line INTEGER NOT NULL,line_end INTEGER NOT NULL,text TEXT NOT NULL,vector BLOB,PRIMARY KEY(source_id,commit_id,path,line,text));
+         INSERT INTO imported_git_units_legacy SELECT source_id,commit_id,path,line,line_end,'unreachable imported marker',vector FROM imported_git_units WHERE commit_id='{old_commit}';
+         DROP TABLE imported_git_units;
+         ALTER TABLE imported_git_units_legacy RENAME TO imported_git_units;"
+    )).unwrap();
+
+    git(external.path(), &["checkout", "--orphan", "replacement"]);
+    git(external.path(), &["rm", "-rf", "."]);
+    fs::write(
+        external.path().join("new.md"),
+        "replacement imported marker\n",
+    )
+    .unwrap();
+    git(external.path(), &["add", "."]);
+    git(
+        external.path(),
+        &["commit", "-qm", "replacement source commit"],
+    );
+    git(external.path(), &["branch", "-D", &old_branch]);
+    assert!(
+        !git_text(external.path(), &["rev-list", "--all"])
+            .lines()
+            .any(|commit| commit == old_commit),
+        "the old source commit must be unreachable from every branch/ref"
+    );
+
+    let old_blob = git_text(
+        external.path(),
+        &["rev-parse", &format!("{old_commit}:history/old.md")],
+    );
+    let old_object = external
+        .path()
+        .join(".git/objects")
+        .join(&old_blob[..2])
+        .join(&old_blob[2..]);
+    assert!(
+        old_object.exists(),
+        "expected the old blob to be a loose object"
+    );
+    let withheld_object = old_object.with_extension("withheld");
+    fs::rename(&old_object, &withheld_object).unwrap();
+    let (success, _) = run(root, &["refresh"]);
+    assert!(
+        !success,
+        "refresh must fail when a retained commit's blob is missing"
+    );
+    let failed_refresh_results = search_json(root, &["unreachable imported marker"]);
+    assert_eq!(
+        failed_refresh_results.len(),
+        1,
+        "{failed_refresh_results:?}"
+    );
+    assert_eq!(failed_refresh_results[0]["commit_id"], old_commit);
+    assert_eq!(failed_refresh_results[0]["path"], "history/old.md");
+    assert_eq!(
+        failed_refresh_results[0]["text"],
+        "unreachable imported marker"
+    );
+    let legacy_columns = database
+        .prepare("PRAGMA table_info(imported_git_units)")
+        .unwrap()
+        .query_map([], |row| row.get::<_, String>(1))
+        .unwrap()
+        .collect::<std::result::Result<Vec<_>, _>>()
+        .unwrap();
+    assert!(
+        legacy_columns.iter().any(|column| column == "text"),
+        "{legacy_columns:?}"
+    );
+    let still_legacy_vector: Option<Vec<u8>> = database
+        .query_row(
+            "SELECT vector FROM imported_git_units WHERE commit_id=?1",
+            [&old_commit],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(still_legacy_vector, old_vector);
+
+    fs::rename(&withheld_object, &old_object).unwrap();
+    assert!(run(root, &["refresh"]).0);
+    let after = search_json(root, &["unreachable imported marker"]);
+    assert_eq!(after.len(), 1, "{after:?}");
+    assert_eq!(after[0]["commit_id"], old_commit);
+    assert_eq!(after[0]["path"], "history/old.md");
+    assert_eq!(after[0]["text"], "unreachable imported marker");
+    let migrated_vector: Option<Vec<u8>> = database
+        .query_row(
+            "SELECT vector FROM imported_git_units WHERE commit_id=?1",
+            [&old_commit],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(migrated_vector, old_vector);
+    assert!(
+        migrated_vector.is_some(),
+        "migrated vector must remain populated"
+    );
+    assert!(!search_json(root, &["replacement imported marker"]).is_empty());
+    let columns = database
+        .prepare("PRAGMA table_info(imported_git_units)")
+        .unwrap()
+        .query_map([], |row| row.get::<_, String>(1))
+        .unwrap()
+        .collect::<std::result::Result<Vec<_>, _>>()
+        .unwrap();
+    assert!(
+        !columns.iter().any(|column| column == "text"),
+        "{columns:?}"
+    );
+    for column in ["blob_id", "byte_start", "byte_end", "line_end"] {
+        assert!(
+            columns.iter().any(|existing| existing == column),
+            "{columns:?}"
+        );
+    }
+}
+
+#[test]
+fn populated_legacy_imported_git_migrates_under_latest_retention_and_preserves_vector() {
+    let repo = repository();
+    let root = repo.path();
+    let external = tempfile::tempdir().unwrap();
+    git(external.path(), &["init", "-q"]);
+    git(
+        external.path(),
+        &["config", "user.email", "test@example.com"],
+    );
+    git(external.path(), &["config", "user.name", "Test"]);
+    fs::write(
+        external.path().join("latest.md"),
+        "latest legacy imported marker\n",
+    )
+    .unwrap();
+    git(external.path(), &["add", "."]);
+    git(external.path(), &["commit", "-qm", "latest source commit"]);
+
+    let locator = external.path().to_string_lossy().into_owned();
+    assert!(run(root, &["import", &locator]).0);
+    assert!(run(root, &["refresh"]).0);
+    assert!(run(root, &["retention", "latest"]).0);
+    let database = rusqlite::Connection::open(root.join(".git/repodb.sqlite")).unwrap();
+    let vector = vec![0, 0, 0, 64, 0, 0, 64, 64];
+    database.execute_batch(
+        "CREATE TABLE imported_git_units_legacy(source_id TEXT NOT NULL,commit_id TEXT NOT NULL,path TEXT NOT NULL,line INTEGER NOT NULL,line_end INTEGER NOT NULL,text TEXT NOT NULL,vector BLOB,PRIMARY KEY(source_id,commit_id,path,line,text));",
+    ).unwrap();
+    let (source_id, commit): (String, String) = database
+        .query_row(
+            "SELECT source_id,commit_id FROM imported_git_units LIMIT 1",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    database.execute(
+        "INSERT INTO imported_git_units_legacy VALUES(?1,?2,'latest.md',1,1,'latest legacy imported marker',?3)",
+        rusqlite::params![source_id, commit, vector],
+    ).unwrap();
+    database.execute_batch(
+        "DROP TABLE imported_git_units; ALTER TABLE imported_git_units_legacy RENAME TO imported_git_units;",
+    ).unwrap();
+
+    assert!(run(root, &["refresh"]).0);
+    let results = search_json(root, &["latest legacy imported marker"]);
+    assert_eq!(results.len(), 1, "{results:?}");
+    assert_eq!(results[0]["commit_id"], commit);
+    assert_eq!(results[0]["path"], "latest.md");
+    assert_eq!(results[0]["text"], "latest legacy imported marker");
+    let migrated_vector: Option<Vec<u8>> = database
+        .query_row(
+            "SELECT vector FROM imported_git_units WHERE commit_id=?1",
+            [&commit],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(migrated_vector, Some(vector));
+    let columns = database
+        .prepare("PRAGMA table_info(imported_git_units)")
+        .unwrap()
+        .query_map([], |row| row.get::<_, String>(1))
+        .unwrap()
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap();
+    assert!(!columns.iter().any(|column| column == "text"));
+}
+
+#[test]
+fn latest_retention_skips_unreachable_legacy_git_rows_with_missing_blobs() {
+    let repo = repository();
+    let root = repo.path();
+    let external = tempfile::tempdir().unwrap();
+    git(external.path(), &["init", "-q"]);
+    git(
+        external.path(),
+        &["config", "user.email", "test@example.com"],
+    );
+    git(external.path(), &["config", "user.name", "Test"]);
+    fs::write(external.path().join("marker.md"), "old legacy marker\n").unwrap();
+    git(external.path(), &["add", "."]);
+    git(external.path(), &["commit", "-qm", "old"]);
+    let old_commit = git_text(external.path(), &["rev-parse", "HEAD"]);
+    let old_blob = git_text(external.path(), &["rev-parse", "HEAD:marker.md"]);
+    git(external.path(), &["checkout", "--orphan", "latest"]);
+    git(external.path(), &["rm", "-rf", "."]);
+    fs::write(external.path().join("marker.md"), "new legacy marker\n").unwrap();
+    git(external.path(), &["add", "."]);
+    git(external.path(), &["commit", "-qm", "latest"]);
+    let latest_commit = git_text(external.path(), &["rev-parse", "HEAD"]);
+    let locator = external.path().to_string_lossy().into_owned();
+    assert!(run(root, &["import", &locator]).0);
+    assert!(run(root, &["retention", "latest"]).0);
+
+    let database = rusqlite::Connection::open(root.join(".git/repodb.sqlite")).unwrap();
+    let source_id: String = database
+        .query_row("SELECT id FROM imported_sources", [], |row| row.get(0))
+        .unwrap();
+    database.execute_batch(
+        "CREATE TABLE imported_git_units_legacy(source_id TEXT NOT NULL,commit_id TEXT NOT NULL,path TEXT NOT NULL,line INTEGER NOT NULL,line_end INTEGER NOT NULL,text TEXT NOT NULL,vector BLOB,PRIMARY KEY(source_id,commit_id,path,line,text));",
+    ).unwrap();
+    database.execute(
+        "INSERT INTO imported_git_units_legacy VALUES(?1,?2,'marker.md',1,1,'old legacy marker',NULL)",
+        rusqlite::params![source_id, old_commit],
+    ).unwrap();
+    database.execute(
+        "INSERT INTO imported_git_units_legacy VALUES(?1,?2,'marker.md',1,1,'new legacy marker',NULL)",
+        rusqlite::params![source_id, latest_commit],
+    ).unwrap();
+    database.execute_batch(
+        "DROP TABLE imported_git_units; ALTER TABLE imported_git_units_legacy RENAME TO imported_git_units;",
+    ).unwrap();
+    let old_object = external
+        .path()
+        .join(".git/objects")
+        .join(&old_blob[..2])
+        .join(&old_blob[2..]);
+    fs::remove_file(old_object).unwrap();
+
+    assert!(run(root, &["refresh"]).0);
+    let results = search_json(root, &["new legacy marker"]);
+    assert_eq!(results.len(), 1, "{results:?}");
+    assert_eq!(results[0]["commit_id"], latest_commit);
+    assert!(search_json(root, &["old legacy marker"]).is_empty());
+    let count: i64 = database
+        .query_row("SELECT count(*) FROM imported_git_units", [], |row| {
+            row.get(0)
+        })
+        .unwrap();
+    assert_eq!(count, 1);
+}
+
+#[test]
+fn latest_retention_drops_legacy_rows_when_no_commits_are_selected() {
+    let repo = repository();
+    let root = repo.path();
+    let external = tempfile::tempdir().unwrap();
+    git(external.path(), &["init", "-q"]);
+    git(
+        external.path(),
+        &["config", "user.email", "test@example.com"],
+    );
+    git(external.path(), &["config", "user.name", "Test"]);
+    fs::write(external.path().join("marker.md"), "legacy marker\n").unwrap();
+    git(external.path(), &["add", "."]);
+    git(external.path(), &["commit", "-qm", "source"]);
+    let commit = git_text(external.path(), &["rev-parse", "HEAD"]);
+    let blob = git_text(external.path(), &["rev-parse", "HEAD:marker.md"]);
+    let branch = git_text(external.path(), &["branch", "--show-current"]);
+    let locator = external.path().to_string_lossy().into_owned();
+    assert!(run(root, &["import", &locator]).0);
+    assert!(run(root, &["retention", "latest"]).0);
+    assert!(run(root, &["refresh"]).0);
+    let embedder = fake_embedder(root, "printf '[1,0]'");
+    assert!(run(root, &["reembed", "--command", embedder.to_str().unwrap()]).0);
+
+    let database = rusqlite::Connection::open(root.join(".git/repodb.sqlite")).unwrap();
+    let source_id: String = database
+        .query_row("SELECT id FROM imported_sources", [], |row| row.get(0))
+        .unwrap();
+    let vector: Option<Vec<u8>> = database
+        .query_row(
+            "SELECT vector FROM imported_git_units WHERE source_id=?1 AND commit_id=?2",
+            rusqlite::params![source_id, commit],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert!(vector.is_some(), "published fixture must have a vector");
+    database.execute_batch(
+        "CREATE TABLE imported_git_units_legacy(source_id TEXT NOT NULL,commit_id TEXT NOT NULL,path TEXT NOT NULL,line INTEGER NOT NULL,line_end INTEGER NOT NULL,text TEXT NOT NULL,vector BLOB,PRIMARY KEY(source_id,commit_id,path,line,text));",
+    ).unwrap();
+    database.execute(
+        "INSERT INTO imported_git_units_legacy SELECT source_id,commit_id,path,line,line_end,'legacy marker',vector FROM imported_git_units",
+        [],
+    ).unwrap();
+    database.execute_batch(
+        "DROP TABLE imported_git_units; ALTER TABLE imported_git_units_legacy RENAME TO imported_git_units;",
+    ).unwrap();
+
+    git(
+        external.path(),
+        &["update-ref", "-d", &format!("refs/heads/{branch}")],
+    );
+    assert!(git_text(external.path(), &["rev-list", "--all"]).is_empty());
+    let old_object = external
+        .path()
+        .join(".git/objects")
+        .join(&blob[..2])
+        .join(&blob[2..]);
+    fs::remove_file(old_object).unwrap();
+
+    let (ok, output) = run(root, &["refresh"]);
+    assert!(ok, "{output}");
+    let count: i64 = database
+        .query_row(
+            "SELECT count(*) FROM imported_git_units WHERE source_id=?1",
+            [&source_id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(count, 0);
+    let versions: i64 = database
+        .query_row(
+            "SELECT count(*) FROM imported_versions WHERE source_id=?1",
+            [&source_id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(versions, 0);
+    assert!(search_json(root, &["legacy marker"]).is_empty());
+    let columns = database
+        .prepare("PRAGMA table_info(imported_git_units)")
+        .unwrap()
+        .query_map([], |row| row.get::<_, String>(1))
+        .unwrap()
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap();
+    assert!(!columns.contains(&"text".to_owned()), "{columns:?}");
+    for column in ["blob_id", "byte_start", "byte_end"] {
+        assert!(columns.contains(&column.to_owned()), "{columns:?}");
+    }
+}
+
+#[test]
+fn imported_git_semantic_search_hydrates_distinct_rust_units_on_one_line() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let repo = repository();
+    let root = repo.path();
+    let external = tempfile::tempdir().unwrap();
+    git(external.path(), &["init", "-q"]);
+    git(
+        external.path(),
+        &["config", "user.email", "test@example.com"],
+    );
+    git(external.path(), &["config", "user.name", "Test"]);
+    fs::write(
+        external.path().join("units.rs"),
+        "fn alpha() {} fn beta() {}\n",
+    )
+    .unwrap();
+    git(external.path(), &["add", "."]);
+    git(external.path(), &["commit", "-qm", "two units on one line"]);
+
+    let locator = external.path().to_string_lossy().into_owned();
+    assert!(run(root, &["import", &locator]).0);
+    assert!(run(root, &["refresh"]).0);
+    let embedder = root.join("git-unit-embedder");
+    fs::write(
+        &embedder,
+        "#!/bin/sh\ncat >/dev/null\nprintf '[1.0, 0.0]'\n",
+    )
+    .unwrap();
+    fs::set_permissions(&embedder, fs::Permissions::from_mode(0o755)).unwrap();
+    assert!(run(root, &["reembed", "--command", embedder.to_str().unwrap()]).0);
+
+    let results = search_json(root, &["unrelated phrase", "--semantic"]);
+    let units = results
+        .iter()
+        .filter(|result| result["repo_id"] == locator && result["path"] == "units.rs")
+        .map(|result| result["text"].as_str().unwrap())
+        .collect::<Vec<_>>();
+    assert!(units.len() >= 2, "{results:?}");
+    assert!(units.iter().all(|text| !text.is_empty()), "{results:?}");
+    let joined = units.join(" ");
+    assert!(
+        joined.contains("alpha") && joined.contains("beta"),
+        "{results:?}"
+    );
+}
+
+#[test]
+fn imported_git_semantic_top_n_does_not_hydrate_nonselected_blob() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let repo = repository();
+    let root = repo.path();
+    let external = tempfile::tempdir().unwrap();
+    git(external.path(), &["init", "-q"]);
+    git(
+        external.path(),
+        &["config", "user.email", "test@example.com"],
+    );
+    git(external.path(), &["config", "user.name", "Test"]);
+    fs::write(external.path().join("selected.txt"), "selected candidate\n").unwrap();
+    fs::write(
+        external.path().join("unselected.txt"),
+        "unselected candidate\n",
+    )
+    .unwrap();
+    git(external.path(), &["add", "."]);
+    git(external.path(), &["commit", "-qm", "semantic candidates"]);
+
+    let config_home = root.join("semantic-config");
+    let config_dir = config_home.join("repodb");
+    fs::create_dir_all(&config_dir).unwrap();
+    let embedder = root.join("semantic-embedder");
+    fs::write(
+        &embedder,
+        "#!/usr/bin/env python3\nimport sys\nfor text in sys.stdin.buffer.read().split(b'\\0'):\n    if b'semantic query' in text or b'selected candidate' in text:\n        print('[1.0, 0.0]')\n    else:\n        print('[0.0, 1.0]')\n",
+    )
+    .unwrap();
+    fs::set_permissions(&embedder, fs::Permissions::from_mode(0o755)).unwrap();
+    fs::write(
+        config_dir.join("config.toml"),
+        format!(
+            "[tools]\nembedding_command = {:?}\n",
+            embedder.to_string_lossy()
+        ),
+    )
+    .unwrap();
+    let invoke = |args: &[&str]| {
+        let output = Command::new(env!("CARGO_BIN_EXE_repodb"))
+            .args(args)
+            .current_dir(root)
+            .env("XDG_CONFIG_HOME", &config_home)
+            .env(
+                "REPODB_SEMGREP_CORE",
+                semgrep_corpus::required_semgrep_core(),
+            )
+            .output()
+            .unwrap();
+        (
+            output.status.success(),
+            String::from_utf8(output.stdout).unwrap() + &String::from_utf8(output.stderr).unwrap(),
+        )
+    };
+
+    let locator = external.path().to_string_lossy().into_owned();
+    assert!(invoke(&["import", &locator]).0);
+    assert!(invoke(&["refresh"]).0);
+
+    let blob_id = git_text(external.path(), &["rev-parse", "HEAD:unselected.txt"]);
+    let object = external
+        .path()
+        .join(".git/objects")
+        .join(&blob_id[..2])
+        .join(&blob_id[2..]);
+    fs::remove_file(object).unwrap();
+
+    let (success, output) = invoke(&[
+        "search",
+        "semantic query",
+        "--semantic",
+        "--semantic-limit",
+        "1",
+        "--json",
+    ]);
+    assert!(success, "{output}");
+    let results: Vec<serde_json::Value> = serde_json::from_str(&output).unwrap();
+    assert_eq!(results.len(), 1, "{results:?}");
+    assert_eq!(results[0]["path"], "selected.txt");
+}
+
+#[test]
 fn imported_git_repository_refreshes_with_identity_commit_path_and_line_refs() {
     let repo = repository();
     let root = repo.path();
@@ -828,6 +1423,18 @@ fn imported_git_repository_refreshes_with_identity_commit_path_and_line_refs() {
     let locator = external.path().to_string_lossy().into_owned();
     assert!(run(root, &["import", &locator]).0);
     assert!(run(root, &["refresh"]).0);
+    let database = rusqlite::Connection::open(root.join(".git/repodb.sqlite")).unwrap();
+    let columns = database
+        .prepare("PRAGMA table_info(imported_git_units)")
+        .unwrap()
+        .query_map([], |row| row.get::<_, String>(1))
+        .unwrap()
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap();
+    assert!(!columns.iter().any(|column| column == "text"));
+    assert!(columns.iter().any(|column| column == "blob_id"));
+    assert!(columns.iter().any(|column| column == "byte_start"));
+    drop(database);
     let results = search_json(root, &["first git marker"]);
     assert_eq!(results.len(), 1, "{results:?}");
     assert_eq!(results[0]["path"], "guide.md");
@@ -1260,6 +1867,286 @@ fn imported_url_and_semantic_search_use_loopback_and_fake_embeddings() {
 }
 
 #[test]
+fn scoped_refresh_indexes_commit_changes_and_reuses_unchanged_units() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let repo = tempfile::tempdir().unwrap();
+    let root = repo.path();
+    git(root, &["init", "-q"]);
+    git(root, &["config", "user.email", "test@example.com"]);
+    git(root, &["config", "user.name", "Test"]);
+    fs::write(root.join("changed.txt"), "old changed marker\n").unwrap();
+    fs::write(root.join("unchanged.txt"), "unchanged marker\n").unwrap();
+    fs::write(root.join("renamed-old.txt"), "rename marker\n").unwrap();
+    fs::write(root.join("deleted.txt"), "deleted marker\n").unwrap();
+    git(root, &["add", "."]);
+    git(root, &["commit", "-qm", "initial scoped snapshot"]);
+    let parent = git_text(root, &["rev-parse", "HEAD"]);
+
+    let config_home = tempfile::tempdir().unwrap();
+    let config_dir = config_home.path().join("repodb");
+    fs::create_dir_all(&config_dir).unwrap();
+    let embedder = root.join(".git/scoped-embedder");
+    fs::write(&embedder, "#!/bin/sh\ncat >/dev/null\nprintf '[1,0]'\n").unwrap();
+    fs::set_permissions(&embedder, fs::Permissions::from_mode(0o755)).unwrap();
+    fs::write(
+        config_dir.join("config.toml"),
+        format!(
+            "[tools]\nembedding_command = {:?}\n",
+            embedder.to_string_lossy()
+        ),
+    )
+    .unwrap();
+    let invoke = |args: &[&str]| {
+        let output = Command::new(env!("CARGO_BIN_EXE_repodb"))
+            .args(args)
+            .current_dir(root)
+            .env("XDG_CONFIG_HOME", config_home.path())
+            .env(
+                "REPODB_SEMGREP_CORE",
+                semgrep_corpus::required_semgrep_core(),
+            )
+            .output()
+            .unwrap();
+        (
+            output.status.success(),
+            String::from_utf8(output.stdout).unwrap(),
+            String::from_utf8(output.stderr).unwrap(),
+        )
+    };
+    assert!(invoke(&["init"]).0);
+
+    let embedding_log = root.join(".git/embedding-log");
+    fs::write(
+        &embedder,
+        format!(
+            "#!/bin/sh\ninput=$(cat)\nprintf '%s\\n' \"$input\" >> '{}'\ncase \"$input\" in *'unchanged marker'*|*'rename marker'*|*'unstaged replacement marker'*|*'untracked marker'*) echo 'non-changed unit was re-embedded' >&2; exit 9 ;; esac\nprintf '[1,0]'\n",
+            embedding_log.display()
+        ),
+    )
+    .unwrap();
+    fs::set_permissions(&embedder, fs::Permissions::from_mode(0o755)).unwrap();
+    fs::write(root.join("changed.txt"), "new changed marker\n").unwrap();
+    fs::write(root.join("added.txt"), "newly added marker\n").unwrap();
+    fs::remove_file(root.join("deleted.txt")).unwrap();
+    git(root, &["mv", "renamed-old.txt", "renamed-new.txt"]);
+    git(root, &["add", "-A"]);
+    git(root, &["commit", "-qm", "scoped change"]);
+    let current = git_text(root, &["rev-parse", "HEAD"]);
+    fs::write(root.join("unchanged.txt"), "unstaged replacement marker\n").unwrap();
+    fs::write(root.join("untracked.txt"), "untracked marker\n").unwrap();
+
+    let (success, _, stderr) = invoke(&["refresh", "--changed"]);
+    assert!(
+        success,
+        "scoped refresh failed: {stderr}; embedder input: {}",
+        fs::read_to_string(&embedding_log).unwrap_or_default()
+    );
+
+    for mode in ["exact", "--semantic", "--combined"] {
+        let mut args = vec!["search", "new changed marker"];
+        if mode != "exact" {
+            args.push(mode);
+        }
+        args.push("--json");
+        let (success, output, stderr) = invoke(&args);
+        assert!(success, "{mode} search failed: {stderr}");
+        let changed: Vec<serde_json::Value> = serde_json::from_str(&output).unwrap();
+        assert!(
+            changed.iter().any(|result| {
+                result["path"] == "changed.txt" && result["commit_id"] == current
+            }),
+            "{mode}: {changed:?}"
+        );
+    }
+
+    let (success, output, stderr) = invoke(&["search", "newly added marker", "--json"]);
+    assert!(success, "search failed: {stderr}");
+    let added: Vec<serde_json::Value> = serde_json::from_str(&output).unwrap();
+    assert_eq!(added.len(), 1, "{added:?}");
+    assert_eq!(added[0]["path"], "added.txt");
+    assert_eq!(added[0]["commit_id"], current);
+
+    let (success, output, stderr) = invoke(&["search", "rename marker", "--json"]);
+    assert!(success, "search failed: {stderr}");
+    let renamed: Vec<serde_json::Value> = serde_json::from_str(&output).unwrap();
+    assert_eq!(renamed.len(), 1, "{renamed:?}");
+    assert_eq!(renamed[0]["path"], "renamed-new.txt");
+    assert_eq!(renamed[0]["commit_id"], current);
+
+    let (success, output, stderr) = invoke(&["search", "unchanged marker", "--json"]);
+    assert!(success, "search failed: {stderr}");
+    let unchanged: Vec<serde_json::Value> = serde_json::from_str(&output).unwrap();
+    assert_eq!(unchanged.len(), 1, "{unchanged:?}");
+    assert_eq!(unchanged[0]["path"], "unchanged.txt");
+    assert_eq!(unchanged[0]["commit_id"], current);
+    assert_eq!(unchanged[0]["text"], "unchanged marker");
+    assert!(search_json(root, &["unstaged replacement marker"]).is_empty());
+    assert!(search_json(root, &["untracked marker"]).is_empty());
+
+    let (success, output, stderr) =
+        invoke(&["search", "deleted marker", "--commit", &parent, "--json"]);
+    assert!(success, "historical search failed: {stderr}");
+    let historical: Vec<serde_json::Value> = serde_json::from_str(&output).unwrap();
+    assert_eq!(historical.len(), 1, "{historical:?}");
+    assert_eq!(historical[0]["path"], "deleted.txt");
+    let (success, output, stderr) =
+        invoke(&["search", "rename marker", "--commit", &parent, "--json"]);
+    assert!(success, "historical search failed: {stderr}");
+    let old_rename: Vec<serde_json::Value> = serde_json::from_str(&output).unwrap();
+    assert_eq!(old_rename.len(), 1, "{old_rename:?}");
+    assert_eq!(old_rename[0]["path"], "renamed-old.txt");
+    let (success, output, stderr) = invoke(&["search", "deleted marker", "--json"]);
+    assert!(success, "current search failed: {stderr}");
+    assert!(
+        serde_json::from_str::<Vec<serde_json::Value>>(&output)
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[test]
+fn failed_changed_refresh_keeps_the_previous_snapshot() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let repo = repository();
+    let root = repo.path();
+    assert!(run(root, &["init"]).0);
+    let parent = git_text(root, &["rev-parse", "HEAD"]);
+    let embedder = root.join(".git/scoped-failing-embedder");
+    fs::write(&embedder, "#!/bin/sh\ncat >/dev/null\nprintf '[1,0]'\n").unwrap();
+    fs::set_permissions(&embedder, fs::Permissions::from_mode(0o755)).unwrap();
+    assert!(run(root, &["reembed", "--command", embedder.to_str().unwrap()]).0);
+
+    fs::write(
+        &embedder,
+        "#!/bin/sh\ninput=$(cat)\ncase \"$input\" in *'abort scoped'*) exit 7 ;; esac\nprintf '[1,0]'\n",
+    )
+    .unwrap();
+    fs::write(root.join("notes.txt"), "abort scoped marker\n").unwrap();
+    git(root, &["add", "notes.txt"]);
+    git(root, &["commit", "-qm", "changed content"]);
+    let (success, output) = run(root, &["refresh", "--changed"]);
+    assert!(!success, "{output}");
+    assert_eq!(search_json(root, &["TARGET", "--commit", &parent]).len(), 1);
+    assert!(search_json(root, &["abort scoped marker"]).is_empty());
+    assert!(search_json(root, &["abort scoped marker", "--all-history"]).is_empty());
+}
+
+#[test]
+fn changed_refresh_does_not_refresh_registered_non_git_imports() {
+    let repo = repository();
+    let root = repo.path();
+    let imported = tempfile::NamedTempFile::new().unwrap();
+    fs::write(imported.path(), "retained import marker\n").unwrap();
+    assert!(run(root, &["import", imported.path().to_str().unwrap()]).0);
+    assert!(run(root, &["init"]).0);
+    assert_eq!(search_json(root, &["retained import marker"]).len(), 1);
+
+    fs::write(imported.path(), "unfetched import update\n").unwrap();
+    fs::write(root.join("changed.txt"), "new local commit marker\n").unwrap();
+    git(root, &["add", "changed.txt"]);
+    git(root, &["commit", "-qm", "local change"]);
+    assert!(run(root, &["refresh", "--changed"]).0);
+
+    assert_eq!(search_json(root, &["retained import marker"]).len(), 1);
+    assert!(search_json(root, &["unfetched import update"]).is_empty());
+    assert_eq!(search_json(root, &["new local commit marker"]).len(), 1);
+}
+
+#[test]
+fn changed_refresh_indexes_the_initial_branch_commit() {
+    let repo = tempfile::tempdir().unwrap();
+    let root = repo.path();
+    git(root, &["init", "-q"]);
+    git(root, &["config", "user.email", "test@example.com"]);
+    git(root, &["config", "user.name", "Test"]);
+    assert!(run(root, &["init"]).0);
+
+    fs::write(root.join("first.txt"), "initial branch marker\n").unwrap();
+    git(root, &["add", "."]);
+    git(root, &["commit", "-qm", "initial branch commit"]);
+    let commit = git_text(root, &["rev-parse", "HEAD"]);
+    let (success, output) = run(root, &["refresh", "--changed"]);
+    assert!(success, "{output}");
+
+    let results = search_json(root, &["initial branch marker"]);
+    assert_eq!(results.len(), 1, "{results:?}");
+    assert_eq!(results[0]["path"], "first.txt");
+    assert_eq!(results[0]["commit_id"], commit);
+}
+
+#[test]
+fn changed_refresh_requires_an_indexed_first_parent_and_keeps_the_snapshot() {
+    let repo = repository();
+    let root = repo.path();
+    let baseline = git_text(root, &["rev-parse", "HEAD"]);
+    assert!(run(root, &["init"]).0);
+
+    fs::write(root.join("middle.txt"), "unindexed parent marker\n").unwrap();
+    git(root, &["add", "middle.txt"]);
+    git(root, &["commit", "-qm", "unindexed parent"]);
+    fs::write(root.join("latest.txt"), "unindexed head marker\n").unwrap();
+    git(root, &["add", "latest.txt"]);
+    git(root, &["commit", "-qm", "unindexed head"]);
+
+    let output = Command::new(env!("CARGO_BIN_EXE_repodb"))
+        .args(["refresh", "--changed"])
+        .current_dir(root)
+        .env("XDG_CONFIG_HOME", root.join(".test-xdg-config"))
+        .env(
+            "REPODB_SEMGREP_CORE",
+            semgrep_corpus::required_semgrep_core(),
+        )
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    let diagnostic = String::from_utf8(output.stderr).unwrap();
+    assert!(diagnostic.contains("first parent"), "{diagnostic}");
+    assert!(diagnostic.contains("run repodb refresh"), "{diagnostic}");
+    assert_eq!(
+        search_json(root, &["TARGET", "--commit", &baseline]).len(),
+        1
+    );
+    assert!(search_json(root, &["unindexed head marker", "--all-history"]).is_empty());
+}
+
+#[test]
+fn changed_refresh_uses_the_first_parent_for_merge_commits() {
+    let repo = tempfile::tempdir().unwrap();
+    let root = repo.path();
+    git(root, &["init", "-q"]);
+    git(root, &["config", "user.email", "test@example.com"]);
+    git(root, &["config", "user.name", "Test"]);
+    fs::write(root.join("base.txt"), "base branch marker\n").unwrap();
+    git(root, &["add", "."]);
+    git(root, &["commit", "-qm", "base"]);
+    let main_branch = git_text(root, &["branch", "--show-current"]);
+    assert!(run(root, &["init"]).0);
+
+    git(root, &["checkout", "-qb", "side"]);
+    fs::write(root.join("side.txt"), "second parent marker\n").unwrap();
+    git(root, &["add", "side.txt"]);
+    git(root, &["commit", "-qm", "side change"]);
+    let second_parent = git_text(root, &["rev-parse", "HEAD"]);
+    git(root, &["checkout", "-q", &main_branch]);
+    git(root, &["merge", "--no-ff", "-m", "merge side", "side"]);
+    let merge_commit = git_text(root, &["rev-parse", "HEAD"]);
+    assert_ne!(
+        git_text(root, &["rev-parse", "HEAD^1"]),
+        second_parent,
+        "fixture should make the second parent distinct and unindexed"
+    );
+
+    let (success, output) = run(root, &["refresh", "--changed"]);
+    assert!(success, "{output}");
+    let results = search_json(root, &["second parent marker"]);
+    assert_eq!(results.len(), 1, "{results:?}");
+    assert_eq!(results[0]["path"], "side.txt");
+    assert_eq!(results[0]["commit_id"], merge_commit);
+}
+
+#[test]
 fn init_refresh_search_and_json_are_repository_local_and_exact() {
     let repo = repository();
     let root = repo.path();
@@ -1313,6 +2200,12 @@ fn post_commit_hook_refreshes_and_missing_hook_guidance_is_explicit() {
     let root = repo.path();
     let (ok, _) = run(root, &["init"]);
     assert!(ok);
+    let embedder = root.join(".git/repodb-test-embedder");
+    fs::write(
+        &embedder,
+        "#!/bin/sh\ninput=$(cat)\ncase \"$input\" in *'Rust phrase'*) echo 'unchanged source unit was re-embedded' >&2; exit 9 ;; esac\nprintf '[1,0]'\n",
+    )
+    .unwrap();
     let hook_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("hooks");
     git(
         root,
@@ -2214,6 +3107,132 @@ fn legacy_cli_snapshot_remains_searchable_until_successful_atomic_history_migrat
 }
 
 #[test]
+fn populated_v3_history_migrates_atomically_to_range_only_schema() {
+    let repo = repository();
+    let root = repo.path();
+    let original_commit = git_text(root, &["rev-parse", "HEAD"]);
+    let original_blob = git_text(root, &["rev-parse", "HEAD:notes.txt"]);
+    assert!(run(root, &["init"]).0);
+
+    // Exercise the supported v3 layout with real references, searchable text, and vectors.
+    let database = rusqlite::Connection::open(root.join(".git/repodb.sqlite")).unwrap();
+    database.execute_batch(
+        "DROP TABLE unit_embeddings; DROP TABLE git_blob_units; DROP TABLE indexed_units; \
+         DROP TABLE git_occurrences; DROP TABLE blob_contents; DROP TABLE git_commits; \
+         CREATE TABLE git_commits(commit_id TEXT PRIMARY KEY NOT NULL, timestamp INTEGER NOT NULL); \
+         CREATE TABLE blob_contents(blob_id TEXT PRIMARY KEY NOT NULL, content TEXT, status TEXT NOT NULL); \
+         CREATE TABLE git_occurrences(commit_id TEXT NOT NULL REFERENCES git_commits, blob_id TEXT NOT NULL REFERENCES blob_contents, path BLOB NOT NULL, segmentation_kind TEXT NOT NULL, PRIMARY KEY(commit_id,path)); \
+         CREATE TABLE indexed_units(unit_id INTEGER PRIMARY KEY, text TEXT NOT NULL, line_start INTEGER NOT NULL, line_end INTEGER NOT NULL); \
+         CREATE TABLE git_blob_units(blob_id TEXT NOT NULL REFERENCES blob_contents, unit_id INTEGER NOT NULL REFERENCES indexed_units, segmentation_kind TEXT NOT NULL, PRIMARY KEY(blob_id,segmentation_kind,unit_id)); \
+         CREATE TABLE unit_embeddings(unit_id INTEGER PRIMARY KEY REFERENCES indexed_units, vector BLOB NOT NULL); \
+         PRAGMA user_version=3;",
+    ).unwrap();
+    database
+        .execute("INSERT INTO git_commits VALUES(?1,0)", [&original_commit])
+        .unwrap();
+    database
+        .execute(
+            "INSERT INTO blob_contents VALUES(?1,?2,'available')",
+            rusqlite::params![
+                original_blob,
+                "First line\nExact [literal] TARGET\nlast line\n"
+            ],
+        )
+        .unwrap();
+    database
+        .execute(
+            "INSERT INTO git_occurrences VALUES(?1,?2,?3,'document')",
+            rusqlite::params![original_commit, original_blob, b"notes.txt".as_slice()],
+        )
+        .unwrap();
+    database
+        .execute(
+            "INSERT INTO indexed_units VALUES(1,?1,1,3)",
+            ["First line\nExact [literal] TARGET\nlast line"],
+        )
+        .unwrap();
+    database
+        .execute(
+            "INSERT INTO git_blob_units VALUES(?1,1,'document')",
+            [&original_blob],
+        )
+        .unwrap();
+    database
+        .execute(
+            "INSERT INTO unit_embeddings VALUES(1,?1)",
+            [vec![0, 0, 128, 63, 0, 0, 0, 0]],
+        )
+        .unwrap();
+    drop(database);
+
+    let exact = search_json(root, &["Exact [literal] TARGET"]);
+    let semantic = search_json(root, &["question", "--semantic"]);
+    assert_eq!(exact.len(), 1);
+    assert_eq!(semantic.len(), 1);
+
+    git(root, &["checkout", "-qb", "later"]);
+    fs::write(root.join("later.txt"), "later committed marker\n").unwrap();
+    git(root, &["add", "later.txt"]);
+    git(root, &["commit", "-qm", "later source"]);
+    let later_commit = git_text(root, &["rev-parse", "HEAD"]);
+    let later_blob = git_text(root, &["rev-parse", "HEAD:later.txt"]);
+    git(root, &["checkout", "-q", &original_commit]);
+    let object = root
+        .join(".git/objects")
+        .join(&later_blob[..2])
+        .join(&later_blob[2..]);
+    let saved = root.join("saved-later-object");
+    fs::rename(&object, &saved).unwrap();
+    assert!(!run(root, &["refresh"]).0);
+    assert_eq!(search_json(root, &["Exact [literal] TARGET"]), exact);
+    assert_eq!(search_json(root, &["question", "--semantic"]), semantic);
+    let database = rusqlite::Connection::open(root.join(".git/repodb.sqlite")).unwrap();
+    let version: i64 = database
+        .query_row("PRAGMA user_version", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(version, 3);
+    drop(database);
+
+    fs::rename(&saved, &object).unwrap();
+    assert!(run(root, &["refresh"]).0);
+    let migrated = search_json(
+        root,
+        &["Exact [literal] TARGET", "--commit", &original_commit],
+    );
+    assert_eq!(migrated.len(), 1);
+    assert_eq!(
+        migrated[0]["text"],
+        "First line\nExact [literal] TARGET\nlast line"
+    );
+    assert_eq!(
+        search_json(root, &["later committed marker", "--commit", &later_commit]).len(),
+        1
+    );
+    let database = rusqlite::Connection::open(root.join(".git/repodb.sqlite")).unwrap();
+    let version: i64 = database
+        .query_row("PRAGMA user_version", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(version, 4);
+    for (table, forbidden) in [("blob_contents", "content"), ("indexed_units", "text")] {
+        let columns = database
+            .prepare(&format!("PRAGMA table_info({table})"))
+            .unwrap()
+            .query_map([], |row| row.get::<_, String>(1))
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        assert!(!columns.iter().any(|column| column == forbidden));
+    }
+    let (invalid_ranges, units): (i64, i64) = database.query_row(
+        "SELECT sum(byte_start < 0 OR byte_end <= byte_start OR byte_end > ?1), count(*) FROM indexed_units",
+        ["First line\nExact [literal] TARGET\nlast line\n".len() as i64],
+        |row| Ok((row.get(0)?, row.get(1)?)),
+    ).unwrap();
+    assert!(units > 0);
+    assert_eq!(invalid_ranges, 0);
+}
+
+#[test]
 fn history_human_output_identifies_commit_blob_and_line_range() {
     let repo = repository();
     let root = repo.path();
@@ -2520,6 +3539,20 @@ fn long_document_units_are_bounded_lossless_and_use_unicode_safe_source_ranges()
         assert_eq!(units.len(), expected_ranges.len(), "{path}");
         let reconstructed: String = units.iter().map(|r| r["text"].as_str().unwrap()).collect();
         assert_eq!(reconstructed, source);
+        let database = rusqlite::Connection::open(root.join(".git/repodb.sqlite")).unwrap();
+        let stored_ranges = database
+            .prepare("SELECT u.byte_start,u.byte_end FROM indexed_units u JOIN git_blob_units bu USING(unit_id) JOIN git_occurrences o USING(blob_id) WHERE CAST(o.path AS TEXT)=?1 AND u.unit_id=bu.unit_id ORDER BY u.byte_start")
+            .unwrap()
+            .query_map([path], |row| Ok((row.get::<_, usize>(0)?, row.get::<_, usize>(1)?)))
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        assert_eq!(stored_ranges.len(), units.len(), "{path}");
+        for (unit, (stored_start, stored_end)) in units.iter().zip(stored_ranges) {
+            let text = unit["text"].as_str().unwrap();
+            assert_eq!(&source[stored_start..stored_end], text, "{path}");
+            assert_eq!(unit["text"], text);
+        }
         for (unit, (start, end)) in units.iter().zip(expected_ranges) {
             assert!(unit["text"].as_str().unwrap().len() <= 4096);
             assert_eq!(unit["line_start"], start);
@@ -2770,6 +3803,25 @@ fn occurrence_path_kind_is_selected_after_filters_before_units_top_n_and_combine
     let tied = commit_at(root, "same commit path tie", "2003-01-01T00:00:00Z");
     let blob = git_text(root, &["rev-parse", "HEAD:a.md"]);
     assert!(run(root, &["init"]).0);
+    let tied_results = search_json(root, &["fn variant", "--commit", &tied]);
+    assert_eq!(tied_results.len(), 3, "{tied_results:?}");
+    let markdown = tied_results
+        .iter()
+        .find(|result| result["path"] == "a.md")
+        .unwrap();
+    assert_eq!(
+        markdown["text"],
+        "fn variant_alpha() {}\nfn variant_beta() {}"
+    );
+    let rust_units = tied_results
+        .iter()
+        .filter(|result| result["path"] == "z.rs")
+        .map(|result| result["text"].as_str().unwrap())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        rust_units,
+        ["fn variant_alpha() {}", "fn variant_beta() {}"]
+    );
     let fake = fake_embedder(
         root,
         "case \"$input\" in 'fn variant'|'fn variant_alpha() {}') printf '[1,0]' ;; 'fn variant_beta() {}') printf '[0.8,0.2]' ;; *) printf '[0,1]' ;; esac",
@@ -2777,16 +3829,9 @@ fn occurrence_path_kind_is_selected_after_filters_before_units_top_n_and_combine
     assert!(run(root, &["reembed", "--command", fake.to_str().unwrap()]).0);
     for mode in ["exact", "--semantic", "--combined"] {
         for (scope, commit, path, count) in [
-            (vec!["--all-history"], &tied, "a.md", 1),
-            (
-                vec!["--all-history", "--exclude-commit", &tied],
-                &rust,
-                "z.rs",
-                if mode == "--semantic" { 1 } else { 2 },
-            ),
             (vec!["--commit", &document], &document, "a.md", 1),
             (
-                vec!["--include-commit", &document, "--include-commit", &rust],
+                vec!["--commit", &rust],
                 &rust,
                 "z.rs",
                 if mode == "--semantic" { 1 } else { 2 },

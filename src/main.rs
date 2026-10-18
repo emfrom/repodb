@@ -379,22 +379,28 @@ fn semantic(
 fn execute() -> Result<()> {
     let mut a = env::args().skip(1);
     let Some(cmd) = a.next() else {
-        return Err("usage: repodb <init|refresh|reembed|search>".into());
+        return Err("usage: repodb <init|refresh [--changed]|reembed|search>".into());
     };
     match cmd.as_str() {
         "init" | "refresh" => {
-            if a.next().is_some() {
+            let arguments: Vec<_> = a.collect();
+            let changed = arguments.len() == 1 && arguments[0] == "--changed";
+            if (!arguments.is_empty() && !changed) || (cmd == "init" && changed) {
                 return Err("unexpected arguments".into());
             }
             let mut db = open_db()?;
-            let version = history::snapshot_version(&db)?;
-            imports::refresh(&db)?;
-            history::prepare_refresh(&db)?;
-            imports::validate_dimensions(&db)?;
-            let tx = history::publish_transaction(&mut db, version)?;
-            imports::publish(&tx)?;
-            history::publish_refresh(&tx)?;
-            tx.commit()?;
+            if changed {
+                history::refresh_changed(&mut db)?;
+            } else {
+                let version = history::snapshot_version(&db)?;
+                imports::refresh(&db)?;
+                history::prepare_refresh(&db)?;
+                imports::validate_dimensions(&db)?;
+                let tx = history::publish_transaction(&mut db, version)?;
+                imports::publish(&tx)?;
+                history::publish_refresh(&tx)?;
+                tx.commit()?;
+            }
         }
         "import" => {
             let locator = a

@@ -149,7 +149,7 @@ pub fn is_current(c: &Connection) -> Result<bool> {
     let version: i64 = c.query_row("PRAGMA user_version", [], |r| r.get(0))?;
     match version {
         0 => Ok(false),
-        2 | 3 => Ok(true),
+        2..=4 => Ok(true),
         _ => Err(format!("unsupported database version {version}").into()),
     }
 }
@@ -552,7 +552,7 @@ pub fn prepare_refresh(c: &Connection) -> Result<()> {
         CREATE TEMP TABLE refresh_commits(commit_id TEXT PRIMARY KEY, timestamp INTEGER NOT NULL);
         CREATE TEMP TABLE refresh_blobs(blob_id TEXT PRIMARY KEY, content TEXT, status TEXT NOT NULL);
         CREATE TEMP TABLE refresh_occurrences(commit_id TEXT NOT NULL, blob_id TEXT NOT NULL, path BLOB NOT NULL, segmentation_kind TEXT NOT NULL, PRIMARY KEY(commit_id,path));
-        CREATE TEMP TABLE refresh_units(unit_id INTEGER PRIMARY KEY, blob_id TEXT NOT NULL, segmentation_kind TEXT NOT NULL, text TEXT NOT NULL, line_start INTEGER NOT NULL, line_end INTEGER NOT NULL);
+        CREATE TEMP TABLE refresh_units(unit_id INTEGER PRIMARY KEY, blob_id TEXT NOT NULL, segmentation_kind TEXT NOT NULL, text TEXT NOT NULL, byte_start INTEGER NOT NULL, byte_end INTEGER NOT NULL, line_start INTEGER NOT NULL, line_end INTEGER NOT NULL);
         CREATE TEMP TABLE refresh_embeddings(unit_id INTEGER PRIMARY KEY, vector BLOB NOT NULL);
         DROP TABLE IF EXISTS temp.refresh_dimension; CREATE TEMP TABLE refresh_dimension(value INTEGER);
         DROP TABLE IF EXISTS temp.refresh_config; CREATE TEMP TABLE refresh_config(key TEXT PRIMARY KEY,value TEXT NOT NULL);")?;
@@ -615,7 +615,7 @@ pub fn prepare_refresh(c: &Connection) -> Result<()> {
         let mut variants = c.prepare("SELECT DISTINCT b.blob_id,b.content,o.segmentation_kind FROM temp.refresh_blobs b JOIN temp.refresh_occurrences o USING(blob_id) WHERE b.content IS NOT NULL ORDER BY b.blob_id,o.segmentation_kind")?;
         let mut rows = variants.query([])?;
         let mut unit_stage =
-            c.prepare("INSERT INTO temp.refresh_units VALUES(?1,?2,?3,?4,?5,?6)")?;
+            c.prepare("INSERT INTO temp.refresh_units VALUES(?1,?2,?3,?4,?5,?6,?7,?8)")?;
         while let Some(row) = rows.next()? {
             let blob_id: String = row.get(0)?;
             let content: String = row.get(1)?;
@@ -628,6 +628,8 @@ pub fn prepare_refresh(c: &Connection) -> Result<()> {
                     blob_id,
                     kind,
                     unit.text,
+                    unit.byte_start,
+                    unit.byte_end,
                     unit.line_start,
                     unit.line_end
                 ]) {
@@ -705,12 +707,326 @@ pub fn prepare_refresh(c: &Connection) -> Result<()> {
     Ok(())
 }
 
+pub fn refresh_changed(c: &mut Connection) -> Result<()> {
+    let version = snapshot_version(c)?;
+    let schema: i64 = c.query_row("PRAGMA user_version", [], |row| row.get(0))?;
+    if schema != 4 {
+        return Err("scoped refresh requires a version-4 index; run repodb refresh first".into());
+    }
+
+    let mut budget = Budget::new(
+        MAX_REFRESH_ACCOUNTING_BYTES,
+        "scoped history refresh preparation accounting",
+    );
+    let head_id = head(&mut budget)?.ok_or("scoped refresh requires a committed HEAD")?;
+    let branch = git_output(
+        &["symbolic-ref", "--quiet", "--short", "HEAD"],
+        1024,
+        &mut budget,
+    )?;
+    if std::str::from_utf8(&branch)?.trim().is_empty() {
+        return Err("scoped refresh requires HEAD to be on a branch".into());
+    }
+    let already_indexed: bool = c.query_row(
+        "SELECT EXISTS(SELECT 1 FROM git_commits WHERE commit_id=?1)",
+        [&head_id],
+        |row| row.get(0),
+    )?;
+    if already_indexed {
+        return Ok(());
+    }
+
+    let parent_record = String::from_utf8(git_output(
+        &["rev-list", "--parents", "-n", "1", &head_id],
+        256,
+        &mut budget,
+    )?)?;
+    let mut parents = parent_record.split_whitespace();
+    if parents.next() != Some(head_id.as_str()) {
+        return Err("Git returned an invalid HEAD record".into());
+    }
+    let parent = parents.next().map(str::to_owned);
+    if let Some(parent) = parent.as_deref() {
+        let parent_indexed: bool = c.query_row(
+            "SELECT EXISTS(SELECT 1 FROM git_commits WHERE commit_id=?1)",
+            [parent],
+            |row| row.get(0),
+        )?;
+        if !parent_indexed {
+            return Err(format!(
+                "first parent {parent} is not indexed; run repodb refresh before scoped refresh"
+            )
+            .into());
+        }
+    }
+    let timestamp: i64 = String::from_utf8(git_output(
+        &["show", "-s", "--format=%ct", &head_id],
+        128,
+        &mut budget,
+    )?)?
+    .trim()
+    .parse()?;
+
+    c.execute_batch("PRAGMA temp_store=FILE;
+        DROP TABLE IF EXISTS temp.scoped_commit; DROP TABLE IF EXISTS temp.scoped_blobs;
+        DROP TABLE IF EXISTS temp.scoped_occurrences; DROP TABLE IF EXISTS temp.scoped_variants;
+        DROP TABLE IF EXISTS temp.scoped_units; DROP TABLE IF EXISTS temp.scoped_embeddings;
+        DROP TABLE IF EXISTS temp.scoped_config;
+        CREATE TEMP TABLE scoped_commit(commit_id TEXT PRIMARY KEY,timestamp INTEGER NOT NULL);
+        CREATE TEMP TABLE scoped_blobs(blob_id TEXT PRIMARY KEY,status TEXT NOT NULL,content TEXT);
+        CREATE TEMP TABLE scoped_occurrences(commit_id TEXT NOT NULL,blob_id TEXT NOT NULL,path BLOB NOT NULL,segmentation_kind TEXT NOT NULL,PRIMARY KEY(commit_id,path));
+        CREATE TEMP TABLE scoped_variants(blob_id TEXT NOT NULL,segmentation_kind TEXT NOT NULL,PRIMARY KEY(blob_id,segmentation_kind));
+        CREATE TEMP TABLE scoped_units(unit_id INTEGER PRIMARY KEY,blob_id TEXT NOT NULL,segmentation_kind TEXT NOT NULL,text TEXT NOT NULL,byte_start INTEGER NOT NULL,byte_end INTEGER NOT NULL,line_start INTEGER NOT NULL,line_end INTEGER NOT NULL);
+        CREATE TEMP TABLE scoped_embeddings(unit_id INTEGER PRIMARY KEY,vector BLOB NOT NULL);
+        CREATE TEMP TABLE scoped_config(key TEXT PRIMARY KEY,value TEXT NOT NULL);")?;
+    c.execute(
+        "INSERT INTO temp.scoped_commit VALUES(?1,?2)",
+        params![head_id, timestamp],
+    )?;
+
+    let (command, model, configured_dimension) = configuration(c)?;
+    let mut next_unit_id: i64 = c.query_row(
+        "SELECT COALESCE(MAX(unit_id),0) FROM indexed_units",
+        [],
+        |row| row.get(0),
+    )?;
+    {
+        let mut parent_occurrence = c.prepare(
+            "SELECT blob_id,segmentation_kind FROM git_occurrences WHERE commit_id=?1 AND path=?2",
+        )?;
+        let mut existing_variant = c.prepare(
+            "SELECT EXISTS(SELECT 1 FROM git_blob_units WHERE blob_id=?1 AND segmentation_kind=?2)",
+        )?;
+        let mut staged_variant = c.prepare(
+            "SELECT EXISTS(SELECT 1 FROM temp.scoped_variants WHERE blob_id=?1 AND segmentation_kind=?2)",
+        )?;
+        let mut existing_blob = c.prepare("SELECT status FROM blob_contents WHERE blob_id=?1")?;
+        let mut staged_blob =
+            c.prepare("SELECT status,content FROM temp.scoped_blobs WHERE blob_id=?1")?;
+        let mut blob_stage =
+            c.prepare("INSERT OR IGNORE INTO temp.scoped_blobs VALUES(?1,?2,?3)")?;
+        let mut variant_stage =
+            c.prepare("INSERT OR IGNORE INTO temp.scoped_variants VALUES(?1,?2)")?;
+        let mut occurrence_stage =
+            c.prepare("INSERT INTO temp.scoped_occurrences VALUES(?1,?2,?3,?4)")?;
+        let mut unit_stage =
+            c.prepare("INSERT INTO temp.scoped_units VALUES(?1,?2,?3,?4,?5,?6,?7,?8)")?;
+
+        for_each_tree_record(&head_id, &mut budget, |record, budget| {
+            let tab = record
+                .iter()
+                .position(|byte| *byte == b'\t')
+                .ok_or("invalid Git tree record")?;
+            let metadata = std::str::from_utf8(&record[..tab])?;
+            let mut fields = metadata.split_whitespace();
+            let _mode = fields.next().ok_or("invalid Git tree metadata")?;
+            let object_type = fields.next().ok_or("invalid Git tree metadata")?;
+            let blob_id = fields.next().ok_or("invalid Git tree metadata")?;
+            if fields.next().is_some() {
+                return Err("invalid Git tree metadata".into());
+            }
+            if object_type != "blob" {
+                return Ok(());
+            }
+            let path = &record[tab + 1..];
+            let kind = segmentation::kind(path);
+            let unchanged = if let Some(parent) = parent.as_deref() {
+                parent_occurrence
+                    .query_row(params![parent, path], |row| {
+                        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+                    })
+                    .optional()?
+                    .is_some_and(|(parent_blob, parent_kind)| {
+                        parent_blob == blob_id && parent_kind == kind
+                    })
+            } else {
+                false
+            };
+            if unchanged {
+                occurrence_stage.execute(params![head_id, blob_id, path, kind])?;
+                return Ok(());
+            }
+
+            let has_existing_variant: bool =
+                existing_variant.query_row(params![blob_id, kind], |row| row.get(0))?;
+            let has_staged_variant: bool =
+                staged_variant.query_row(params![blob_id, kind], |row| row.get(0))?;
+            if has_existing_variant || has_staged_variant {
+                occurrence_stage.execute(params![head_id, blob_id, path, kind])?;
+                return Ok(());
+            }
+
+            let staged = staged_blob
+                .query_row([blob_id], |row| {
+                    Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?))
+                })
+                .optional()?;
+            let content_from_staging = staged.is_some();
+            let (status, content) = if let Some((status, content)) = staged {
+                (status, content)
+            } else {
+                let stored_status = existing_blob
+                    .query_row([blob_id], |row| row.get::<_, String>(0))
+                    .optional()?;
+                if stored_status
+                    .as_deref()
+                    .is_some_and(|status| status != "text")
+                {
+                    variant_stage.execute(params![blob_id, kind])?;
+                    occurrence_stage.execute(params![head_id, blob_id, path, kind])?;
+                    return Ok(());
+                }
+                let size: u64 =
+                    String::from_utf8(git_output(&["cat-file", "-s", blob_id], 64, budget)?)?
+                        .trim()
+                        .parse()?;
+                let bytes = git_output(
+                    &["cat-file", "blob", blob_id],
+                    usize::try_from(size).unwrap_or(usize::MAX),
+                    budget,
+                )?;
+                let (content, status) = if bytes.contains(&0) {
+                    (None, "binary")
+                } else {
+                    match String::from_utf8(bytes) {
+                        Ok(content) => (Some(content), "text"),
+                        Err(_) => (None, "unsupported"),
+                    }
+                };
+                blob_stage.execute(params![blob_id, status, content])?;
+                (status.to_owned(), content)
+            };
+
+            if status == "text" {
+                let content = content.ok_or("text Git blob is missing staged content")?;
+                if content_from_staging {
+                    budget.charge(content.len(), "staged scoped Git blob text")?;
+                }
+                let mut staging_error = None;
+                let segmentation_result = segmentation::visit(kind, &content, |unit| {
+                    next_unit_id += 1;
+                    if let Err(error) = unit_stage.execute(params![
+                        next_unit_id,
+                        blob_id,
+                        kind,
+                        unit.text,
+                        unit.byte_start,
+                        unit.byte_end,
+                        unit.line_start,
+                        unit.line_end
+                    ]) {
+                        staging_error = Some(error);
+                        return false;
+                    }
+                    true
+                });
+                segmentation_result?;
+                if let Some(error) = staging_error {
+                    return Err(error.into());
+                }
+                if content_from_staging {
+                    budget.release(content.len());
+                }
+            }
+            variant_stage.execute(params![blob_id, kind])?;
+            occurrence_stage.execute(params![head_id, blob_id, path, kind])?;
+            Ok(())
+        })?;
+    }
+
+    let mut embedding_dimension = None;
+    {
+        let mut units = c.prepare("SELECT unit_id,text FROM temp.scoped_units ORDER BY unit_id")?;
+        let mut rows = units.query([])?;
+        let mut embeddings = c.prepare("INSERT INTO temp.scoped_embeddings VALUES(?1,?2)")?;
+        let mut batch = Vec::with_capacity(EMBEDDING_BATCH_SIZE);
+        while let Some(row) = rows.next()? {
+            let unit_id: i64 = row.get(0)?;
+            let text: String = row.get(1)?;
+            budget.charge(text.len(), "scoped embedding batch text")?;
+            batch.push((unit_id, text));
+            if batch.len() == EMBEDDING_BATCH_SIZE {
+                flush_embedding_batch(
+                    &mut batch,
+                    &command,
+                    &model,
+                    configured_dimension,
+                    &mut embedding_dimension,
+                    &mut embeddings,
+                    &mut budget,
+                )?;
+            }
+        }
+        flush_embedding_batch(
+            &mut batch,
+            &command,
+            &model,
+            configured_dimension,
+            &mut embedding_dimension,
+            &mut embeddings,
+            &mut budget,
+        )?;
+    }
+    if let Some(dimension) = embedding_dimension {
+        for (key, value) in [
+            ("command", command),
+            ("model", model),
+            ("dimension", dimension.to_string()),
+        ] {
+            c.execute(
+                "INSERT INTO temp.scoped_config VALUES(?1,?2)",
+                params![key, value],
+            )?;
+        }
+    }
+
+    let tx = publish_transaction(c, version)?;
+    tx.execute(
+        "INSERT INTO git_commits SELECT * FROM temp.scoped_commit",
+        [],
+    )?;
+    tx.execute(
+        "INSERT OR IGNORE INTO blob_contents(blob_id,status) SELECT blob_id,status FROM temp.scoped_blobs",
+        [],
+    )?;
+    tx.execute(
+        "INSERT INTO indexed_units SELECT unit_id,byte_start,byte_end,line_start,line_end FROM temp.scoped_units",
+        [],
+    )?;
+    tx.execute(
+        "INSERT INTO git_blob_units SELECT blob_id,unit_id,segmentation_kind FROM temp.scoped_units",
+        [],
+    )?;
+    tx.execute(
+        "INSERT INTO unit_embeddings SELECT * FROM temp.scoped_embeddings",
+        [],
+    )?;
+    tx.execute(
+        "INSERT INTO git_occurrences SELECT * FROM temp.scoped_occurrences",
+        [],
+    )?;
+    {
+        let mut config = tx.prepare("SELECT key,value FROM temp.scoped_config ORDER BY key")?;
+        let mut rows = config.query([])?;
+        while let Some(row) = rows.next()? {
+            let key: String = row.get(0)?;
+            let value: String = row.get(1)?;
+            tx.execute(
+                "INSERT INTO embedding_config VALUES(?1,?2) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                params![key, value],
+            )?;
+        }
+    }
+    tx.commit()?;
+    Ok(())
+}
+
 pub fn publish_refresh(tx: &Transaction<'_>) -> Result<()> {
     tx.execute_batch("DROP TABLE IF EXISTS unit_embeddings; DROP TABLE IF EXISTS git_blob_units; DROP TABLE IF EXISTS indexed_units; DROP TABLE IF EXISTS git_occurrences; DROP TABLE IF EXISTS blob_contents; DROP TABLE IF EXISTS git_commits;
         CREATE TABLE git_commits(commit_id TEXT PRIMARY KEY NOT NULL, timestamp INTEGER NOT NULL);
-        CREATE TABLE blob_contents(blob_id TEXT PRIMARY KEY NOT NULL, content TEXT, status TEXT NOT NULL);
+        CREATE TABLE blob_contents(blob_id TEXT PRIMARY KEY NOT NULL, status TEXT NOT NULL);
         CREATE TABLE git_occurrences(commit_id TEXT NOT NULL REFERENCES git_commits, blob_id TEXT NOT NULL REFERENCES blob_contents, path BLOB NOT NULL, segmentation_kind TEXT NOT NULL, PRIMARY KEY(commit_id,path));
-        CREATE TABLE indexed_units(unit_id INTEGER PRIMARY KEY, text TEXT NOT NULL, line_start INTEGER NOT NULL, line_end INTEGER NOT NULL);
+        CREATE TABLE indexed_units(unit_id INTEGER PRIMARY KEY, byte_start INTEGER NOT NULL, byte_end INTEGER NOT NULL, line_start INTEGER NOT NULL, line_end INTEGER NOT NULL);
         CREATE TABLE git_blob_units(blob_id TEXT NOT NULL REFERENCES blob_contents, unit_id INTEGER NOT NULL REFERENCES indexed_units, segmentation_kind TEXT NOT NULL, PRIMARY KEY(blob_id,segmentation_kind,unit_id));
         CREATE TABLE unit_embeddings(unit_id INTEGER PRIMARY KEY REFERENCES indexed_units, vector BLOB NOT NULL);")?;
     tx.execute(
@@ -718,7 +1034,7 @@ pub fn publish_refresh(tx: &Transaction<'_>) -> Result<()> {
         [],
     )?;
     tx.execute(
-        "INSERT INTO blob_contents SELECT * FROM temp.refresh_blobs",
+        "INSERT INTO blob_contents SELECT blob_id,status FROM temp.refresh_blobs",
         [],
     )?;
     tx.execute(
@@ -726,7 +1042,7 @@ pub fn publish_refresh(tx: &Transaction<'_>) -> Result<()> {
         [],
     )?;
     tx.execute(
-        "INSERT INTO indexed_units SELECT unit_id,text,line_start,line_end FROM temp.refresh_units",
+        "INSERT INTO indexed_units SELECT unit_id,byte_start,byte_end,line_start,line_end FROM temp.refresh_units",
         [],
     )?;
     tx.execute("INSERT INTO git_blob_units SELECT blob_id,unit_id,segmentation_kind FROM temp.refresh_units", [])?;
@@ -748,7 +1064,7 @@ pub fn publish_refresh(tx: &Transaction<'_>) -> Result<()> {
             params![key, value],
         )?;
     }
-    tx.execute_batch("DROP TABLE IF EXISTS indexed_files; DROP TABLE IF EXISTS embeddings; PRAGMA user_version=3;")?;
+    tx.execute_batch("DROP TABLE IF EXISTS indexed_files; DROP TABLE IF EXISTS embeddings; PRAGMA user_version=4;")?;
     Ok(())
 }
 
@@ -761,12 +1077,25 @@ pub fn reembed(c: &mut Connection, command: &str, model: &str) -> Result<()> {
     );
     let mut dim = 0;
     {
-        let mut units = c.prepare("SELECT unit_id,text FROM indexed_units ORDER BY unit_id")?;
+        let schema: i64 = c.query_row("PRAGMA user_version", [], |row| row.get(0))?;
+        let mut units = c.prepare(if schema >= 4 {
+            "SELECT unit_id,blob_id,byte_start,byte_end FROM indexed_units JOIN git_blob_units USING(unit_id) ORDER BY unit_id"
+        } else {
+            "SELECT unit_id,text FROM indexed_units ORDER BY unit_id"
+        })?;
         let mut rows = units.query([])?;
+        let mut blob_cache = std::collections::HashMap::new();
         let mut staged = c.prepare("INSERT INTO temp.reembed_vectors VALUES(?1,?2)")?;
         while let Some(row) = rows.next()? {
             let unit_id: usize = row.get(0)?;
-            let text: String = row.get(1)?;
+            let text: String = if schema >= 4 {
+                let blob_id: String = row.get(1)?;
+                let start: usize = row.get(2)?;
+                let end: usize = row.get(3)?;
+                hydrate_unit(&blob_id, start, end, &mut blob_cache)?
+            } else {
+                row.get(1)?
+            };
             let (mut vector, dimension) = vectors(
                 std::iter::once(text.as_str()),
                 command,
@@ -800,6 +1129,39 @@ pub fn reembed(c: &mut Connection, command: &str, model: &str) -> Result<()> {
     Ok(())
 }
 
+fn hydrate_unit(
+    blob_id: &str,
+    start: usize,
+    end: usize,
+    cache: &mut std::collections::HashMap<String, String>,
+) -> Result<String> {
+    if start > end {
+        return Err(format!("invalid indexed Git byte range {start}..{end}").into());
+    }
+    if !cache.contains_key(blob_id) {
+        let output = Command::new("git")
+            .args(["cat-file", "blob", blob_id])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .output()?;
+        if !output.status.success() {
+            return Err(format!(
+                "cannot hydrate Git blob {blob_id}: {}",
+                String::from_utf8_lossy(&output.stderr)
+            )
+            .into());
+        }
+        let blob = String::from_utf8(output.stdout)
+            .map_err(|_| format!("indexed Git blob {blob_id} is no longer valid UTF-8"))?;
+        cache.insert(blob_id.to_owned(), blob);
+    }
+    let blob = cache.get(blob_id).ok_or("missing hydrated Git blob")?;
+    let slice = blob.get(start..end).ok_or_else(|| {
+        format!("invalid indexed Git byte range {start}..{end} for blob {blob_id}")
+    })?;
+    Ok(slice.to_owned())
+}
+
 pub fn search(
     c: &Connection,
     query: &str,
@@ -816,18 +1178,28 @@ pub fn search(
     // unit of that blob shares the reference; duplicate occurrences never use top-N.
     // Version 2 snapshots keep their original line units until explicit refresh.
     let schema: i64 = c.query_row("PRAGMA user_version", [], |r| r.get(0))?;
-    let variant = if schema == 3 {
+    let variant = if schema >= 3 {
         "AND b.segmentation_kind=o.segmentation_kind"
     } else {
         ""
     };
+    let occurrence_partition = if schema >= 3 {
+        "blob_id, segmentation_kind"
+    } else {
+        "blob_id"
+    };
+    let range_columns = if schema >= 4 {
+        "u.byte_start,u.byte_end,''"
+    } else {
+        "NULL,NULL,u.text"
+    };
     let mut s = c.prepare(&format!(
         "WITH eligible AS (
-        SELECT o.*, row_number() OVER (PARTITION BY blob_id
+        SELECT o.*, row_number() OVER (PARTITION BY {occurrence_partition}
             ORDER BY timestamp DESC, o.commit_id DESC, path ASC) occurrence_rank
         FROM git_occurrences o JOIN git_commits c USING(commit_id)
         WHERE o.commit_id IN (SELECT value FROM json_each(?1)))
-        SELECT o.path,u.line_start,u.line_end,u.text,o.commit_id,o.blob_id,
+        SELECT o.path,u.line_start,u.line_end,{range_columns},o.commit_id,o.blob_id,
         CASE WHEN ?2 IS NULL THEN NULL ELSE vec_distance_cosine(e.vector,?2) END
         FROM eligible o JOIN git_blob_units b ON b.blob_id=o.blob_id {variant}
         JOIN indexed_units u USING(unit_id) LEFT JOIN unit_embeddings e USING(unit_id)
@@ -842,14 +1214,17 @@ pub fn search(
             let path: Vec<u8> = r.get(0)?;
             Ok((
                 path,
+                r.get::<_, Option<usize>>(3)?,
+                r.get::<_, Option<usize>>(4)?,
+                r.get::<_, String>(5)?,
                 SearchResult {
                     path: String::new(),
                     line_start: r.get(1)?,
                     line_end: r.get(2)?,
-                    text: r.get(3)?,
-                    commit_id: Some(r.get(4)?),
-                    blob_id: Some(r.get(5)?),
-                    distance: r.get(6)?,
+                    text: String::new(),
+                    commit_id: Some(r.get(6)?),
+                    blob_id: Some(r.get(7)?),
+                    distance: r.get(8)?,
                     page: None,
                     repo_id: None,
                 },
@@ -858,33 +1233,74 @@ pub fn search(
     )?;
     let mut results = vec![];
     for row in rows {
-        let (path, mut result) = row?;
+        let (path, byte_start, byte_end, legacy_text, mut result) = row?;
         let Ok(path) = String::from_utf8(path) else {
             continue;
         };
         result.path = path;
-        results.push(result);
+        results.push((byte_start, byte_end, legacy_text, result));
     }
-    if mode == "exact" {
-        results.retain(|r| r.text.to_lowercase().contains(&query.to_lowercase()));
-    } else {
+    let mut blob_cache = std::collections::HashMap::new();
+    let hydrate = |candidate: &mut (Option<usize>, Option<usize>, String, SearchResult),
+                   cache: &mut std::collections::HashMap<String, String>|
+     -> Result<()> {
+        candidate.3.text = match (candidate.0, candidate.1) {
+            (Some(start), Some(end)) => hydrate_unit(
+                candidate
+                    .3
+                    .blob_id
+                    .as_deref()
+                    .ok_or("missing Git blob ID")?,
+                start,
+                end,
+                cache,
+            )?,
+            (None, None) => candidate.2.clone(),
+            _ => return Err("invalid indexed Git byte range".into()),
+        };
+        Ok(())
+    };
+    if mode == "exact" || mode == "combined" {
+        for candidate in &mut results {
+            hydrate(candidate, &mut blob_cache)?;
+        }
+        results.retain(|candidate| {
+            candidate
+                .3
+                .text
+                .to_lowercase()
+                .contains(&query.to_lowercase())
+                || mode != "exact"
+        });
+    }
+    if mode != "exact" {
         results.sort_by(|a, b| {
-            a.distance
+            a.3.distance
                 .unwrap()
-                .total_cmp(&b.distance.unwrap())
-                .then(a.path.cmp(&b.path))
-                .then(a.line_start.cmp(&b.line_start))
-                .then(a.blob_id.cmp(&b.blob_id))
+                .total_cmp(&b.3.distance.unwrap())
+                .then(a.3.path.cmp(&b.3.path))
+                .then(a.3.line_start.cmp(&b.3.line_start))
+                .then(a.3.blob_id.cmp(&b.3.blob_id))
         });
         let mut index = 0;
-        results.retain(|r| {
+        results.retain(|candidate| {
             let keep = index < limit
-                || (mode == "combined" && r.text.to_lowercase().contains(&query.to_lowercase()));
+                || (mode == "combined"
+                    && candidate
+                        .3
+                        .text
+                        .to_lowercase()
+                        .contains(&query.to_lowercase()));
             index += 1;
             keep
         });
+        if mode == "semantic" {
+            for candidate in &mut results {
+                hydrate(candidate, &mut blob_cache)?;
+            }
+        }
     }
-    Ok(results)
+    Ok(results.into_iter().map(|candidate| candidate.3).collect())
 }
 
 #[derive(Default)]

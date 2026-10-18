@@ -8,7 +8,8 @@ Custom embedding commands receive each text on stdin and must print a JSON numer
 
 ```sh
 repodb init                          # build the first history snapshot
-repodb refresh                       # explicitly replace it from current refs + HEAD
+repodb refresh                       # full snapshot from current refs + HEAD
+repodb refresh --changed              # incrementally index current branch HEAD vs first parent
 repodb search 'literal text'          # checked-out HEAD only (the default)
 repodb search 'literal text' --all-history --json
 repodb search 'literal text' --commit COMMIT_ID
@@ -17,9 +18,15 @@ repodb search 'question' --combined --all-history --exclude-commit ID3
 ```
 
 Search does not refresh the index. Run `repodb refresh` on demand after ref
-changes or when indexed content may be stale. An optional post-commit hook is
-provided in `hooks/post-commit`; enable it only by explicitly configuring
-this repository's `core.hooksPath` to `hooks`.
+changes or when indexed content may be stale. `repodb refresh --changed` only
+indexes the current branch's HEAD relative to its first parent: unchanged paths
+reuse their indexed blob units and vectors, while changed paths are re-read and
+re-segmented only when their blob/segmentation variant is not already indexed.
+Merge commits use their first parent; an initial commit indexes its tracked tree.
+This mode requires the first parent to already be indexed and fails with guidance
+to run a full refresh otherwise. It does not refresh imported sources or prune
+other refs. The optional post-commit hook uses this scoped mode; enable it only
+by explicitly configuring this repository's `core.hooksPath` to `hooks`.
 
 `--current-worktree` explicitly selects the default scope: the checked-out
 **commit**, never staged, unstaged, or untracked content. Checking out an already
@@ -152,10 +159,19 @@ for binary and unsupported blobs; only NUL-free UTF-8 text is searchable.
 Paths are stored as Git bytes; non-UTF-8 paths retain metadata but are not emitted
 as search results. Submodule commits are not file blobs and are not traversed.
 
-Storage version 3 separates Git commits, distinct blob contents, indexed units,
-occurrences, and per-unit vectors. Occurrences record their segmentation kind,
-and unit mappings are keyed by blob and kind. Unit content/vectors do not require
-fabricated Git commits for future imported sources. Repeated historical
+Storage version 4 separates Git commits, blob IDs/status, indexed-unit byte and line ranges,
+occurrences, and per-unit vectors. Indexed Git text is hydrated from the referenced Git object
+at search time; the database does not retain verbatim Git blob or unit text. Imported Git
+sources retain their own object-store locator and blob/range references, separate from local
+history objects. Search therefore requires the corresponding Git objects to remain available;
+missing objects or invalid byte ranges are errors. Refresh and reembed read source text from
+those objects, while temporary refresh staging may contain text before atomic publication.
+Explicit refresh rebuilds legacy Git text snapshots from their recorded Git repositories into
+range-only storage; legacy rows remain searchable until that successful refresh, and search
+never initiates migration or refresh. Non-Git imported documents continue to store their text.
+Occurrences record their segmentation kind, and unit mappings are keyed by blob and kind.
+Unit content/vectors do not require fabricated Git commits for future imported sources.
+Repeated historical
 occurrences of the same blob/kind do not cause repeated embeddings within one
 refresh/reembed. Different kinds may require
 different units and embeddings for the same blob. Refresh currently traverses

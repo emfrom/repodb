@@ -2,6 +2,8 @@ pub struct Unit<'a> {
     pub text: &'a str,
     pub line_start: usize,
     pub line_end: usize,
+    pub byte_start: usize,
+    pub byte_end: usize,
 }
 
 pub fn kind(path: &[u8]) -> &'static str {
@@ -25,7 +27,12 @@ pub fn kind(path: &[u8]) -> &'static str {
 // Bounds apply to UTF-8 bytes, including preserved internal line endings.
 const MAX_UNIT_BYTES: usize = 4096;
 
-fn bounded(text: &str, mut line_start: usize, visit: &mut impl FnMut(Unit<'_>) -> bool) -> bool {
+fn bounded(
+    text: &str,
+    mut line_start: usize,
+    mut byte_start: usize,
+    visit: &mut impl FnMut(Unit<'_>) -> bool,
+) -> bool {
     let text = text
         .strip_suffix("\r\n")
         .or_else(|| text.strip_suffix('\n'))
@@ -49,10 +56,13 @@ fn bounded(text: &str, mut line_start: usize, visit: &mut impl FnMut(Unit<'_>) -
             text: piece,
             line_start,
             line_end: line_start + newlines - usize::from(piece.ends_with('\n')),
+            byte_start,
+            byte_end: byte_start + piece.len(),
         }) {
             return false;
         }
         line_start += newlines;
+        byte_start += end;
         remaining = &remaining[end..];
     }
     true
@@ -64,7 +74,7 @@ fn paragraphs(text: &str, base_line: usize, visit: &mut impl FnMut(Unit<'_>) -> 
     let mut start_line = base_line;
     for (i, line) in text.split_inclusive('\n').enumerate() {
         if line.trim().is_empty() {
-            if start < offset && !bounded(&text[start..offset], start_line, visit) {
+            if start < offset && !bounded(&text[start..offset], start_line, start, visit) {
                 return false;
             }
             start = offset + line.len();
@@ -73,7 +83,7 @@ fn paragraphs(text: &str, base_line: usize, visit: &mut impl FnMut(Unit<'_>) -> 
         offset += line.len();
     }
     if start < text.len() {
-        return bounded(&text[start..], start_line, visit);
+        return bounded(&text[start..], start_line, start, visit);
     }
     true
 }
@@ -121,6 +131,7 @@ fn visit_ranges(text: &str, ranges: &[(usize, usize)], visitor: &mut impl FnMut(
     let mut line = 1;
     for &(start, end) in ranges {
         let mut remaining = &text[start..end];
+        let mut byte_start = start;
         while !remaining.is_empty() {
             let mut length = remaining.len().min(MAX_UNIT_BYTES);
             while !remaining.is_char_boundary(length) {
@@ -141,10 +152,13 @@ fn visit_ranges(text: &str, ranges: &[(usize, usize)], visitor: &mut impl FnMut(
                 text: piece,
                 line_start: line,
                 line_end: line + newlines - usize::from(piece.ends_with('\n')),
+                byte_start,
+                byte_end: byte_start + piece.len(),
             }) {
                 return;
             }
             line += newlines;
+            byte_start += length;
             remaining = &remaining[length..];
         }
     }
