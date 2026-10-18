@@ -25,8 +25,9 @@ indexes the current branch's HEAD relative to its first parent: unchanged paths
 reuse their indexed blob units and vectors, while changed paths are re-read and
 re-segmented only when their blob/segmentation variant is not already indexed.
 Merge commits use their first parent; an initial commit indexes its tracked tree.
-This mode requires the first parent to already be indexed and fails with guidance
-to run a full refresh otherwise. It does not refresh imported sources or prune
+When a first parent exists, it must already be indexed; otherwise this mode
+fails with guidance to run a full refresh. An initial commit has no baseline
+requirement. It does not refresh imported sources or prune
 other refs. The optional post-commit hook uses this scoped mode; enable it only
 by explicitly configuring this repository's `core.hooksPath` to `hooks`.
 
@@ -55,9 +56,10 @@ and ranges are not accepted. A deleted ref's captured commit remains selectable
 until a successful explicit refresh removes it.
 
 All scopes and filters apply equally to exact, semantic, and combined search.
-Exact search remains a case-insensitive literal substring search. Every `init` or
-`refresh` builds both plaintext units and embeddings in one atomic snapshot, so
-semantic search works immediately afterward. The first scan uses
+Exact search remains a case-insensitive literal substring search. `init` and a
+full `refresh` prepare searchable units and embeddings for the captured history
+in one atomic snapshot. `refresh --changed` atomically indexes the new commit, embeds changed or
+previously unindexed content, and reuses unchanged units and vectors. Semantic search works after either mode. The first scan uses
 `[tools].embedding_command` from the XDG RepoDB config, or defaults to
 `~/bin/generate_embeddings` with `all-MiniLM-L6-v2`; the selected command/model
 are stored per database and reused on later scans. Use
@@ -176,17 +178,18 @@ Unit content/vectors do not require fabricated Git commits for future imported s
 Repeated historical
 occurrences of the same blob/kind do not cause repeated embeddings within one
 refresh/reembed. Different kinds may require
-different units and embeddings for the same blob. Refresh currently traverses
-every reachable commit's tree and regenerates vectors for distinct units when a
+different units and embeddings for the same blob. A full refresh traverses
+every reachable commit's tree and generates vectors for distinct units when a
 model is configured. Refresh no longer rejects reachable history based on fixed commit, occurrence,
 blob-size, unit-count, vector-count, or aggregate byte ceilings. Git tree records
 are consumed incrementally rather than captured as a complete tree. All Git reads
 and embedding generation finish before publication, and failures leave the
 previous snapshot searchable.
 
-Existing #3 databases (without blob IDs) and version 2/#4 databases (line units)
-remain searchable in their original representation until a successful explicit
-`init`/`refresh` rebuilds them as version 3. All Git reads and embedding generation
+Existing #3 databases (without blob IDs), version 2/#4 databases (line units),
+and version 3 databases (verbatim Git text) remain searchable in their original
+representation until a successful explicit `init` or full `refresh` rebuilds them
+as version 4. All Git reads and embedding generation
 finish before publication; tables, vectors, model dimension, and schema version
 are published in one SQLite
 transaction. Git/embedding/migration failures preserve the previous usable
