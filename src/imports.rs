@@ -777,6 +777,8 @@ pub fn reembed(c: &Connection, command: &str, model: &str) -> Result<Option<usiz
         let mut rows = stmt.query([])?;
         let mut staged =
             c.prepare("INSERT INTO temp.import_reembed_vectors VALUES(?1,?2,?3,?4,?5,?6,?7,?8)")?;
+        let mut batch_readers: std::collections::HashMap<String, GitBlobReader> =
+            std::collections::HashMap::new();
         while let Some(row) = rows.next()? {
             let source: String = row.get(0)?;
             let version: String = row.get(1)?;
@@ -795,7 +797,8 @@ pub fn reembed(c: &Connection, command: &str, model: &str) -> Result<Option<usiz
                     [&source],
                     |r| r.get(0),
                 )?;
-                hydrate_git_unit(&locator, blob, start, end)?
+                let reader = batch_reader(&mut batch_readers, &locator)?;
+                hydrate_git_unit_with_reader(reader, blob, start, end)?
             } else {
                 row.get::<_, String>(3)?
             };
@@ -815,6 +818,9 @@ pub fn reembed(c: &Connection, command: &str, model: &str) -> Result<Option<usiz
                 as_bytes(&vector)
             ])?;
         }
+        for reader in batch_readers.values_mut() {
+            reader.finish()?;
+        }
     }
     c.execute("UPDATE imported_units SET vector=(SELECT vector FROM temp.import_reembed_vectors v WHERE v.kind='file' AND v.source_id=imported_units.source_id AND v.version=imported_units.version AND v.line=imported_units.line AND v.text=imported_units.text)", [])?;
     if column_exists(c, "imported_git_units", "blob_id")? {
@@ -828,20 +834,6 @@ pub fn reembed(c: &Connection, command: &str, model: &str) -> Result<Option<usiz
 
 fn slice_git_unit(blob_bytes: &[u8], blob_id: &str, start: usize, end: usize) -> Result<String> {
     git_ranges::slice_utf8(blob_bytes, blob_id, start, end, "imported")
-}
-
-fn hydrate_git_unit(locator: &str, blob_id: &str, start: usize, end: usize) -> Result<String> {
-    let output = Command::new("git")
-        .args(["-C", locator, "cat-file", "blob", blob_id])
-        .output()?;
-    if !output.status.success() {
-        return Err(format!(
-            "cannot hydrate imported Git blob {blob_id} from {locator}: {}",
-            String::from_utf8_lossy(&output.stderr)
-        )
-        .into());
-    }
-    slice_git_unit(&output.stdout, blob_id, start, end)
 }
 
 fn hydrate_git_unit_with_reader(
@@ -1077,11 +1069,43 @@ pub fn search(c: &Connection, query: &str, mode: &str, limit: usize) -> Result<V
 #[cfg(test)]
 mod tests {
     use super::{
-        bounded_command_output_with_input, checksum, pdf_representation, slice_git_unit,
-        visit_cache_pages, write_cache,
+        batch_reader, bounded_command_output_with_input, checksum, hydrate_git_unit_with_reader,
+        pdf_representation, slice_git_unit, visit_cache_pages, write_cache,
     };
     use crate::budget::Budget;
     use std::process::{Command, Stdio};
+
+    #[test]
+    fn repeated_reembed_units_from_one_blob_share_an_operation_scoped_reader() {
+        let root = tempfile::tempdir().unwrap();
+        let git = |args: &[&str]| {
+            let output = Command::new("git")
+                .arg("-C")
+                .arg(root.path())
+                .args(args)
+                .output()
+                .unwrap();
+            assert!(output.status.success());
+            String::from_utf8(output.stdout).unwrap().trim().to_owned()
+        };
+        git(&["init", "-q"]);
+        let content = "first unit\nsecond unit\n";
+        std::fs::write(root.path().join("units.txt"), content).unwrap();
+        git(&["add", "units.txt"]);
+        let blob = git(&["hash-object", "units.txt"]);
+        let mut readers = std::collections::HashMap::new();
+        let reader = batch_reader(&mut readers, root.path().to_str().unwrap()).unwrap();
+
+        assert_eq!(
+            hydrate_git_unit_with_reader(reader, &blob, 0, 10).unwrap(),
+            "first unit"
+        );
+        assert_eq!(
+            hydrate_git_unit_with_reader(reader, &blob, 11, 22).unwrap(),
+            "second unit"
+        );
+        assert_eq!(readers.len(), 1, "one persistent reader serves both units");
+    }
 
     #[test]
     fn git_unit_slice_validates_utf8_byte_ranges() {

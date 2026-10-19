@@ -68,6 +68,16 @@ impl GitBlobReader {
         })
     }
 
+    fn terminate(&mut self) {
+        drop(self.stdin.take());
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+        if let Some(stderr) = self.stderr.take() {
+            let _ = stderr.join();
+        }
+        self.finished = true;
+    }
+
     pub fn finish(&mut self) -> Result<()> {
         if self.finished {
             return Ok(());
@@ -114,9 +124,9 @@ impl GitBlobReader {
                 .parse()
                 .map_err(|_| "invalid git batch object size")?;
             if size > MAX_HYDRATED_BLOB_BYTES {
-                return Err(
-                    format!("Git blob {id} is too large to hydrate safely ({size} bytes)").into(),
-                );
+                let error = format!("Git blob {id} is too large to hydrate safely ({size} bytes)");
+                self.terminate();
+                return Err(error.into());
             }
             let mut bytes = vec![0; size];
             self.stdout.read_exact(&mut bytes)?;
@@ -168,7 +178,11 @@ impl Drop for GitBlobReader {
 #[cfg(test)]
 mod tests {
     use super::{GitBlobReader, MAX_STDERR_EXCERPT_BYTES};
-    use std::{fs, process::Command};
+    use std::{
+        fs,
+        process::Command,
+        time::{Duration, Instant},
+    };
 
     fn git(root: &std::path::Path, args: &[&str]) -> String {
         let output = Command::new("git")
@@ -229,6 +243,57 @@ mod tests {
 
         assert_eq!(excerpt.len(), MAX_STDERR_EXCERPT_BYTES);
         assert_eq!(excerpt, vec![b'x'; MAX_STDERR_EXCERPT_BYTES]);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn oversized_batch_response_kills_child_before_waiting_for_stdout() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let root = tempfile::tempdir().unwrap();
+        let bin = root.path().join("bin");
+        fs::create_dir(&bin).unwrap();
+        let fake_git = bin.join("git");
+        fs::write(
+            &fake_git,
+            format!(
+                "#!/bin/sh\nprintf 'oversized blob {}\\n'\nexec yes x\n",
+                super::MAX_HYDRATED_BLOB_BYTES + 1
+            ),
+        )
+        .unwrap();
+        fs::set_permissions(&fake_git, fs::Permissions::from_mode(0o755)).unwrap();
+        let mut child = Command::new(&fake_git)
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        let stdin = child.stdin.take();
+        let stdout = std::io::BufReader::new(child.stdout.take().unwrap());
+        let stderr = child
+            .stderr
+            .take()
+            .map(|stderr| std::thread::spawn(move || super::drain_stderr(stderr)));
+        let mut reader = GitBlobReader {
+            child,
+            stdin,
+            stdout,
+            stderr,
+            cache: std::collections::HashMap::new(),
+            cached_bytes: 0,
+            large_blob: None,
+            finished: false,
+        };
+        let started = Instant::now();
+        let error = reader.blob("oversized").unwrap_err().to_string();
+        assert!(error.contains("too large to hydrate safely"));
+        assert!(started.elapsed() < Duration::from_secs(3));
+        assert!(
+            reader.child.try_wait().unwrap().is_some(),
+            "child was not reaped"
+        );
+        assert!(reader.finished);
     }
 
     #[test]
