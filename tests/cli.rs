@@ -1086,6 +1086,62 @@ fn local_document_formats_import_searchable_text_and_reject_unsupported_files() 
 }
 
 #[test]
+fn html_import_versions_hash_original_bytes_and_preserve_distinct_sources() {
+    let repo = repository();
+    let root = repo.path();
+    assert!(run(root, &["init"]).0);
+    let sources = [
+        (
+            "first.html",
+            "<html><body><p>Shared searchable text</p></body></html>",
+            "aad0141fa5cf4b490b4c2762d7595bb4fe2187dbee6b877a11789911268e22fb",
+        ),
+        (
+            "second.html",
+            "<html><body><section>Shared searchable text</section></body></html>",
+            "c01235d091024dd1034788d1185e5e5b9ccac21912510db6a6f00c388146569f",
+        ),
+    ];
+    for (name, contents, _) in sources {
+        let path = root.join(name);
+        fs::write(&path, contents).unwrap();
+        let path = path.to_string_lossy().into_owned();
+        assert!(run(root, &["import", &path]).0, "import {name}");
+    }
+    assert!(run(root, &["refresh"]).0);
+
+    let database = rusqlite::Connection::open(root.join(".git/repodb.sqlite")).unwrap();
+    let mut versions = database
+        .prepare(
+            "SELECT s.locator,v.version,v.content,v.representation_sha256 \
+             FROM imported_sources s JOIN imported_versions v ON v.source_id=s.id \
+             ORDER BY s.locator",
+        )
+        .unwrap();
+    let rows: Vec<(String, String, String, String)> = versions
+        .query_map([], |row| {
+            Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+        })
+        .unwrap()
+        .map(Result::unwrap)
+        .collect();
+    assert_eq!(rows.len(), sources.len());
+    for ((_, version, content, representation_hash), (_, _, source_hash)) in
+        rows.iter().zip(sources)
+    {
+        assert_eq!(version, source_hash);
+        assert_eq!(content, "   Shared searchable text   ");
+        assert_eq!(
+            representation_hash,
+            "61f66ecf5088e4d2cad86e9d3d5af2b7cb8d2a689f84b3c30c21ac742e0294e7"
+        );
+    }
+    assert_ne!(rows[0].1, rows[1].1);
+    assert_eq!(rows[0].2, rows[1].2);
+    assert!(!search_json(root, &["Shared searchable text"]).is_empty());
+}
+
+#[test]
 fn imported_files_refresh_with_references_and_both_retention_policies() {
     let repo = repository();
     let root = repo.path();

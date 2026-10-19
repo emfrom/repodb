@@ -581,7 +581,8 @@ pub fn refresh(c: &Connection) -> Result<()> {
             };
             (source_version, Some(pdf_representation(&pages)?))
         } else {
-            // Transfer ownership into decoded text instead of retaining source bytes too.
+            // Imported version identity is the original source, not its decoded representation.
+            let source_version = checksum(&source_bytes);
             let source_text = String::from_utf8(source_bytes)?;
             let is_html = Path::new(&locator)
                 .extension()
@@ -598,7 +599,7 @@ pub fn refresh(c: &Connection) -> Result<()> {
                 return Err(format!("no searchable text found in local document {locator}").into());
             }
             refresh_memory_bytes.charge(content.len(), "decoded local import text")?;
-            (checksum(content.as_bytes()), Some(content))
+            (source_version, Some(content))
         };
         let fetched_order: i64 = c.query_row(
             "SELECT COALESCE(MAX(fetched_order),0)+1 FROM temp.import_stage_versions",
