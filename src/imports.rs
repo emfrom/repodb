@@ -18,6 +18,14 @@ use sources::{column_exists, init};
 pub(crate) use sources::{register, set_retention};
 const MAX_COMMAND_STDERR_BYTES: usize = 64 * 1024;
 
+fn pdf_representation(pages: &[String]) -> Result<String> {
+    let pages_json = serde_json::to_string(pages)?;
+    Ok(serde_json::to_string(&serde_json::json!({
+        "sha256": checksum(pages_json.as_bytes()),
+        "pages": pages,
+    }))?)
+}
+
 fn table_exists(c: &Connection, table: &str) -> Result<bool> {
     Ok(c.query_row(
         "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name=?1)",
@@ -538,7 +546,16 @@ pub fn refresh(c: &Connection) -> Result<()> {
                     )?;
                 }
             }
-            (source_version, None)
+            // Keep the converted snapshot alongside the units. The conversion cache is only
+            // an optimization; it may be deleted without losing the imported representation.
+            let pages = {
+                let mut statement =
+                    c.prepare("SELECT text FROM temp.import_pdf_pages ORDER BY page")?;
+                statement
+                    .query_map([], |row| row.get::<_, String>(0))?
+                    .collect::<std::result::Result<Vec<_>, _>>()?
+            };
+            (source_version, Some(pdf_representation(&pages)?))
         } else {
             // Transfer ownership into decoded text instead of retaining source bytes too.
             let content = String::from_utf8(source_bytes)?;
@@ -1010,9 +1027,31 @@ pub fn search(c: &Connection, query: &str, mode: &str, limit: usize) -> Result<V
 
 #[cfg(test)]
 mod tests {
-    use super::{bounded_command_output_with_input, checksum, visit_cache_pages, write_cache};
+    use super::{
+        bounded_command_output_with_input, checksum, pdf_representation, visit_cache_pages,
+        write_cache,
+    };
     use crate::budget::Budget;
     use std::process::{Command, Stdio};
+
+    #[test]
+    fn pdf_representation_keeps_pages_and_detects_tampering() {
+        let pages = vec!["first page".to_owned(), "second\npage".to_owned()];
+        let representation = pdf_representation(&pages).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&representation).unwrap();
+        let canonical_pages = serde_json::to_string(&pages).unwrap();
+        assert_eq!(parsed["pages"], serde_json::json!(pages));
+        assert_eq!(parsed["sha256"], checksum(canonical_pages.as_bytes()));
+        assert_ne!(
+            parsed["sha256"],
+            checksum(
+                serde_json::to_string(&vec!["changed page"])
+                    .unwrap()
+                    .as_bytes()
+            )
+        );
+        assert_eq!(representation, pdf_representation(&pages).unwrap());
+    }
 
     #[test]
     fn command_stdout_and_stderr_capture_fit_remaining_budget_together() {
