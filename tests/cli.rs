@@ -1051,6 +1051,7 @@ fn local_document_formats_import_searchable_text_and_reject_unsupported_files() 
             "Plain text searchable marker",
             "Plain text searchable marker",
         ),
+        ("source.rs", "pub fn code_marker() {}", "code_marker"),
         (
             "guide.org",
             "Org searchable marker",

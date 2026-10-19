@@ -151,18 +151,19 @@ pub(crate) fn register(c: &Connection, locator: &str) -> Result<()> {
         );
     }
     if !is_url && !is_git {
-        let supported = path
-            .extension()
-            .and_then(|extension| extension.to_str())
-            .is_some_and(|extension| {
-                matches!(
-                    extension.to_ascii_lowercase().as_str(),
-                    "md" | "markdown" | "txt" | "pdf" | "html" | "htm" | "org"
-                )
-            });
+        let supported = path.extension().is_none()
+            || path
+                .extension()
+                .and_then(|extension| extension.to_str())
+                .is_some_and(|extension| {
+                    matches!(
+                        extension.to_ascii_lowercase().as_str(),
+                        "md" | "markdown" | "txt" | "pdf" | "html" | "htm" | "org" | "rs"
+                    )
+                });
         if !supported {
             return Err(format!(
-                "unsupported local document format for {}; supported formats are .md, .markdown, .txt, .pdf, .html, .htm, and .org",
+                "unsupported local document format for {}; supported formats are extensionless plain text, .md, .markdown, .txt, .pdf, .html, .htm, .org, and .rs",
                 path.display()
             )
             .into());
