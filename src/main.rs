@@ -66,7 +66,21 @@ fn database() -> Result<PathBuf> {
     let p = PathBuf::from(g.trim());
     Ok((if p.is_absolute() { p } else { root()?.join(p) }).join("repodb.sqlite"))
 }
-fn open_db() -> Result<Connection> {
+fn selected_database(option: Option<String>) -> Result<PathBuf> {
+    match option {
+        Some(value) if !value.is_empty() => {
+            let path = PathBuf::from(value);
+            Ok(if path.is_absolute() {
+                path
+            } else {
+                env::current_dir()?.join(path)
+            })
+        }
+        Some(_) => Err("--database requires a nonempty path".into()),
+        None => database(),
+    }
+}
+fn open_db(path: &std::path::Path) -> Result<Connection> {
     unsafe {
         sqlite3_auto_extension(Some(std::mem::transmute::<
             *const (),
@@ -77,7 +91,7 @@ fn open_db() -> Result<Connection> {
             ) -> i32,
         >(sqlite_vec::sqlite3_vec_init as *const ())))
     };
-    let c = Connection::open(database()?)?;
+    let c = Connection::open(path)?;
     if !history::is_current(&c)? {
         c.execute_batch("CREATE TABLE IF NOT EXISTS indexed_files(path TEXT PRIMARY KEY NOT NULL,commit_id TEXT NOT NULL,content TEXT NOT NULL); CREATE TABLE IF NOT EXISTS embeddings(path TEXT NOT NULL,line INTEGER NOT NULL,text TEXT NOT NULL,commit_id TEXT NOT NULL,vector BLOB NOT NULL,PRIMARY KEY(path,line)); CREATE TABLE IF NOT EXISTS embedding_config(key TEXT PRIMARY KEY,value TEXT NOT NULL);")?;
     }
@@ -380,9 +394,14 @@ fn semantic(
 }
 fn execute() -> Result<()> {
     let mut a = env::args().skip(1);
-    let Some(cmd) = a.next() else {
-        return Err("usage: repodb <init|refresh [--changed]|reembed|search>".into());
+    let first = a.next().ok_or("usage: repodb [--database <path>] <init|refresh [--changed]|import|retention|reembed|search> (default database: <git-dir>/repodb.sqlite)")?;
+    let (option, cmd) = if first == "--database" {
+        let path = a.next().ok_or("--database requires a path")?;
+        (Some(path), a.next().ok_or("--database requires a command")?)
+    } else {
+        (None, first)
     };
+    let db_path = selected_database(option)?;
     match cmd.as_str() {
         "init" | "refresh" => {
             let arguments: Vec<_> = a.collect();
@@ -390,7 +409,7 @@ fn execute() -> Result<()> {
             if (!arguments.is_empty() && !changed) || (cmd == "init" && changed) {
                 return Err("unexpected arguments".into());
             }
-            let mut db = open_db()?;
+            let mut db = open_db(&db_path)?;
             if changed {
                 history::refresh_changed(&mut db)?;
             } else {
@@ -411,14 +430,14 @@ fn execute() -> Result<()> {
             if a.next().is_some() {
                 return Err("import accepts one file, URL, or Git repository".into());
             }
-            imports::register(&open_db()?, &locator)?;
+            imports::register(&open_db(&db_path)?, &locator)?;
         }
         "retention" => {
             let value = a.next().ok_or("retention requires latest or all")?;
             if a.next().is_some() {
                 return Err("unexpected arguments".into());
             }
-            imports::set_retention(&open_db()?, &value)?;
+            imports::set_retention(&open_db(&db_path)?, &value)?;
         }
         "reembed" => {
             let mut command = config::embedding_command()?;
@@ -430,7 +449,7 @@ fn execute() -> Result<()> {
                     _ => return Err(format!("unexpected argument {x}").into()),
                 }
             }
-            let mut c = open_db()?;
+            let mut c = open_db(&db_path)?;
             if history::is_current(&c)? {
                 history::reembed(&mut c, &command, &model)?;
             } else {
@@ -469,7 +488,7 @@ fn execute() -> Result<()> {
                 }
             }
             let q = query.ok_or("search requires query")?;
-            let mut connection = open_db()?;
+            let mut connection = open_db(&db_path)?;
             // Scope, model configuration and results belong to one read snapshot.
             let c = connection.transaction()?;
             let commits = scope.resolve(&c)?;

@@ -96,6 +96,133 @@ fn repository() -> tempfile::TempDir {
 }
 
 #[test]
+fn explicit_database_paths_keep_independent_history_and_preserve_default() {
+    let repo = repository();
+    let root = repo.path();
+    let databases = tempfile::tempdir().unwrap();
+    let first = databases.path().join("first.sqlite");
+    let second = databases.path().join("second.sqlite");
+    let first_path = first.to_str().unwrap();
+    let second_path = second.to_str().unwrap();
+    let search = |path: &str, phrase: &str| -> Vec<serde_json::Value> {
+        let (ok, output) = run(root, &["--database", path, "search", "--json", phrase]);
+        assert!(ok, "{output}");
+        serde_json::from_str(&output).unwrap()
+    };
+
+    assert!(run(root, &["--database", first_path, "init"]).0);
+    assert!(first.is_file());
+    assert!(!second.exists());
+    assert!(!root.join(".git/repodb.sqlite").exists());
+    assert_eq!(search(first_path, "Exact [literal] TARGET").len(), 1);
+
+    fs::write(root.join("notes.txt"), "Second unique marker\n").unwrap();
+    git(root, &["add", "notes.txt"]);
+    git(root, &["commit", "-qm", "change marker"]);
+    assert!(run(root, &["--database", second_path, "init"]).0);
+    assert_eq!(search(second_path, "Second unique marker").len(), 1);
+    assert!(search(first_path, "Second unique marker").is_empty());
+    assert!(!root.join(".git/repodb.sqlite").exists());
+
+    assert!(run(root, &["--database", second_path, "retention", "latest"]).0);
+    let import_path = root.join("external.txt");
+    fs::write(&import_path, "Imported isolated marker\n").unwrap();
+    assert!(
+        run(
+            root,
+            &[
+                "--database",
+                second_path,
+                "import",
+                import_path.to_str().unwrap()
+            ]
+        )
+        .0
+    );
+    assert!(run(root, &["--database", second_path, "refresh"]).0);
+    assert!(run(root, &["--database", second_path, "reembed"]).0);
+    assert_eq!(search(second_path, "Imported isolated marker").len(), 1);
+    for mode in ["--semantic", "--combined"] {
+        let (ok, output) = run(
+            root,
+            &[
+                "--database",
+                second_path,
+                "search",
+                "--json",
+                mode,
+                "Second unique marker",
+            ],
+        );
+        assert!(ok, "{mode}: {output}");
+        assert!(
+            !serde_json::from_str::<Vec<serde_json::Value>>(&output)
+                .unwrap()
+                .is_empty()
+        );
+    }
+    assert!(search(first_path, "Imported isolated marker").is_empty());
+
+    assert!(run(root, &["--database", first_path, "refresh", "--changed"]).0);
+    assert_eq!(search(first_path, "Second unique marker").len(), 1);
+    assert!(run(root, &["init"]).0);
+    assert!(root.join(".git/repodb.sqlite").is_file());
+}
+
+#[test]
+fn database_option_resolves_relative_to_cwd_and_rejects_missing_paths() {
+    let repo = repository();
+    let root = repo.path();
+    let config_home = test_config_home(root);
+    let in_subdirectory = |args: &[&str]| {
+        Command::new(env!("CARGO_BIN_EXE_repodb"))
+            .args(args)
+            .current_dir(root.join("src"))
+            .env("XDG_CONFIG_HOME", &config_home)
+            .env(
+                "REPODB_SEMGREP_CORE",
+                semgrep_corpus::required_semgrep_core(),
+            )
+            .output()
+            .unwrap()
+    };
+    let output = in_subdirectory(&["--database", "isolated.sqlite", "init"]);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(root.join("src/isolated.sqlite").is_file());
+    assert!(!root.join(".git/repodb.sqlite").exists());
+    let output = in_subdirectory(&[
+        "--database",
+        "isolated.sqlite",
+        "search",
+        "--json",
+        "Rust phrase",
+    ]);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        serde_json::from_slice::<Vec<serde_json::Value>>(&output.stdout)
+            .unwrap()
+            .len(),
+        1
+    );
+    for args in [
+        vec!["--database"],
+        vec!["--database", ""],
+        vec!["--database", "", "init"],
+    ] {
+        assert!(!run(root, &args).0, "{args:?} must fail");
+    }
+    assert!(!root.join(".git/repodb.sqlite").exists());
+}
+
+#[test]
 fn history_search_skips_non_utf8_paths_and_returns_valid_paths() {
     use std::os::unix::ffi::OsStrExt;
 

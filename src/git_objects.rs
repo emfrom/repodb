@@ -101,10 +101,10 @@ impl GitBlobReader {
     }
 
     pub fn blob(&mut self, id: &str) -> Result<Vec<u8>> {
-        if let Some((cached_id, bytes)) = &self.large_blob {
-            if cached_id == id {
-                return Ok(bytes.clone());
-            }
+        if let Some((cached_id, bytes)) = &self.large_blob
+            && cached_id == id
+        {
+            return Ok(bytes.clone());
         }
         if !self.cache.contains_key(id) {
             let stdin = self.stdin.as_mut().ok_or("git batch reader is closed")?;
@@ -203,7 +203,7 @@ mod tests {
     fn batch_reader_reuses_blob_and_preserves_binary_bytes() {
         let root = tempfile::tempdir().unwrap();
         git(root.path(), &["init", "-q"]);
-        let payload = [b'\0', b'\n', b'\xff', b'x'];
+        let payload = *b"\0\n\xffx";
         fs::write(root.path().join("binary"), payload).unwrap();
         git(root.path(), &["add", "binary"]);
         let id = git(root.path(), &["hash-object", "binary"]);

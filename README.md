@@ -23,6 +23,13 @@ repodb search 'question' --semantic --include-commit ID1 --include-commit ID2
 repodb search 'question' --combined --all-history --exclude-commit ID3
 ```
 
+By default, the SQLite database is `repodb.sqlite` in the repository's Git
+directory. To use a separate database, prefix any command with
+`--database PATH`, for example `repodb --database /tmp/corpus.sqlite init` and
+`repodb --database /tmp/corpus.sqlite search 'literal text'`. Relative paths
+are resolved against the caller's current working directory. Selecting a
+file does not change which Git repository is indexed.
+
 Search does not refresh the index. Run `repodb refresh` on demand after ref
 changes or when indexed content may be stale. `repodb refresh --changed` only
 indexes the current branch's HEAD relative to its first parent: unchanged paths
