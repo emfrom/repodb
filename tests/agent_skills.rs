@@ -54,17 +54,21 @@ fn import_skill_documents_preview_scope_and_policy_contract() {
         "name: repodb-import",
         "repodb import --preview PATH",
         "No imports have been performed until the preview has been shown",
-        "every selected supported file",
-        "every unsupported path with its reason",
-        "source_bytes",
-        "database_bytes",
-        "estimated_growth_bytes",
-        "warning_basis_bytes",
-        "warn_large",
+        "every entry in `selected_supported_local_files`",
+        "every entry in `unsupported_regular_files` with its reason",
+        "`total_selected_source_bytes`",
+        "`current_db_bytes`",
+        "`estimated_net_db_growth_bytes`",
+        "`warning_basis_bytes`",
+        "`warn_large`",
         "50 MiB",
         "excluded symlinks and `.git` directories",
-        "extensionless files",
-        "`.rs` files",
+        "Markdown, plain-text, PDF, HTML, or Org formats",
+        "plus extensionless files",
+        "`.rs` files for backward compatibility",
+        "preview-supported but out of skill scope",
+        "do not import it",
+        "These totals describe all preview-selected supported files",
         "Do not initialize",
         "Do not block solely on size",
         "one explicit `repodb refresh`",
@@ -73,6 +77,17 @@ fn import_skill_documents_preview_scope_and_policy_contract() {
         assert!(
             import.contains(required),
             "import skill must document {required:?}"
+        );
+    }
+
+    for obsolete in [
+        "`source_bytes`",
+        "`database_bytes`",
+        "`estimated_growth_bytes`",
+    ] {
+        assert!(
+            !import.contains(obsolete),
+            "import skill must use the current preview field names, not {obsolete:?}"
         );
     }
 }
