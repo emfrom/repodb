@@ -227,7 +227,7 @@ fn search_scope_filters_repo_and_document_sources_for_all_modes() {
             }
             if mode == "exact" {
                 actual.sort_unstable();
-                let mut expected: Vec<_> = paths.iter().copied().collect();
+                let mut expected = paths.to_vec();
                 expected.sort_unstable();
                 assert_eq!(actual, expected, "{mode} scope {scope}");
             } else {
