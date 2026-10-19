@@ -1111,6 +1111,44 @@ fn html_import_excludes_script_and_style_contents_from_search() {
 }
 
 #[test]
+fn html_import_discards_unclosed_script_and_style_contents() {
+    let repo = repository();
+    let root = repo.path();
+    assert!(run(root, &["init"]).0);
+    let sources = [
+        (
+            "unclosed-script.html",
+            "VISIBLE_BEFORE_SCRIPT_MARKER<script>SECRET_UNCLOSED_SCRIPT_MARKER",
+            "VISIBLE_BEFORE_SCRIPT_MARKER",
+            "SECRET_UNCLOSED_SCRIPT_MARKER",
+        ),
+        (
+            "unclosed-style.html",
+            "VISIBLE_BEFORE_STYLE_MARKER<style>SECRET_UNCLOSED_STYLE_MARKER",
+            "VISIBLE_BEFORE_STYLE_MARKER",
+            "SECRET_UNCLOSED_STYLE_MARKER",
+        ),
+    ];
+    for (name, contents, _, _) in sources {
+        let path = root.join(name);
+        fs::write(&path, contents).unwrap();
+        let path = path.to_string_lossy().into_owned();
+        assert!(run(root, &["import", &path]).0, "import {name}");
+    }
+    assert!(run(root, &["refresh"]).0);
+
+    for (name, _, visible_marker, secret_marker) in sources {
+        let path = root.join(name).to_string_lossy().into_owned();
+        let visible = search_json(root, &[visible_marker]);
+        assert!(
+            visible.iter().any(|result| result["path"] == path),
+            "{visible:?}"
+        );
+        assert!(search_json(root, &[secret_marker]).is_empty());
+    }
+}
+
+#[test]
 fn html_import_versions_hash_original_bytes_and_preserve_distinct_sources() {
     let repo = repository();
     let root = repo.path();
