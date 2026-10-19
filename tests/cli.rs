@@ -1570,6 +1570,25 @@ fn imported_pdfs_preserve_pages_cache_conversions_and_refresh_versions() {
     assert!(run_with_env(root, &["refresh"], &env).0);
     assert_eq!(fs::read_to_string(&calls).unwrap(), "calledcalled");
     assert!(serde_json::from_slice::<Vec<String>>(&fs::read(&cache).unwrap()).is_ok());
+    let database = root.join(".git/repodb.sqlite");
+    let connection = rusqlite::Connection::open(&database).unwrap();
+    let (durable, representation_hash): (String, String) = connection
+        .query_row(
+            "SELECT content,representation_sha256 FROM imported_versions",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    let durable: serde_json::Value = serde_json::from_str(&durable).unwrap();
+    assert_eq!(
+        durable["pages"],
+        serde_json::json!(["first page text", "second page marker", ""])
+    );
+    assert_eq!(representation_hash.len(), 64);
+    fs::remove_file(&cache).unwrap();
+    fs::remove_file(&pdf).unwrap();
+    let embedder = fake_embedder(root, "printf '[1,0]'");
+    assert!(run(root, &["reembed", "--command", embedder.to_str().unwrap()]).0);
     let page_two = search_json(root, &["second page marker"]);
     assert_eq!(page_two[0]["path"], pdf_string);
     assert_eq!(page_two[0]["page"], 2);

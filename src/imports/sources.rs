@@ -4,6 +4,41 @@ use std::{path::Path, process::Command};
 
 pub(super) fn init(c: &Connection) -> Result<()> {
     c.execute_batch("CREATE TABLE IF NOT EXISTS imported_sources(id TEXT PRIMARY KEY, locator TEXT NOT NULL UNIQUE, kind TEXT NOT NULL, object_store TEXT); CREATE TABLE IF NOT EXISTS imported_versions(source_id TEXT NOT NULL, version TEXT NOT NULL, content TEXT NOT NULL, fetched_order INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(source_id,version)); CREATE TABLE IF NOT EXISTS imported_units(source_id TEXT NOT NULL, version TEXT NOT NULL, line INTEGER NOT NULL, text TEXT NOT NULL, vector BLOB, page INTEGER, line_end INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(source_id,version,line,text)); CREATE TABLE IF NOT EXISTS import_config(key TEXT PRIMARY KEY,value TEXT NOT NULL); CREATE TABLE IF NOT EXISTS imported_git_units(source_id TEXT NOT NULL,commit_id TEXT NOT NULL,path TEXT NOT NULL,blob_id TEXT NOT NULL,segmentation_kind TEXT NOT NULL,byte_start INTEGER NOT NULL,byte_end INTEGER NOT NULL,line INTEGER NOT NULL,line_end INTEGER NOT NULL,vector BLOB,PRIMARY KEY(source_id,commit_id,path,byte_start));")?;
+    if !column_exists(c, "imported_versions", "representation_sha256")? {
+        c.execute(
+            "ALTER TABLE imported_versions ADD COLUMN representation_sha256 TEXT",
+            [],
+        )?;
+        let rows = {
+            let mut statement = c.prepare(
+                "SELECT source_id,version,content FROM imported_versions WHERE content<>''",
+            )?;
+            statement
+                .query_map([], |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                    ))
+                })?
+                .collect::<std::result::Result<Vec<_>, _>>()?
+        };
+        for (source, version, content) in rows {
+            c.execute("UPDATE imported_versions SET representation_sha256=?3 WHERE source_id=?1 AND version=?2", params![source, version, super::cache::checksum(content.as_bytes())])?;
+        }
+    }
+    {
+        let mut statement = c.prepare("SELECT content,representation_sha256 FROM imported_versions WHERE representation_sha256 IS NOT NULL")?;
+        let rows = statement.query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })?;
+        for row in rows {
+            let (content, expected) = row?;
+            if super::cache::checksum(content.as_bytes()) != expected {
+                return Err("imported version representation hash mismatch".into());
+            }
+        }
+    }
     if !column_exists(c, "imported_sources", "object_store")? {
         c.execute(
             "ALTER TABLE imported_sources ADD COLUMN object_store TEXT",
@@ -151,6 +186,62 @@ pub(crate) fn set_retention(c: &Connection, value: &str) -> Result<()> {
 mod tests {
     use super::init;
     use rusqlite::Connection;
+
+    #[test]
+    fn init_marks_unrecoverable_legacy_pdf_and_backfills_text_hashes() {
+        let connection = Connection::open_in_memory().unwrap();
+        connection.execute_batch(
+            "CREATE TABLE imported_sources(id TEXT PRIMARY KEY,locator TEXT NOT NULL UNIQUE,kind TEXT NOT NULL);
+             CREATE TABLE imported_versions(source_id TEXT NOT NULL,version TEXT NOT NULL,content TEXT NOT NULL,fetched_order INTEGER NOT NULL DEFAULT 0,PRIMARY KEY(source_id,version));
+             INSERT INTO imported_sources VALUES('pdf','manual.pdf','file');
+             INSERT INTO imported_sources VALUES('text','notes.txt','file');
+             INSERT INTO imported_versions VALUES('pdf','source-hash','',1);
+             INSERT INTO imported_versions VALUES('text','text-hash','durable text',2);",
+        ).unwrap();
+
+        init(&connection).unwrap();
+        let pdf_hash: Option<String> = connection
+            .query_row(
+                "SELECT representation_sha256 FROM imported_versions WHERE source_id='pdf'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            pdf_hash, None,
+            "a source hash cannot recover legacy PDF text"
+        );
+        let text_hash: String = connection
+            .query_row(
+                "SELECT representation_sha256 FROM imported_versions WHERE source_id='text'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(text_hash, super::super::cache::checksum(b"durable text"));
+
+        connection
+            .execute(
+                "UPDATE imported_versions SET content='tampered' WHERE source_id='text'",
+                [],
+            )
+            .unwrap();
+        assert!(
+            init(&connection)
+                .unwrap_err()
+                .to_string()
+                .contains("representation hash mismatch")
+        );
+        let original_rows: i64 = connection
+            .query_row("SELECT count(*) FROM imported_versions", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(
+            original_rows, 2,
+            "failed integrity migration must not discard versions"
+        );
+    }
 
     #[test]
     fn init_migrates_legacy_unit_keys_without_losing_rows() {

@@ -723,8 +723,29 @@ pub fn publish(tx: &rusqlite::Transaction<'_>) -> Result<()> {
         ("imported_git_units", "import_stage_git_units"),
     ] {
         tx.execute(&format!("DELETE FROM {table}"), [])?;
+        if table == "imported_versions" {
+            tx.execute("INSERT INTO imported_versions(source_id,version,content,fetched_order) SELECT source_id,version,content,fetched_order FROM temp.import_stage_versions", [])?;
+            let representations = {
+                let mut statement = tx.prepare(
+                    "SELECT source_id,version,content FROM imported_versions WHERE content<>''",
+                )?;
+                statement
+                    .query_map([], |row| {
+                        Ok((
+                            row.get::<_, String>(0)?,
+                            row.get::<_, String>(1)?,
+                            row.get::<_, String>(2)?,
+                        ))
+                    })?
+                    .collect::<std::result::Result<Vec<_>, _>>()?
+            };
+            for (source, version, content) in representations {
+                tx.execute("UPDATE imported_versions SET representation_sha256=?3 WHERE source_id=?1 AND version=?2", params![source, version, checksum(content.as_bytes())])?;
+            }
+            continue;
+        }
         let columns = match table {
-            "imported_versions" => "source_id,version,content,fetched_order",
+            "imported_versions" => unreachable!(),
             "imported_units" => "source_id,version,line,line_end,text,vector,page",
             "imported_git_units" => {
                 "source_id,commit_id,path,blob_id,segmentation_kind,byte_start,byte_end,line,line_end,vector"
