@@ -4165,23 +4165,12 @@ fn occurrence_path_kind_is_selected_after_filters_before_units_top_n_and_combine
     let blob = git_text(root, &["rev-parse", "HEAD:a.md"]);
     assert!(run(root, &["init"]).0);
     let tied_results = search_json(root, &["fn variant", "--commit", &tied]);
-    assert_eq!(tied_results.len(), 3, "{tied_results:?}");
-    let markdown = tied_results
-        .iter()
-        .find(|result| result["path"] == "a.md")
-        .unwrap();
+    assert_eq!(tied_results.len(), 1, "{tied_results:?}");
+    assert!(tied_results.iter().all(|result| result["path"] == "a.md"));
+    let markdown = &tied_results[0];
     assert_eq!(
         markdown["text"],
         "fn variant_alpha() {}\nfn variant_beta() {}"
-    );
-    let rust_units = tied_results
-        .iter()
-        .filter(|result| result["path"] == "z.rs")
-        .map(|result| result["text"].as_str().unwrap())
-        .collect::<Vec<_>>();
-    assert_eq!(
-        rust_units,
-        ["fn variant_alpha() {}", "fn variant_beta() {}"]
     );
     let fake = fake_embedder(
         root,

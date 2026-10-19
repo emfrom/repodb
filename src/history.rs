@@ -1163,11 +1163,7 @@ pub fn search(
     } else {
         ""
     };
-    let occurrence_partition = if schema >= 3 {
-        "blob_id, segmentation_kind"
-    } else {
-        "blob_id"
-    };
+    let occurrence_partition = "blob_id";
     let range_columns = if schema >= 4 {
         "u.byte_start,u.byte_end,''"
     } else {
