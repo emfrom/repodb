@@ -432,8 +432,15 @@ fn history_search_reports_non_utf8_paths_losslessly_without_changing_utf8_paths(
 
     let (_, readable) = run(root, &["search", "nonutf marker"]);
     assert!(
-        readable.contains("bytes:696e76616c69642dff2e747874:"),
+        readable.contains("bytes:696e76616c69642dff2e747874 (non-UTF-8):"),
         "{readable}"
+    );
+
+    let (_, literal_readable) = run(root, &["search", "utf8 collision marker"]);
+    assert!(literal_readable.contains("bytes:ff:"), "{literal_readable}");
+    assert!(
+        !literal_readable.contains("non-UTF-8"),
+        "{literal_readable}"
     );
 }
 

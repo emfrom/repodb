@@ -36,7 +36,8 @@ fn decoded_git_path_hex(path: &str) -> Option<&str> {
 }
 
 fn readable_path(path: &str) -> String {
-    decoded_git_path_hex(path).map_or_else(|| path.to_owned(), |hex| format!("bytes:{hex}"))
+    decoded_git_path_hex(path)
+        .map_or_else(|| path.to_owned(), |hex| format!("bytes:{hex} (non-UTF-8)"))
 }
 
 #[derive(Serialize)]
