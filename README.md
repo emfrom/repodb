@@ -103,7 +103,13 @@ segmentation types; ambiguous or unsupported file types are not treated as
 source. `source` does not include imported standalone files or websites. `init` and a
 full `refresh` prepare searchable units and embeddings for the captured history
 in one atomic snapshot. `refresh --changed` atomically indexes the new commit, embeds changed or
-previously unindexed content, and reuses unchanged units and vectors. Semantic search works after either mode. The first scan uses
+previously unindexed content, and reuses unchanged units and vectors. Both paths
+segment and submit units in batches of at most 256 while scanning continues; one
+embedding worker processes batches sequentially with at most one queued batch.
+The built-in command receives each batch through its NUL-delimited protocol.
+Configured custom commands retain one process invocation per unit, sequentially
+within each batch; RepoDB does not run custom commands concurrently. Semantic
+search works after either mode. The first scan uses
 `[tools].embedding_command` from the XDG RepoDB config, or defaults to
 [`~/bin/generate_embeddings`](https://github.com/emfrom/generate_embeddings) with `all-MiniLM-L6-v2`; the selected command/model
 are stored per database and reused on later scans. Use

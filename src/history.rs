@@ -8,12 +8,11 @@ use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, 
 use std::{
     io::{BufRead, BufReader},
     process::{Command, Stdio},
+    sync::mpsc::{self, Receiver, SyncSender, TrySendError},
+    thread::JoinHandle,
 };
 
 const EMBEDDING_STDERR_BYTES: usize = 64 * 1024;
-// Match the built-in generate_embeddings wrapper's maximum request batch.
-const EMBEDDING_BATCH_SIZE: usize = 10_000;
-
 fn memory_limit() -> Box<dyn std::error::Error> {
     "history refresh preparation size overflow".into()
 }
@@ -415,11 +414,167 @@ fn vectors<'a>(
     Ok((out, dim))
 }
 
+const HISTORY_EMBEDDING_BATCH_SIZE: usize = 256;
+
+type EmbeddingBatch = Vec<(i64, String)>;
+type EmbeddingResult = std::result::Result<(Vec<(i64, Vec<u8>)>, usize, usize), (String, usize)>;
+
+struct EmbeddingPipeline {
+    input: Option<SyncSender<EmbeddingBatch>>,
+    output: Option<Receiver<EmbeddingResult>>,
+    worker: Option<JoinHandle<()>>,
+    in_flight: usize,
+}
+
+impl EmbeddingPipeline {
+    fn new(command: String, model: String, dimension: usize) -> Result<Self> {
+        let (input_tx, input_rx) = mpsc::sync_channel::<EmbeddingBatch>(1);
+        let (output_tx, output_rx) = mpsc::sync_channel::<EmbeddingResult>(1);
+        let worker = std::thread::Builder::new()
+            .name("repodb-history-embedder".into())
+            .spawn(move || {
+                while let Ok(batch) = input_rx.recv() {
+                    let batch_bytes = batch.iter().map(|(_, text)| text.len()).sum();
+                    let result = (|| -> Result<_> {
+                        let texts: Vec<&str> =
+                            batch.iter().map(|(_, text)| text.as_str()).collect();
+                        let mut budget = Budget::new(
+                            MAX_REFRESH_ACCOUNTING_BYTES,
+                            "history embedding accounting",
+                        );
+                        let (vectors, dim) =
+                            vectors_batch(&texts, &command, &model, dimension, &mut budget)?;
+                        if vectors.len() != batch.len() {
+                            return Err(
+                                "embedding command returned the wrong number of vectors".into()
+                            );
+                        }
+                        Ok((
+                            batch
+                                .iter()
+                                .zip(vectors)
+                                .map(|((id, _), vector)| (*id, vector))
+                                .collect(),
+                            dim,
+                            batch_bytes,
+                        ))
+                    })()
+                    .map_err(|error| (error.to_string(), batch_bytes));
+                    let failed = result.is_err();
+                    if output_tx.send(result).is_err() || failed {
+                        break;
+                    }
+                }
+            })?;
+        Ok(Self {
+            input: Some(input_tx),
+            output: Some(output_rx),
+            worker: Some(worker),
+            in_flight: 0,
+        })
+    }
+
+    fn receive(
+        &mut self,
+        statement: &mut rusqlite::Statement<'_>,
+        dimension: &mut Option<usize>,
+        budget: &mut Budget,
+    ) -> Result<()> {
+        let result = self
+            .output
+            .as_ref()
+            .ok_or("embedding pipeline is closed")?
+            .recv()
+            .map_err(|_| "embedding worker stopped")?;
+        self.in_flight -= 1;
+        let (vectors, dim, batch_bytes) = match result {
+            Ok(result) => result,
+            Err((error, batch_bytes)) => {
+                budget.release(batch_bytes);
+                return Err(error.into());
+            }
+        };
+        budget.release(batch_bytes);
+        if dimension.is_some_and(|expected| expected != dim) {
+            for (_, vector) in vectors {
+                let capacity = vector.capacity();
+                budget.charge(capacity, "embedding result vector")?;
+                budget.release(capacity);
+            }
+            return Err("embedding dimension mismatch".into());
+        }
+        for (unit_id, vector) in vectors {
+            let capacity = vector.capacity();
+            budget.charge(capacity, "embedding result vector")?;
+            let result = statement.execute(params![unit_id, vector]);
+            budget.release(capacity);
+            result?;
+        }
+        *dimension = Some(dim);
+        Ok(())
+    }
+
+    fn submit(
+        &mut self,
+        mut batch: EmbeddingBatch,
+        statement: &mut rusqlite::Statement<'_>,
+        dimension: &mut Option<usize>,
+        budget: &mut Budget,
+    ) -> Result<()> {
+        let sender = self
+            .input
+            .as_ref()
+            .ok_or("embedding pipeline is closed")?
+            .clone();
+        loop {
+            match sender.try_send(batch) {
+                Ok(()) => {
+                    self.in_flight += 1;
+                    return Ok(());
+                }
+                Err(TrySendError::Full(returned)) => {
+                    batch = returned;
+                    if self.in_flight == 0 {
+                        return Err("embedding input queue is unexpectedly full".into());
+                    }
+                    self.receive(statement, dimension, budget)?;
+                }
+                Err(TrySendError::Disconnected(_)) => return Err("embedding worker stopped".into()),
+            }
+        }
+    }
+
+    fn finish(
+        &mut self,
+        statement: &mut rusqlite::Statement<'_>,
+        dimension: &mut Option<usize>,
+        budget: &mut Budget,
+    ) -> Result<()> {
+        while self.in_flight != 0 {
+            self.receive(statement, dimension, budget)?;
+        }
+        self.input.take();
+        self.output.take();
+        if let Some(worker) = self.worker.take() {
+            worker.join().map_err(|_| "embedding worker panicked")?;
+        }
+        Ok(())
+    }
+}
+
+impl Drop for EmbeddingPipeline {
+    fn drop(&mut self) {
+        self.input.take();
+        self.output.take();
+        if let Some(worker) = self.worker.take() {
+            let _ = worker.join();
+        }
+    }
+}
+
 fn flush_embedding_batch(
     batch: &mut Vec<(i64, String)>,
-    command: &str,
-    model: &str,
-    configured_dimension: usize,
+    pipeline: &mut EmbeddingPipeline,
     embedding_dimension: &mut Option<usize>,
     statement: &mut rusqlite::Statement<'_>,
     budget: &mut Budget,
@@ -427,22 +582,63 @@ fn flush_embedding_batch(
     if batch.is_empty() {
         return Ok(());
     }
-    let texts: Vec<&str> = batch.iter().map(|(_, text)| text.as_str()).collect();
-    let (encoded, dimension) = vectors_batch(
-        &texts,
-        command,
-        model,
-        embedding_dimension.unwrap_or(configured_dimension),
-        budget,
-    )?;
-    for ((unit_id, _), vector) in batch.iter().zip(encoded) {
-        statement.execute(params![unit_id, vector])?;
+    let owned = std::mem::take(batch);
+    pipeline.submit(owned, statement, embedding_dimension, budget)
+}
+
+struct StagedUnitWriter<'a, 'connection> {
+    next_unit_id: &'a mut i64,
+    unit_statement: &'a mut rusqlite::Statement<'connection>,
+    batch: &'a mut EmbeddingBatch,
+    pipeline: &'a mut EmbeddingPipeline,
+    embedding_dimension: &'a mut Option<usize>,
+    embedding_statement: &'a mut rusqlite::Statement<'connection>,
+    budget: &'a mut Budget,
+    budget_label: &'static str,
+}
+
+impl StagedUnitWriter<'_, '_> {
+    fn segment_blob(&mut self, content: &str, blob_id: &str, kind: &str) -> Result<()> {
+        let mut staging_error = None;
+        let segmentation_result = segmentation::visit(kind, content, |unit| {
+            let staged = (|| -> Result<()> {
+                *self.next_unit_id += 1;
+                let text = unit.text.to_owned();
+                self.unit_statement.execute(params![
+                    *self.next_unit_id,
+                    blob_id,
+                    kind,
+                    &text,
+                    unit.byte_start,
+                    unit.byte_end,
+                    unit.line_start,
+                    unit.line_end
+                ])?;
+                self.budget.charge(text.len(), self.budget_label)?;
+                self.batch.push((*self.next_unit_id, text));
+                if self.batch.len() == HISTORY_EMBEDDING_BATCH_SIZE {
+                    flush_embedding_batch(
+                        self.batch,
+                        self.pipeline,
+                        self.embedding_dimension,
+                        self.embedding_statement,
+                        self.budget,
+                    )?;
+                }
+                Ok(())
+            })();
+            if let Err(error) = staged {
+                staging_error = Some(error);
+                return false;
+            }
+            true
+        });
+        segmentation_result?;
+        if let Some(error) = staging_error {
+            return Err(error);
+        }
+        Ok(())
     }
-    let batch_bytes = batch.iter().map(|(_, text)| text.len()).sum();
-    budget.release(batch_bytes);
-    batch.clear();
-    *embedding_dimension = Some(dimension);
-    Ok(())
 }
 
 #[cfg(test)]
@@ -548,22 +744,40 @@ pub fn prepare_refresh(c: &Connection) -> Result<()> {
     );
     c.execute_batch("PRAGMA temp_store=FILE;
         DROP TABLE IF EXISTS temp.refresh_commits; DROP TABLE IF EXISTS temp.refresh_blobs;
-        DROP TABLE IF EXISTS temp.refresh_occurrences; DROP TABLE IF EXISTS temp.refresh_units;
-        DROP TABLE IF EXISTS temp.refresh_embeddings;
+        DROP TABLE IF EXISTS temp.refresh_occurrences; DROP TABLE IF EXISTS temp.refresh_variants;
+        DROP TABLE IF EXISTS temp.refresh_units; DROP TABLE IF EXISTS temp.refresh_embeddings;
         CREATE TEMP TABLE refresh_commits(commit_id TEXT PRIMARY KEY, timestamp INTEGER NOT NULL);
         CREATE TEMP TABLE refresh_blobs(blob_id TEXT PRIMARY KEY, content TEXT, status TEXT NOT NULL);
         CREATE TEMP TABLE refresh_occurrences(commit_id TEXT NOT NULL, blob_id TEXT NOT NULL, path BLOB NOT NULL, segmentation_kind TEXT NOT NULL, PRIMARY KEY(commit_id,path));
+        CREATE TEMP TABLE refresh_variants(blob_id TEXT NOT NULL, segmentation_kind TEXT NOT NULL, PRIMARY KEY(blob_id,segmentation_kind));
         CREATE TEMP TABLE refresh_units(unit_id INTEGER PRIMARY KEY, blob_id TEXT NOT NULL, segmentation_kind TEXT NOT NULL, text TEXT NOT NULL, byte_start INTEGER NOT NULL, byte_end INTEGER NOT NULL, line_start INTEGER NOT NULL, line_end INTEGER NOT NULL);
         CREATE TEMP TABLE refresh_embeddings(unit_id INTEGER PRIMARY KEY, vector BLOB NOT NULL);
         DROP TABLE IF EXISTS temp.refresh_dimension; CREATE TEMP TABLE refresh_dimension(value INTEGER);
         DROP TABLE IF EXISTS temp.refresh_config; CREATE TEMP TABLE refresh_config(key TEXT PRIMARY KEY,value TEXT NOT NULL);")?;
+    let (command, model, configured_dimension) = configuration(c)?;
+    let mut embedding_dimension = None;
+    let mut pipeline =
+        EmbeddingPipeline::new(command.clone(), model.clone(), configured_dimension)?;
+    let mut batch = Vec::with_capacity(HISTORY_EMBEDDING_BATCH_SIZE);
+    let mut unit_count = 0i64;
     {
         let mut commit_stage =
             c.prepare("INSERT OR IGNORE INTO temp.refresh_commits VALUES(?1,?2)")?;
         let mut blob_exists = c.prepare("SELECT 1 FROM temp.refresh_blobs WHERE blob_id=?1")?;
         let mut blob_stage = c.prepare("INSERT INTO temp.refresh_blobs VALUES(?1,?2,?3)")?;
+        let mut blob_content =
+            c.prepare("SELECT content FROM temp.refresh_blobs WHERE blob_id=?1")?;
+        let mut variant_exists = c.prepare(
+            "SELECT EXISTS(SELECT 1 FROM temp.refresh_variants WHERE blob_id=?1 AND segmentation_kind=?2)",
+        )?;
+        let mut variant_stage =
+            c.prepare("INSERT OR IGNORE INTO temp.refresh_variants VALUES(?1,?2)")?;
         let mut occurrence_stage =
             c.prepare("INSERT OR IGNORE INTO temp.refresh_occurrences VALUES(?1,?2,?3,?4)")?;
+        let mut unit_stage =
+            c.prepare("INSERT INTO temp.refresh_units VALUES(?1,?2,?3,?4,?5,?6,?7,?8)")?;
+        let mut embedding_statement =
+            c.prepare("INSERT INTO temp.refresh_embeddings VALUES(?1,?2)")?;
         for_each_reachable_commit(&mut preparation_bytes, |commit_id, timestamp, budget| {
             commit_stage.execute(params![commit_id, timestamp])?;
             for_each_tree_record(commit_id, budget, |record, budget| {
@@ -584,100 +798,67 @@ pub fn prepare_refresh(c: &Connection) -> Result<()> {
                 }
                 let path = &record[tab + 1..];
                 let kind = segmentation::kind(path);
-                if blob_exists.exists([blob_id])? {
+                let content = if blob_exists.exists([blob_id])? {
                     occurrence_stage.execute(params![commit_id, blob_id, path, kind])?;
-                    return Ok(());
-                }
-                let size: u64 =
-                    String::from_utf8(git_output(&["cat-file", "-s", blob_id], 64, budget)?)?
-                        .trim()
-                        .parse()?;
-                let bytes = git_output(
-                    &["cat-file", "blob", blob_id],
-                    usize::try_from(size).unwrap_or(usize::MAX),
-                    budget,
-                )?;
-                let (content, status) = if bytes.contains(&0) {
-                    (None, "binary")
-                } else {
-                    match String::from_utf8(bytes) {
-                        Ok(content) => (Some(content), "text"),
-                        Err(_) => (None, "unsupported"),
+                    if variant_exists
+                        .query_row(params![blob_id, kind], |row| row.get::<_, bool>(0))?
+                    {
+                        return Ok(());
                     }
+                    blob_content.query_row([blob_id], |row| row.get::<_, Option<String>>(0))?
+                } else {
+                    let size: u64 =
+                        String::from_utf8(git_output(&["cat-file", "-s", blob_id], 64, budget)?)?
+                            .trim()
+                            .parse()?;
+                    let bytes = git_output(
+                        &["cat-file", "blob", blob_id],
+                        usize::try_from(size).unwrap_or(usize::MAX),
+                        budget,
+                    )?;
+                    let (content, status) = if bytes.contains(&0) {
+                        (None, "binary")
+                    } else {
+                        match String::from_utf8(bytes) {
+                            Ok(content) => (Some(content), "text"),
+                            Err(_) => (None, "unsupported"),
+                        }
+                    };
+                    blob_stage.execute(params![blob_id, content.as_deref(), status])?;
+                    occurrence_stage.execute(params![commit_id, blob_id, path, kind])?;
+                    content
                 };
-                blob_stage.execute(params![blob_id, content, status])?;
-                occurrence_stage.execute(params![commit_id, blob_id, path, kind])?;
+                if let Some(content) = content
+                    && variant_stage.execute(params![blob_id, kind])? != 0
+                {
+                    StagedUnitWriter {
+                        next_unit_id: &mut unit_count,
+                        unit_statement: &mut unit_stage,
+                        batch: &mut batch,
+                        pipeline: &mut pipeline,
+                        embedding_dimension: &mut embedding_dimension,
+                        embedding_statement: &mut embedding_statement,
+                        budget,
+                        budget_label: "history embedding batch text",
+                    }
+                    .segment_blob(&content, blob_id, kind)?;
+                }
                 Ok(())
             })
         })?;
+        flush_embedding_batch(
+            &mut batch,
+            &mut pipeline,
+            &mut embedding_dimension,
+            &mut embedding_statement,
+            &mut preparation_bytes,
+        )?;
+        pipeline.finish(
+            &mut embedding_statement,
+            &mut embedding_dimension,
+            &mut preparation_bytes,
+        )?;
     }
-    let mut unit_count = 0i64;
-    {
-        let mut variants = c.prepare("SELECT DISTINCT b.blob_id,b.content,o.segmentation_kind FROM temp.refresh_blobs b JOIN temp.refresh_occurrences o USING(blob_id) WHERE b.content IS NOT NULL ORDER BY b.blob_id,o.segmentation_kind")?;
-        let mut rows = variants.query([])?;
-        let mut unit_stage =
-            c.prepare("INSERT INTO temp.refresh_units VALUES(?1,?2,?3,?4,?5,?6,?7,?8)")?;
-        while let Some(row) = rows.next()? {
-            let blob_id: String = row.get(0)?;
-            let content: String = row.get(1)?;
-            let kind: String = row.get(2)?;
-            let mut staging_error = None;
-            let segmentation_result = segmentation::visit(&kind, &content, |unit| {
-                unit_count += 1;
-                if let Err(error) = unit_stage.execute(params![
-                    unit_count,
-                    blob_id,
-                    kind,
-                    unit.text,
-                    unit.byte_start,
-                    unit.byte_end,
-                    unit.line_start,
-                    unit.line_end
-                ]) {
-                    staging_error = Some(error);
-                    return false;
-                }
-                true
-            });
-            segmentation_result?;
-            if let Some(error) = staging_error {
-                return Err(error.into());
-            }
-        }
-    }
-    let (command, model, configured_dimension) = configuration(c)?;
-    let mut embedding_dimension = None;
-    let mut statement =
-        c.prepare("SELECT unit_id,text FROM temp.refresh_units ORDER BY unit_id")?;
-    let mut embedding_statement = c.prepare("INSERT INTO temp.refresh_embeddings VALUES(?1,?2)")?;
-    let mut rows = statement.query([])?;
-    let mut batch = Vec::with_capacity(EMBEDDING_BATCH_SIZE);
-    while let Some(row) = rows.next()? {
-        let unit_id: i64 = row.get(0)?;
-        let text: String = row.get(1)?;
-        preparation_bytes.charge(text.len(), "history embedding batch text")?;
-        batch.push((unit_id, text));
-        if batch.len() == EMBEDDING_BATCH_SIZE {
-            flush_embedding_batch(
-                &mut batch,
-                &command,
-                &model,
-                configured_dimension,
-                &mut embedding_dimension,
-                &mut embedding_statement,
-                &mut preparation_bytes,
-            )?;
-        }
-    }
-    flush_embedding_batch(
-        &mut batch,
-        &command,
-        &model,
-        configured_dimension,
-        &mut embedding_dimension,
-        &mut embedding_statement,
-        &mut preparation_bytes,
-    )?;
     if let Some(dimension) = embedding_dimension {
         c.execute(
             "INSERT INTO temp.refresh_dimension VALUES(?1)",
@@ -836,6 +1017,10 @@ fn refresh_scoped(c: &mut Connection, target: Option<&str>) -> Result<()> {
         [],
         |row| row.get(0),
     )?;
+    let mut embedding_dimension = None;
+    let mut pipeline =
+        EmbeddingPipeline::new(command.clone(), model.clone(), configured_dimension)?;
+    let mut batch = Vec::with_capacity(HISTORY_EMBEDDING_BATCH_SIZE);
     {
         let mut parent_occurrence = c.prepare(
             "SELECT blob_id,segmentation_kind FROM git_occurrences WHERE commit_id=?1 AND path=?2",
@@ -857,6 +1042,8 @@ fn refresh_scoped(c: &mut Connection, target: Option<&str>) -> Result<()> {
             c.prepare("INSERT INTO temp.scoped_occurrences VALUES(?1,?2,?3,?4)")?;
         let mut unit_stage =
             c.prepare("INSERT INTO temp.scoped_units VALUES(?1,?2,?3,?4,?5,?6,?7,?8)")?;
+        let mut embedding_statement =
+            c.prepare("INSERT INTO temp.scoped_embeddings VALUES(?1,?2)")?;
 
         for_each_tree_record(&target_commit_id, &mut budget, |record, budget| {
             let tab = record
@@ -948,28 +1135,17 @@ fn refresh_scoped(c: &mut Connection, target: Option<&str>) -> Result<()> {
                 if content_from_staging {
                     budget.charge(content.len(), "staged scoped Git blob text")?;
                 }
-                let mut staging_error = None;
-                let segmentation_result = segmentation::visit(kind, &content, |unit| {
-                    next_unit_id += 1;
-                    if let Err(error) = unit_stage.execute(params![
-                        next_unit_id,
-                        blob_id,
-                        kind,
-                        unit.text,
-                        unit.byte_start,
-                        unit.byte_end,
-                        unit.line_start,
-                        unit.line_end
-                    ]) {
-                        staging_error = Some(error);
-                        return false;
-                    }
-                    true
-                });
-                segmentation_result?;
-                if let Some(error) = staging_error {
-                    return Err(error.into());
+                StagedUnitWriter {
+                    next_unit_id: &mut next_unit_id,
+                    unit_statement: &mut unit_stage,
+                    batch: &mut batch,
+                    pipeline: &mut pipeline,
+                    embedding_dimension: &mut embedding_dimension,
+                    embedding_statement: &mut embedding_statement,
+                    budget,
+                    budget_label: "scoped embedding batch text",
                 }
+                .segment_blob(&content, blob_id, kind)?;
                 if content_from_staging {
                     budget.release(content.len());
                 }
@@ -978,38 +1154,16 @@ fn refresh_scoped(c: &mut Connection, target: Option<&str>) -> Result<()> {
             occurrence_stage.execute(params![target_commit_id, blob_id, path, kind])?;
             Ok(())
         })?;
-    }
-
-    let mut embedding_dimension = None;
-    {
-        let mut units = c.prepare("SELECT unit_id,text FROM temp.scoped_units ORDER BY unit_id")?;
-        let mut rows = units.query([])?;
-        let mut embeddings = c.prepare("INSERT INTO temp.scoped_embeddings VALUES(?1,?2)")?;
-        let mut batch = Vec::with_capacity(EMBEDDING_BATCH_SIZE);
-        while let Some(row) = rows.next()? {
-            let unit_id: i64 = row.get(0)?;
-            let text: String = row.get(1)?;
-            budget.charge(text.len(), "scoped embedding batch text")?;
-            batch.push((unit_id, text));
-            if batch.len() == EMBEDDING_BATCH_SIZE {
-                flush_embedding_batch(
-                    &mut batch,
-                    &command,
-                    &model,
-                    configured_dimension,
-                    &mut embedding_dimension,
-                    &mut embeddings,
-                    &mut budget,
-                )?;
-            }
-        }
         flush_embedding_batch(
             &mut batch,
-            &command,
-            &model,
-            configured_dimension,
+            &mut pipeline,
             &mut embedding_dimension,
-            &mut embeddings,
+            &mut embedding_statement,
+            &mut budget,
+        )?;
+        pipeline.finish(
+            &mut embedding_statement,
+            &mut embedding_dimension,
             &mut budget,
         )?;
     }

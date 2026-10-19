@@ -3601,6 +3601,255 @@ fn noisy_history_git_stderr_is_drained_without_rejecting_output() {
     );
 }
 
+fn assert_refresh_scans_while_embedding_is_blocked(refresh_args: &[&str]) {
+    use std::{
+        os::unix::fs::PermissionsExt,
+        thread,
+        time::{Duration, Instant},
+    };
+
+    let repo = repository();
+    let root = repo.path();
+    assert!(run(root, &["init"]).0);
+    let entries = root.join("pipeline");
+    fs::create_dir(&entries).unwrap();
+    for index in 0..1200 {
+        fs::write(
+            entries.join(format!("entry-{index:04}.md")),
+            format!("pipeline item {index}\n"),
+        )
+        .unwrap();
+    }
+    git(root, &["add", "pipeline"]);
+    git(root, &["commit", "-qm", "pipeline source"]);
+
+    let scan_log = root.join("scan-log");
+    let started = root.join("embedding-started");
+    let scan_at_start = root.join("scan-count-at-embedding-start");
+    let release = root.join("release-embedding");
+    let config_home = test_config_home(root);
+    let embedder = root.join(".git/repodb-test-embedder");
+    fs::write(
+        &embedder,
+        "#!/bin/sh\nif [ ! -e \"$REPODB_EMBED_STARTED\" ]; then\n  wc -l < \"$REPODB_SCAN_LOG\" > \"$REPODB_EMBED_SCAN_COUNT\"\n  : > \"$REPODB_EMBED_STARTED\"\n  while [ ! -e \"$REPODB_EMBED_RELEASE\" ]; do sleep 0.01; done\nfi\ncat >/dev/null\nprintf '[1,0]'\n",
+    )
+    .unwrap();
+    fs::set_permissions(&embedder, fs::Permissions::from_mode(0o755)).unwrap();
+
+    let bin = root.join("intercept-bin");
+    fs::create_dir(&bin).unwrap();
+    let path = std::env::var_os("PATH").unwrap();
+    let real_git = std::env::split_paths(&path)
+        .map(|dir| dir.join("git"))
+        .find(|candidate| candidate.is_file())
+        .unwrap();
+    let wrapper = bin.join("git");
+    fs::write(
+        &wrapper,
+        "#!/bin/sh\nif [ \"$1\" = cat-file ] && [ \"$2\" = blob ]; then printf '.\\n' >> \"$REPODB_SCAN_LOG\"; fi\nexec \"$REPODB_REAL_GIT\" \"$@\"\n",
+    )
+    .unwrap();
+    fs::set_permissions(&wrapper, fs::Permissions::from_mode(0o755)).unwrap();
+    let search_path =
+        std::env::join_paths(std::iter::once(bin).chain(std::env::split_paths(&path))).unwrap();
+    let child = Command::new(env!("CARGO_BIN_EXE_repodb"))
+        .args(refresh_args)
+        .current_dir(root)
+        .env(
+            "REPODB_SEMGREP_CORE",
+            semgrep_corpus::required_semgrep_core(),
+        )
+        .env("XDG_CONFIG_HOME", config_home)
+        .env("PATH", search_path)
+        .env("REPODB_SCAN_LOG", &scan_log)
+        .env("REPODB_EMBED_STARTED", &started)
+        .env("REPODB_EMBED_SCAN_COUNT", &scan_at_start)
+        .env("REPODB_EMBED_RELEASE", &release)
+        .env("REPODB_REAL_GIT", real_git)
+        .spawn()
+        .unwrap();
+
+    let start_deadline = Instant::now() + Duration::from_secs(20);
+    while !started.exists() && Instant::now() < start_deadline {
+        thread::sleep(Duration::from_millis(10));
+    }
+    let embedding_started = started.exists();
+    let started_after = if embedding_started {
+        fs::read_to_string(&scan_at_start)
+            .unwrap()
+            .trim()
+            .parse::<usize>()
+            .unwrap()
+    } else {
+        0
+    };
+    let settle_deadline = Instant::now() + Duration::from_secs(10);
+    let mut previous_count = started_after;
+    let mut stable_since = Instant::now();
+    while embedding_started && Instant::now() < settle_deadline {
+        thread::sleep(Duration::from_millis(10));
+        let scanned = fs::read_to_string(&scan_log)
+            .map(|contents| contents.lines().count())
+            .unwrap_or(0);
+        if scanned != previous_count {
+            previous_count = scanned;
+            stable_since = Instant::now();
+        } else if stable_since.elapsed() >= Duration::from_millis(250) {
+            break;
+        }
+    }
+    let scanned_while_blocked = previous_count;
+    // Always release the gate before making assertions so a failed test cannot
+    // leave the CLI process or its fake embedder stranded.
+    fs::write(&release, "continue").unwrap();
+    let output = child.wait_with_output().unwrap();
+    assert!(
+        output.status.success(),
+        "refresh failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(embedding_started, "the fake embedder was never invoked");
+    assert!(
+        scanned_while_blocked > started_after,
+        "Git did not scan ahead while the first embedding was blocked at {started_after} blobs"
+    );
+    let expected_scan_count = if refresh_args.len() == 1 { 1203 } else { 1200 };
+    assert!(
+        scanned_while_blocked < expected_scan_count,
+        "Git scanned the entire history while embedding was blocked ({scanned_while_blocked} blobs)"
+    );
+    assert!(
+        scanned_while_blocked <= started_after + 2 * 256 + 3,
+        "more than two batches were queued/in flight while embedding was blocked: start={started_after}, scanned={scanned_while_blocked}"
+    );
+    assert_eq!(search_json(root, &["pipeline item 1199"]).len(), 1);
+}
+
+#[test]
+fn full_refresh_scans_the_next_batch_while_embedding_is_in_flight() {
+    assert_refresh_scans_while_embedding_is_blocked(&["refresh"]);
+}
+
+#[test]
+fn changed_refresh_scans_the_next_batch_while_embedding_is_in_flight() {
+    assert_refresh_scans_while_embedding_is_blocked(&["refresh", "--changed"]);
+}
+
+fn assert_refresh_batches_are_bounded_and_keep_vector_associations(refresh_args: &[&str]) {
+    use std::os::unix::fs::PermissionsExt;
+
+    let repo = repository();
+    let root = repo.path();
+    let home = root.join("fake-home");
+    let builtin = home.join("bin/generate_embeddings");
+    fs::create_dir_all(builtin.parent().unwrap()).unwrap();
+    fs::write(
+        &builtin,
+        "#!/usr/bin/env python3\nimport json, re, sys, os\ndata = sys.stdin.buffer.read()\ntexts = data.split(b'\\0') if '-0' in sys.argv else [data]\nwith open(os.environ['REPODB_BATCH_LOG'], 'a') as log: log.write(str(len(texts)) + '\\n')\nfor text in texts:\n    match = re.search(rb'item-(\\d+)', text)\n    index = int(match.group(1)) if match else 600\n    vector = [0.0] * 601\n    vector[index] = 1.0\n    print(json.dumps(vector, separators=(',', ':')))\n",
+    )
+    .unwrap();
+    fs::set_permissions(&builtin, fs::Permissions::from_mode(0o755)).unwrap();
+    let config_home = test_config_home(root);
+    fs::write(
+        config_home.join("repodb/config.toml"),
+        format!(
+            "[tools]\nembedding_command = {:?}\n",
+            builtin.to_string_lossy()
+        ),
+    )
+    .unwrap();
+    let batch_log = root.join("embedding-batches");
+    let run = |args: &[&str]| {
+        Command::new(env!("CARGO_BIN_EXE_repodb"))
+            .args(args)
+            .current_dir(root)
+            .env("HOME", &home)
+            .env("XDG_CONFIG_HOME", &config_home)
+            .env("REPODB_BATCH_LOG", &batch_log)
+            .env(
+                "REPODB_SEMGREP_CORE",
+                semgrep_corpus::required_semgrep_core(),
+            )
+            .output()
+            .unwrap()
+    };
+    let init = run(&["init"]);
+    assert!(
+        init.status.success(),
+        "init failed: {}",
+        String::from_utf8_lossy(&init.stderr)
+    );
+    let prior_batches = fs::read_to_string(&batch_log).unwrap();
+    let prior_unit_count: usize = prior_batches
+        .lines()
+        .map(|count| count.parse::<usize>().unwrap())
+        .sum();
+    fs::write(&batch_log, "").unwrap();
+
+    let entries = root.join("pipeline");
+    fs::create_dir(&entries).unwrap();
+    for index in 0..600 {
+        fs::write(
+            entries.join(format!("entry-{index:04}.md")),
+            format!("item-{index} distinct vector marker\n"),
+        )
+        .unwrap();
+    }
+    git(root, &["add", "pipeline"]);
+    git(root, &["commit", "-qm", "batched source"]);
+    let output = run(refresh_args);
+    assert!(
+        output.status.success(),
+        "refresh failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let batch_sizes: Vec<usize> = fs::read_to_string(&batch_log)
+        .unwrap()
+        .lines()
+        .map(|count| count.parse().unwrap())
+        .collect();
+    assert!(!batch_sizes.is_empty());
+    assert!(
+        batch_sizes.iter().all(|size| *size <= 256),
+        "oversized embedding batches: {batch_sizes:?}"
+    );
+    let expected_units = if refresh_args.len() == 1 {
+        prior_unit_count + 600
+    } else {
+        600
+    };
+    assert_eq!(batch_sizes.iter().sum::<usize>(), expected_units);
+    for index in [0, 255, 256, 511, 512, 599] {
+        let query = format!("item-{index}");
+        let search = run(&[
+            "search",
+            &query,
+            "--semantic",
+            "--semantic-limit",
+            "1",
+            "--json",
+        ]);
+        assert!(
+            search.status.success(),
+            "semantic search failed: {}",
+            String::from_utf8_lossy(&search.stderr)
+        );
+        let results: Vec<serde_json::Value> = serde_json::from_slice(&search.stdout).unwrap();
+        assert_eq!(results[0]["path"], format!("pipeline/entry-{index:04}.md"));
+    }
+}
+
+#[test]
+fn full_refresh_uses_bounded_batches_and_keeps_vectors_with_their_units() {
+    assert_refresh_batches_are_bounded_and_keep_vector_associations(&["refresh"]);
+}
+
+#[test]
+fn changed_refresh_uses_bounded_batches_and_keeps_vectors_with_their_units() {
+    assert_refresh_batches_are_bounded_and_keep_vector_associations(&["refresh", "--changed"]);
+}
+
 #[test]
 fn large_history_tree_refreshes_incrementally_and_keeps_the_snapshot_atomic() {
     let repo = repository();
