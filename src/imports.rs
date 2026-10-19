@@ -859,7 +859,13 @@ fn batch_reader<'a>(
     Ok(readers.get_mut(object_store).unwrap())
 }
 
-pub fn search(c: &Connection, query: &str, mode: &str, limit: usize) -> Result<Vec<SearchResult>> {
+pub fn search(
+    c: &Connection,
+    query: &str,
+    mode: &str,
+    limit: usize,
+    include: impl Fn(&SearchResult) -> bool,
+) -> Result<Vec<SearchResult>> {
     init(c)?;
     let semantic = mode != "exact";
     let mut vector = None;
@@ -1036,6 +1042,7 @@ pub fn search(c: &Connection, query: &str, mode: &str, limit: usize) -> Result<V
             ));
         }
     }
+    out.retain(|(_, result, _)| include(result));
     if semantic {
         out.sort_by(|a, b| a.0.total_cmp(&b.0));
         if mode == "combined" {

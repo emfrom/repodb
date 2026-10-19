@@ -21,6 +21,8 @@ repodb search 'literal text' --all-history --json
 repodb search 'literal text' --commit COMMIT_ID
 repodb search 'question' --semantic --include-commit ID1 --include-commit ID2
 repodb search 'question' --combined --all-history --exclude-commit ID3
+repodb search 'question' --scope repo-local-docs
+repodb search 'question' --semantic --scope source
 ```
 
 By default, the SQLite database is `repodb.sqlite` in the repository's Git
@@ -66,8 +68,27 @@ Unknown and ambiguous IDs are errors. Branch/tag names, revision expressions,
 and ranges are not accepted. A deleted ref's captured commit remains selectable
 until a successful explicit refresh removes it.
 
-All scopes and filters apply equally to exact, semantic, and combined search.
-Exact search remains a case-insensitive literal substring search. `init` and a
+All commit selectors and filters apply equally to exact, semantic, and combined search.
+Exact search remains a case-insensitive literal substring search.
+
+Search results can also be filtered with `--scope` (default `all`):
+
+- `source`: recognized source-code files from this repository and imported Git repositories.
+- `repo-local-source`: recognized source-code files from this repository's indexed Git history.
+- `repo-local-docs`: recognized documentation from this repository's indexed Git history.
+- `all-docs`: recognized documentation from any indexed origin.
+- `all`: every matching result, including files whose type is unknown.
+
+Scopes are orthogonal to commit selectors: repository-local results still obey
+`--all-history`, `--commit`, `--include-commit`, and `--exclude-commit`.
+Documentation is recognized from supported file extensions (`.md`, `.markdown`,
+`.txt`, `.pdf`, `.html`, `.htm`, `.org`), known documentation basenames such as
+`README` and `LICENSE`, or PDF page metadata. This is a metadata-based
+classification, not a guarantee that every documentation format or unusual
+filename is recognized. Unknown or unclassifiable results are included only by
+`--scope all`. Source files are recognized using RepoDB's supported source
+segmentation types; ambiguous or unsupported file types are not treated as
+source. `source` does not include imported standalone files or websites. `init` and a
 full `refresh` prepare searchable units and embeddings for the captured history
 in one atomic snapshot. `refresh --changed` atomically indexes the new commit, embeds changed or
 previously unindexed content, and reuses unchanged units and vectors. Semantic search works after either mode. The first scan uses
