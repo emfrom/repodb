@@ -99,7 +99,6 @@ fn repository() -> tempfile::TempDir {
 fn import_preview_reports_selected_files_sizes_and_exclusions_without_db_side_effects() {
     use std::os::unix::fs::symlink;
 
-    const MIB: u64 = 1024 * 1024;
     let repo = repository();
     let root = repo.path();
     let selected = root.join("selected");
@@ -177,12 +176,42 @@ fn import_preview_reports_selected_files_sizes_and_exclusions_without_db_side_ef
     let (dir_import_ok, _) = run(root, &["import", selected.to_str().unwrap()]);
     assert!(!dir_import_ok);
     let large = root.join("large.txt");
-    fs::write(&large, vec![0; 50 * MIB as usize]).unwrap();
+    fs::write(&large, vec![0; 50_000_000]).unwrap();
     let (large_ok, large_json) = run(root, &["import", "--preview", large.to_str().unwrap()]);
     assert!(large_ok);
     let large_preview: serde_json::Value = serde_json::from_str(&large_json).unwrap();
     assert_eq!(large_preview["warn_large"], true);
-    assert_eq!(large_preview["warning_basis_bytes"], 50 * MIB);
+    assert_eq!(large_preview["warning_basis_bytes"], 50_000_000);
+}
+
+#[test]
+fn import_preview_absolute_warning_threshold_uses_decimal_megabytes() {
+    let repo = repository();
+    let root = repo.path();
+    let source = root.join("threshold.txt");
+
+    fs::write(&source, vec![b'x'; 49_999_999]).unwrap();
+    let (below_ok, below_json) = run(root, &["import", "--preview", source.to_str().unwrap()]);
+    assert!(below_ok, "{below_json}");
+    let below: serde_json::Value = serde_json::from_str(&below_json).unwrap();
+    assert_eq!(below["total_selected_source_bytes"], 49_999_999);
+    assert_eq!(below["current_db_bytes"], serde_json::Value::Null);
+    assert_eq!(
+        below["estimated_net_db_growth_bytes"],
+        serde_json::Value::Null
+    );
+    assert_eq!(below["warning_basis_bytes"], 49_999_999);
+    assert_eq!(below["warn_large"], false);
+
+    fs::write(&source, vec![b'x'; 50_000_000]).unwrap();
+    let (at_ok, at_json) = run(root, &["import", "--preview", source.to_str().unwrap()]);
+    assert!(at_ok, "{at_json}");
+    let at: serde_json::Value = serde_json::from_str(&at_json).unwrap();
+    assert_eq!(at["total_selected_source_bytes"], 50_000_000);
+    assert_eq!(at["current_db_bytes"], serde_json::Value::Null);
+    assert_eq!(at["estimated_net_db_growth_bytes"], serde_json::Value::Null);
+    assert_eq!(at["warning_basis_bytes"], 50_000_000);
+    assert_eq!(at["warn_large"], true);
 }
 
 #[test]

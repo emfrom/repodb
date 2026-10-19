@@ -61,7 +61,7 @@ fn import_skill_documents_preview_scope_and_policy_contract() {
         "`estimated_net_db_growth_bytes`",
         "`warning_basis_bytes`",
         "`warn_large`",
-        "50 MiB",
+        "50 MB (50,000,000 bytes)",
         "excluded symlinks and `.git` directories",
         "Markdown, plain-text, PDF, HTML, or Org formats",
         "plus extensionless files",

@@ -7,6 +7,8 @@ use std::{
     process::Command,
 };
 
+const LARGE_SOURCE_WARNING_THRESHOLD_BYTES: u64 = 50_000_000;
+
 #[derive(Serialize)]
 pub(crate) struct Preview {
     selected_supported_local_files: Vec<String>,
@@ -64,7 +66,7 @@ pub(crate) fn preview(path: &Path, database: &Path) -> Result<Preview> {
         .ok()
         .filter(|metadata| metadata.is_file())
         .map(|metadata| metadata.len());
-    let warn_large = total >= 50 * 1024 * 1024
+    let warn_large = total >= LARGE_SOURCE_WARNING_THRESHOLD_BYTES
         || current_db_bytes.is_some_and(|size| total > size.saturating_mul(2));
     Ok(Preview {
         selected_supported_local_files: supported,
