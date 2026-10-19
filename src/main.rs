@@ -36,6 +36,79 @@ struct SearchResult {
     #[serde(skip_serializing_if = "Option::is_none")]
     repo_id: Option<String>,
 }
+
+#[derive(Clone, Copy, Default)]
+enum SearchScope {
+    Source,
+    RepoLocalSource,
+    RepoLocalDocs,
+    AllDocs,
+    #[default]
+    All,
+}
+
+impl SearchScope {
+    fn parse(value: &str) -> Result<Self> {
+        match value {
+            "source" => Ok(Self::Source),
+            "repo-local-source" => Ok(Self::RepoLocalSource),
+            "repo-local-docs" => Ok(Self::RepoLocalDocs),
+            "all-docs" => Ok(Self::AllDocs),
+            "all" => Ok(Self::All),
+            _ => Err(format!("scope must be source, repo-local-source, repo-local-docs, all-docs, or all (got {value})").into()),
+        }
+    }
+
+    fn matches(self, result: &SearchResult) -> bool {
+        let repo_local = result.commit_id.is_some() && result.repo_id.is_none();
+        let is_source = source_code_path(&result.path);
+        let is_doc = documentation_path(&result.path, result.page.is_some());
+        match self {
+            Self::Source => is_source && (repo_local || result.repo_id.is_some()),
+            Self::RepoLocalSource => repo_local && is_source,
+            Self::RepoLocalDocs => repo_local && is_doc,
+            Self::AllDocs => is_doc,
+            Self::All => true,
+        }
+    }
+}
+
+fn source_code_path(path: &str) -> bool {
+    !matches!(
+        segmentation::kind(path.as_bytes()),
+        "fallback" | "paragraph"
+    )
+}
+
+fn documentation_path(path: &str, is_page: bool) -> bool {
+    if is_page {
+        return true;
+    }
+    let clean_path = path.split(['?', '#']).next().unwrap_or(path);
+    let name = clean_path.rsplit('/').next().unwrap_or(clean_path);
+    let lower = name.to_ascii_lowercase();
+    if matches!(
+        lower.as_str(),
+        "readme"
+            | "license"
+            | "copying"
+            | "notice"
+            | "changelog"
+            | "changes"
+            | "authors"
+            | "contributors"
+            | "contributing"
+            | "code_of_conduct"
+            | "security"
+            | "support"
+    ) {
+        return true;
+    }
+    matches!(
+        lower.rsplit_once('.').map(|(_, ext)| ext),
+        Some("md" | "markdown" | "txt" | "pdf" | "html" | "htm" | "org")
+    )
+}
 fn git(args: &[&str]) -> Result<Vec<u8>> {
     let output = process::capture(
         &mut Command::new("git")
@@ -364,33 +437,35 @@ fn semantic_with_vector(
     v: &[f32],
     limit: usize,
     commits: &[String],
+    include: impl Fn(&SearchResult) -> bool,
 ) -> Result<Vec<SearchResult>> {
-    let mut s=c.prepare("SELECT path,line,text,commit_id,vec_distance_cosine(vector,?1) d FROM embeddings WHERE commit_id IN (SELECT value FROM json_each(?3)) ORDER BY d,path,line LIMIT ?2")?;
-    let rows = s.query_map(
-        params![as_bytes(v), limit as i64, serde_json::to_string(commits)?],
-        |r| {
-            Ok(SearchResult {
-                path: r.get(0)?,
-                line_start: r.get(1)?,
-                line_end: r.get(1)?,
-                text: r.get(2)?,
-                commit_id: Some(r.get(3)?),
-                distance: Some(r.get(4)?),
-                blob_id: None,
-                page: None,
-                repo_id: None,
-            })
-        },
-    )?;
-    Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
+    let mut s=c.prepare("SELECT path,line,text,commit_id,vec_distance_cosine(vector,?1) d FROM embeddings WHERE commit_id IN (SELECT value FROM json_each(?2)) ORDER BY d,path,line")?;
+    let rows = s.query_map(params![as_bytes(v), serde_json::to_string(commits)?], |r| {
+        Ok(SearchResult {
+            path: r.get(0)?,
+            line_start: r.get(1)?,
+            line_end: r.get(1)?,
+            text: r.get(2)?,
+            commit_id: Some(r.get(3)?),
+            distance: Some(r.get(4)?),
+            blob_id: None,
+            page: None,
+            repo_id: None,
+        })
+    })?;
+    let mut results = rows.collect::<std::result::Result<Vec<_>, _>>()?;
+    results.retain(|result| include(result));
+    results.truncate(limit);
+    Ok(results)
 }
 fn semantic(
     c: &Connection,
     q: &str,
     limit: usize,
     commits: &[String],
+    include: impl Fn(&SearchResult) -> bool,
 ) -> Result<Vec<SearchResult>> {
-    semantic_with_vector(c, &query_vector(c, q)?, limit, commits)
+    semantic_with_vector(c, &query_vector(c, q)?, limit, commits, include)
 }
 fn execute() -> Result<()> {
     let mut a = env::args().skip(1);
@@ -459,10 +534,20 @@ fn execute() -> Result<()> {
         "search" => {
             let mut query = None;
             let mut scope = history::Scope::default();
+            let mut result_scope = SearchScope::default();
+            let mut result_scope_set = false;
             let (mut json, mut mode, mut limit) = (false, "exact", 20usize);
             while let Some(x) = a.next() {
                 match x.as_str() {
                     "--json" => json = true,
+                    "--scope" => {
+                        if result_scope_set {
+                            return Err("--scope may only be specified once".into());
+                        }
+                        result_scope =
+                            SearchScope::parse(&a.next().ok_or("--scope requires a value")?)?;
+                        result_scope_set = true;
+                    }
                     "--all-history" => scope.all_history = true,
                     "--current-worktree" => scope.current_worktree = true,
                     "--commit" => {
@@ -493,18 +578,22 @@ fn execute() -> Result<()> {
             let c = connection.transaction()?;
             let commits = scope.resolve(&c)?;
             let mut result = if history::is_current(&c)? {
-                history::search(&c, &q, mode, limit, &commits)?
+                history::search(&c, &q, mode, limit, &commits, |result| {
+                    result_scope.matches(result)
+                })?
             } else if mode == "exact" {
                 exact(&c, &q, &commits)?
             } else if mode == "combined" {
                 let v = query_vector(&c, &q)?;
-                let mut candidates = semantic_with_vector(&c, &v, limit, &commits)?;
+                let mut candidates = semantic_with_vector(&c, &v, limit, &commits, |result| {
+                    result_scope.matches(result)
+                })?;
                 let mut seen = std::collections::HashSet::new();
                 for x in &candidates {
                     seen.insert((x.path.clone(), x.line_start));
                 }
                 for mut x in exact(&c, &q, &commits)? {
-                    if seen.insert((x.path.clone(), x.line_start)) {
+                    if result_scope.matches(&x) && seen.insert((x.path.clone(), x.line_start)) {
                         let distance: f64 = c.query_row(
                             "SELECT vec_distance_cosine(vector,?1) FROM embeddings WHERE path=?2 AND line=?3",
                             params![as_bytes(&v), x.path, x.line_start as i64], |r| r.get(0),
@@ -522,11 +611,16 @@ fn execute() -> Result<()> {
                 });
                 candidates
             } else {
-                semantic(&c, &q, limit, &commits)?
+                semantic(&c, &q, limit, &commits, |result| {
+                    result_scope.matches(result)
+                })?
             };
             if mode == "exact" || mode == "semantic" || mode == "combined" {
-                result.extend(imports::search(&c, &q, mode, limit)?);
+                result.extend(imports::search(&c, &q, mode, limit, |result| {
+                    result_scope.matches(result)
+                })?);
             }
+            result.retain(|candidate| result_scope.matches(candidate));
             if mode == "semantic" || mode == "combined" {
                 result.sort_by(|a, b| {
                     a.distance

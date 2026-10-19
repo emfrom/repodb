@@ -1147,6 +1147,7 @@ pub fn search(
     mode: &str,
     limit: usize,
     commits: &[String],
+    include: impl Fn(&SearchResult) -> bool,
 ) -> Result<Vec<SearchResult>> {
     let v = if mode == "exact" {
         None
@@ -1239,6 +1240,7 @@ pub fn search(
         };
         Ok(())
     };
+    results.retain(|candidate| include(&candidate.3));
     let lowercase_query = query.to_lowercase();
     if mode == "exact" {
         let mut hydration_error = None;

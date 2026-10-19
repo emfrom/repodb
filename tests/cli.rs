@@ -96,6 +96,185 @@ fn repository() -> tempfile::TempDir {
 }
 
 #[test]
+fn search_scope_filters_repo_and_document_sources_for_all_modes() {
+    let repo = repository();
+    let root = repo.path();
+    fs::create_dir(root.join("docs")).unwrap();
+    fs::write(
+        root.join("src/local_scope.rs"),
+        "SCOPE_MARKER local source\n",
+    )
+    .unwrap();
+    fs::write(
+        root.join("docs/local_scope.md"),
+        "SCOPE_MARKER local docs\n",
+    )
+    .unwrap();
+    fs::write(root.join("opaque.dat"), "SCOPE_MARKER unknown type\n").unwrap();
+    git(root, &["add", "."]);
+    git(root, &["commit", "-qm", "add scoped results"]);
+    let local_commit = git_text(root, &["rev-parse", "HEAD"]);
+
+    let external = tempfile::tempdir().unwrap();
+    git(external.path(), &["init", "-q"]);
+    git(
+        external.path(),
+        &["config", "user.email", "test@example.com"],
+    );
+    git(external.path(), &["config", "user.name", "Test"]);
+    fs::create_dir(external.path().join("src")).unwrap();
+    fs::write(
+        external.path().join("src/external_scope.rs"),
+        "SCOPE_MARKER imported source\n",
+    )
+    .unwrap();
+    fs::write(
+        external.path().join("README.md"),
+        "SCOPE_MARKER imported docs\n",
+    )
+    .unwrap();
+    git(external.path(), &["add", "."]);
+    git(external.path(), &["commit", "-qm", "external sources"]);
+
+    let imported_docs = root.join("handbook.txt");
+    fs::write(&imported_docs, "SCOPE_MARKER imported local document\n").unwrap();
+    assert!(run(root, &["init"]).0);
+    assert!(run(root, &["import", external.path().to_str().unwrap()]).0);
+    assert!(run(root, &["import", imported_docs.to_str().unwrap()]).0);
+    assert!(run(root, &["refresh"]).0);
+
+    let imported_doc_path = imported_docs.to_str().unwrap();
+    let expected = vec![
+        (
+            "source",
+            vec!["src/local_scope.rs", "src/external_scope.rs"],
+        ),
+        ("repo-local-source", vec!["src/local_scope.rs"]),
+        ("repo-local-docs", vec!["docs/local_scope.md"]),
+        (
+            "all-docs",
+            vec!["docs/local_scope.md", "README.md", imported_doc_path],
+        ),
+        (
+            "all",
+            vec![
+                "src/local_scope.rs",
+                "docs/local_scope.md",
+                "opaque.dat",
+                "src/external_scope.rs",
+                "README.md",
+                imported_doc_path,
+            ],
+        ),
+    ];
+    for mode in ["exact", "--semantic", "--combined"] {
+        for (scope, paths) in &expected {
+            let mut args = vec!["search", "--json"];
+            if mode != "exact" {
+                args.extend([mode, "--semantic-limit", "20"]);
+            }
+            args.extend(["SCOPE_MARKER", "--scope", scope]);
+            let (ok, output) = run(root, &args);
+            assert!(ok, "{mode} scope {scope}: {output}");
+            let results: Vec<serde_json::Value> = serde_json::from_str(&output).unwrap();
+            let mut actual: Vec<_> = results
+                .iter()
+                .map(|result| result["path"].as_str().unwrap())
+                .collect();
+            let is_doc = |path: &str| {
+                let path = path.split(['?', '#']).next().unwrap_or(path);
+                matches!(
+                    path.rsplit('.')
+                        .next()
+                        .unwrap_or("")
+                        .to_ascii_lowercase()
+                        .as_str(),
+                    "md" | "markdown" | "txt" | "pdf" | "html" | "htm" | "org"
+                )
+            };
+            match *scope {
+                "source" => assert!(
+                    results.iter().all(|result| {
+                        (result["commit_id"].is_string() || result["repo_id"].is_string())
+                            && !is_doc(result["path"].as_str().unwrap())
+                    }),
+                    "{mode} scope {scope}: {results:?}"
+                ),
+                "repo-local-source" => assert!(
+                    results.iter().all(|result| {
+                        result["commit_id"].is_string()
+                            && result["repo_id"].is_null()
+                            && result["path"].as_str().unwrap().ends_with(".rs")
+                    }),
+                    "{mode} scope {scope}: {results:?}"
+                ),
+                "repo-local-docs" => assert!(
+                    results.iter().all(|result| {
+                        result["commit_id"].is_string()
+                            && result["repo_id"].is_null()
+                            && is_doc(result["path"].as_str().unwrap())
+                    }),
+                    "{mode} scope {scope}: {results:?}"
+                ),
+                "all-docs" => assert!(
+                    results
+                        .iter()
+                        .all(|result| is_doc(result["path"].as_str().unwrap())),
+                    "{mode} scope {scope}: {results:?}"
+                ),
+                "all" => {}
+                _ => unreachable!(),
+            }
+            if mode == "exact" {
+                actual.sort_unstable();
+                let mut expected = paths.to_vec();
+                expected.sort_unstable();
+                assert_eq!(actual, expected, "{mode} scope {scope}");
+            } else {
+                for path in paths {
+                    assert!(
+                        actual.contains(path),
+                        "{mode} scope {scope} omits {path}: {actual:?}"
+                    );
+                }
+            }
+        }
+    }
+
+    let default_results = search_json(root, &["SCOPE_MARKER"]);
+    let all_results = search_json(root, &["SCOPE_MARKER", "--scope", "all"]);
+    assert_eq!(default_results.len(), all_results.len());
+    assert!(!run(root, &["search", "SCOPE_MARKER", "--scope", "unknown"]).0);
+    assert!(
+        !run(
+            root,
+            &[
+                "search",
+                "SCOPE_MARKER",
+                "--scope",
+                "all",
+                "--scope",
+                "source"
+            ]
+        )
+        .0
+    );
+
+    let scoped_commit_results = search_json(
+        root,
+        &[
+            "SCOPE_MARKER",
+            "--scope",
+            "repo-local-source",
+            "--commit",
+            &local_commit,
+        ],
+    );
+    assert_eq!(scoped_commit_results.len(), 1);
+    assert_eq!(scoped_commit_results[0]["path"], "src/local_scope.rs");
+}
+
+#[test]
 fn explicit_database_paths_keep_independent_history_and_preserve_default() {
     let repo = repository();
     let root = repo.path();
@@ -836,6 +1015,21 @@ fn imported_files_refresh_with_references_and_both_retention_policies() {
     let file_string = file.to_string_lossy().into_owned();
     assert!(run(root, &["import", &file_string]).0);
     assert!(run(root, &["refresh"]).0);
+    let database = rusqlite::Connection::open(root.join(".git/repodb.sqlite")).unwrap();
+    let (version, content, representation_hash): (String, String, String) = database
+        .query_row(
+            "SELECT version,content,representation_sha256 FROM imported_versions",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .unwrap();
+    assert_eq!(
+        version,
+        "f525d245d3da65c919757490cd56b442540a5c5f03e4ee3d6c9a662e8c1a2ea7"
+    );
+    assert_eq!(content, "imported first marker\n");
+    assert_eq!(representation_hash, version);
+    drop(database);
     let first = search_json(root, &["marker"]);
     assert!(
         first
