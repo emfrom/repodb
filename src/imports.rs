@@ -3,7 +3,7 @@ use crate::{
     budget::{Budget, MAX_REFRESH_ACCOUNTING_BYTES},
     embed,
     git_objects::GitBlobReader,
-    process, segmentation,
+    git_ranges, process, segmentation,
 };
 use rusqlite::{Connection, OptionalExtension, params};
 use std::{
@@ -827,17 +827,7 @@ pub fn reembed(c: &Connection, command: &str, model: &str) -> Result<Option<usiz
 }
 
 fn slice_git_unit(blob_bytes: &[u8], blob_id: &str, start: usize, end: usize) -> Result<String> {
-    if start > end {
-        return Err(format!("invalid imported Git byte range {start}..{end}").into());
-    }
-    let blob = std::str::from_utf8(blob_bytes)
-        .map_err(|_| format!("imported Git blob {blob_id} is no longer valid UTF-8"))?;
-    Ok(blob
-        .get(start..end)
-        .ok_or_else(|| {
-            format!("invalid imported Git byte range {start}..{end} for blob {blob_id}")
-        })?
-        .to_owned())
+    git_ranges::slice_utf8(blob_bytes, blob_id, start, end, "imported")
 }
 
 fn hydrate_git_unit(locator: &str, blob_id: &str, start: usize, end: usize) -> Result<String> {

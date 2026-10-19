@@ -18,10 +18,12 @@ Each query was run three times per binary. The table shows the first sample and 
 | Exact, absent literal `unlikely_literal_abc987` | 0.03 / 0.030 | 0.07 / 0.065 | 12.3 / 11.0 | 0 / 2 |
 | Semantic, top 10, `how does repository search work` | 0.06 / 0.055 | 0.07 / 0.065 | 12.5 / 12.4 | 0 / 2 |
 | Combined, common literal `use`, top 10 | 0.05 / 0.055 | 0.10 / 0.110 | 12.4 / 13.5 | 0 / 2 |
-| Exact, all history, `use` | 0.06 / 0.060 | 0.15 / 0.130 | 22.6 / 30.7 | 0 / 2 |
+| Exact, all history, `use` | 0.06 / 0.060 | 0.14 / 0.135 | 22.6 / 25.5 | 0 / 2 |
 | Exact with imported Git enabled, `use` | 0.04 / 0.035 | 0.07 / 0.080 | 12.4 / 10.9 | 0 / 2 |
 
-The updated version starts one batch reader for the local repository and one for the registered imported Git object store. The pre-#31 baseline retains unit text in SQLite and starts no `cat-file` process during search. The blob-backed version reduces the primary database file by about 75% in this fixture, while this small-repository query set shows higher elapsed time for exact and combined searches and higher all-history peak RSS. Semantic top-10 remains close to baseline. The batch reader avoids one process per blob, but hydration and result-text materialization still have a cost; all-history is the clearest measured memory/time regression.
+The updated version starts one batch reader for the local repository and one for the registered imported Git object store. The pre-#31 baseline retains unit text in SQLite and starts no `cat-file` process during search. The blob-backed version reduces the primary database file by about 75% in this fixture, while this small-repository query set shows higher elapsed time for exact and combined searches. Semantic top-10 remains close to baseline. The batch reader avoids one process per blob, but hydration and result-text materialization still have a cost.
+
+A subsequent all-history rerun after releasing nonmatching hydrated result text recorded samples of 0.14/0.13/0.14 seconds and peak RSS of 25,712/25,524/25,572 KiB (two `git cat-file` starts per sample). The median RSS is about 25.5 MiB, improved from the prior 30.7 MiB, but remains above the pre-#31 baseline of 0.06 seconds and 22.6 MiB. This residual time and memory regression is expected in part because range-backed storage necessitates hydrating Git blobs and materializing output text; these measurements do not demonstrate parity with the text-retaining baseline.
 
 No OS page-cache flush was performed (and the first sample was not guaranteed cold: indexing and earlier setup had already read the same object store). Therefore these results do **not** claim cold-cache measurements. Reported first samples are the first query of that case in a run, not a cold-cache result. Warm-repeat estimates are samples 2–3. The timer's 0.01-second resolution limits interpretation of the fastest cases. Use a larger repository and an explicit cache-control setup for cold-cache claims.
 

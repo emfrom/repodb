@@ -10,6 +10,7 @@ use std::{
 mod budget;
 mod config;
 mod git_objects;
+mod git_ranges;
 mod history;
 mod imports;
 mod process;

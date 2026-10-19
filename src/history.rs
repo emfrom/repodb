@@ -2,7 +2,7 @@ use crate::{
     Result, SearchResult, as_bytes,
     budget::{Budget, MAX_REFRESH_ACCOUNTING_BYTES},
     git_objects::GitBlobReader,
-    process, query_vector, segmentation,
+    git_ranges, process, query_vector, segmentation,
 };
 use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
 use std::{
@@ -1137,16 +1137,8 @@ fn hydrate_unit(
     end: usize,
     reader: &mut GitBlobReader,
 ) -> Result<String> {
-    if start > end {
-        return Err(format!("invalid indexed Git byte range {start}..{end}").into());
-    }
     let bytes = reader.blob(blob_id)?;
-    let blob = std::str::from_utf8(&bytes)
-        .map_err(|_| format!("indexed Git blob {blob_id} is no longer valid UTF-8"))?;
-    let slice = blob.get(start..end).ok_or_else(|| {
-        format!("invalid indexed Git byte range {start}..{end} for blob {blob_id}")
-    })?;
-    Ok(slice.to_owned())
+    git_ranges::slice_utf8(&bytes, blob_id, start, end, "indexed")
 }
 
 pub fn search(
@@ -1247,18 +1239,24 @@ pub fn search(
         };
         Ok(())
     };
-    if mode == "exact" || mode == "combined" {
-        for candidate in &mut results {
-            hydrate(candidate, &mut blob_reader)?;
-        }
-        results.retain(|candidate| {
-            candidate
-                .3
-                .text
-                .to_lowercase()
-                .contains(&query.to_lowercase())
-                || mode != "exact"
+    let lowercase_query = query.to_lowercase();
+    if mode == "exact" {
+        let mut hydration_error = None;
+        results.retain_mut(|candidate| {
+            if hydration_error.is_some() {
+                return false;
+            }
+            match hydrate(candidate, &mut blob_reader) {
+                Ok(()) => candidate.3.text.to_lowercase().contains(&lowercase_query),
+                Err(error) => {
+                    hydration_error = Some(error);
+                    false
+                }
+            }
         });
+        if let Some(error) = hydration_error {
+            return Err(error);
+        }
     }
     if mode != "exact" {
         results.sort_by(|a, b| {
@@ -1270,17 +1268,31 @@ pub fn search(
                 .then(a.3.blob_id.cmp(&b.3.blob_id))
         });
         let mut index = 0;
-        results.retain(|candidate| {
-            let keep = index < limit
-                || (mode == "combined"
-                    && candidate
-                        .3
-                        .text
-                        .to_lowercase()
-                        .contains(&query.to_lowercase()));
-            index += 1;
-            keep
-        });
+        if mode == "combined" {
+            let mut hydration_error = None;
+            results.retain_mut(|candidate| {
+                if hydration_error.is_some() {
+                    return false;
+                }
+                match hydrate(candidate, &mut blob_reader) {
+                    Ok(()) => {
+                        let keep = index < limit
+                            || candidate.3.text.to_lowercase().contains(&lowercase_query);
+                        index += 1;
+                        keep
+                    }
+                    Err(error) => {
+                        hydration_error = Some(error);
+                        false
+                    }
+                }
+            });
+            if let Some(error) = hydration_error {
+                return Err(error);
+            }
+        } else {
+            results.truncate(limit);
+        }
         if mode == "semantic" {
             for candidate in &mut results {
                 hydrate(candidate, &mut blob_reader)?;
