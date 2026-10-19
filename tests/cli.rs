@@ -159,6 +159,25 @@ fn git_snapshot_stores_ranges_not_verbatim_text_and_hydrates_search_results() {
 }
 
 #[test]
+fn exact_search_hydrates_multiple_units_from_one_git_blob_in_source_order() {
+    let repo = repository();
+    let root = repo.path();
+    fs::write(
+        root.join("many.md"),
+        "First paragraph has shared marker.\n\nSecond paragraph has shared marker.\n",
+    )
+    .unwrap();
+    git(root, &["add", "many.md"]);
+    git(root, &["commit", "-qm", "add multiple searchable units"]);
+    assert!(run(root, &["init"]).0);
+
+    let results = search_json(root, &["shared marker"]);
+    assert_eq!(results.len(), 2);
+    assert_eq!(results[0]["text"], "First paragraph has shared marker.");
+    assert_eq!(results[1]["text"], "Second paragraph has shared marker.");
+}
+
+#[test]
 fn default_embedding_command_is_used_on_first_scan_and_saved_for_search() {
     let repo = repository();
     let root = repo.path();

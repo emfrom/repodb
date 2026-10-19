@@ -1,7 +1,9 @@
 use crate::{
     Result, SearchResult, as_bytes,
     budget::{Budget, MAX_REFRESH_ACCOUNTING_BYTES},
-    embed, process, segmentation,
+    embed,
+    git_objects::GitBlobReader,
+    process, segmentation,
 };
 use rusqlite::{Connection, OptionalExtension, params};
 use std::{
@@ -848,6 +850,26 @@ fn hydrate_git_unit(locator: &str, blob_id: &str, start: usize, end: usize) -> R
         .to_owned())
 }
 
+fn hydrate_git_unit_with_reader(
+    reader: &mut GitBlobReader,
+    blob_id: &str,
+    start: usize,
+    end: usize,
+) -> Result<String> {
+    if start > end {
+        return Err(format!("invalid imported Git byte range {start}..{end}").into());
+    }
+    let bytes = reader.blob(blob_id)?;
+    let blob = std::str::from_utf8(&bytes)
+        .map_err(|_| format!("imported Git blob {blob_id} is no longer valid UTF-8"))?;
+    Ok(blob
+        .get(start..end)
+        .ok_or_else(|| {
+            format!("invalid imported Git byte range {start}..{end} for blob {blob_id}")
+        })?
+        .to_owned())
+}
+
 pub fn search(c: &Connection, query: &str, mode: &str, limit: usize) -> Result<Vec<SearchResult>> {
     init(c)?;
     let semantic = mode != "exact";
@@ -946,6 +968,8 @@ pub fn search(c: &Connection, query: &str, mode: &str, limit: usize) -> Result<V
             r.get::<_, Option<String>>(10)?,
         ))
     })?;
+    let mut batch_readers: std::collections::HashMap<String, GitBlobReader> =
+        std::collections::HashMap::new();
     for row in rows {
         let (
             repo_id,
@@ -975,7 +999,14 @@ pub fn search(c: &Connection, query: &str, mode: &str, limit: usize) -> Result<V
         } else {
             match (blob_id.as_deref(), byte_start, byte_end) {
                 (Some(blob), Some(start), Some(end)) => {
-                    hydrate_git_unit(&object_store, blob, start, end)?
+                    if !batch_readers.contains_key(&object_store) {
+                        batch_readers.insert(
+                            object_store.clone(),
+                            GitBlobReader::new(Some(&object_store))?,
+                        );
+                    }
+                    let reader = batch_readers.get_mut(&object_store).unwrap();
+                    hydrate_git_unit_with_reader(reader, blob, start, end)?
                 }
                 (None, None, None) => legacy_text.ok_or("missing legacy imported Git text")?,
                 _ => return Err("invalid imported Git byte range".into()),
@@ -1036,14 +1067,23 @@ pub fn search(c: &Connection, query: &str, mode: &str, limit: usize) -> Result<V
             out.truncate(limit);
         }
     }
-    out.into_iter()
+    let results = out
+        .into_iter()
         .map(|(_, mut result, deferred)| {
             if let Some((store, blob, start, end)) = deferred {
-                result.text = hydrate_git_unit(&store, &blob, start, end)?;
+                if !batch_readers.contains_key(&store) {
+                    batch_readers.insert(store.clone(), GitBlobReader::new(Some(&store))?);
+                }
+                let reader = batch_readers.get_mut(&store).unwrap();
+                result.text = hydrate_git_unit_with_reader(reader, &blob, start, end)?;
             }
             Ok(result)
         })
-        .collect()
+        .collect::<Result<Vec<_>>>()?;
+    for reader in batch_readers.values_mut() {
+        reader.finish()?;
+    }
+    Ok(results)
 }
 
 #[cfg(test)]

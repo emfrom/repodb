@@ -1,6 +1,7 @@
 use crate::{
     Result, SearchResult, as_bytes,
     budget::{Budget, MAX_REFRESH_ACCOUNTING_BYTES},
+    git_objects::GitBlobReader,
     process, query_vector, segmentation,
 };
 use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
@@ -1084,7 +1085,7 @@ pub fn reembed(c: &mut Connection, command: &str, model: &str) -> Result<()> {
             "SELECT unit_id,text FROM indexed_units ORDER BY unit_id"
         })?;
         let mut rows = units.query([])?;
-        let mut blob_cache = std::collections::HashMap::new();
+        let mut blob_cache = GitBlobReader::new(None)?;
         let mut staged = c.prepare("INSERT INTO temp.reembed_vectors VALUES(?1,?2)")?;
         while let Some(row) = rows.next()? {
             let unit_id: usize = row.get(0)?;
@@ -1107,6 +1108,7 @@ pub fn reembed(c: &mut Connection, command: &str, model: &str) -> Result<()> {
             staged.execute(params![unit_id, encoded])?;
             dim = dimension;
         }
+        blob_cache.finish()?;
     }
     let tx = publish_transaction(c, version)?;
     tx.execute("DELETE FROM unit_embeddings", [])?;
@@ -1133,29 +1135,14 @@ fn hydrate_unit(
     blob_id: &str,
     start: usize,
     end: usize,
-    cache: &mut std::collections::HashMap<String, String>,
+    reader: &mut GitBlobReader,
 ) -> Result<String> {
     if start > end {
         return Err(format!("invalid indexed Git byte range {start}..{end}").into());
     }
-    if !cache.contains_key(blob_id) {
-        let output = Command::new("git")
-            .args(["cat-file", "blob", blob_id])
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .output()?;
-        if !output.status.success() {
-            return Err(format!(
-                "cannot hydrate Git blob {blob_id}: {}",
-                String::from_utf8_lossy(&output.stderr)
-            )
-            .into());
-        }
-        let blob = String::from_utf8(output.stdout)
-            .map_err(|_| format!("indexed Git blob {blob_id} is no longer valid UTF-8"))?;
-        cache.insert(blob_id.to_owned(), blob);
-    }
-    let blob = cache.get(blob_id).ok_or("missing hydrated Git blob")?;
+    let bytes = reader.blob(blob_id)?;
+    let blob = std::str::from_utf8(&bytes)
+        .map_err(|_| format!("indexed Git blob {blob_id} is no longer valid UTF-8"))?;
     let slice = blob.get(start..end).ok_or_else(|| {
         format!("invalid indexed Git byte range {start}..{end} for blob {blob_id}")
     })?;
@@ -1240,9 +1227,9 @@ pub fn search(
         result.path = path;
         results.push((byte_start, byte_end, legacy_text, result));
     }
-    let mut blob_cache = std::collections::HashMap::new();
+    let mut blob_reader = GitBlobReader::new(None)?;
     let hydrate = |candidate: &mut (Option<usize>, Option<usize>, String, SearchResult),
-                   cache: &mut std::collections::HashMap<String, String>|
+                   reader: &mut GitBlobReader|
      -> Result<()> {
         candidate.3.text = match (candidate.0, candidate.1) {
             (Some(start), Some(end)) => hydrate_unit(
@@ -1253,7 +1240,7 @@ pub fn search(
                     .ok_or("missing Git blob ID")?,
                 start,
                 end,
-                cache,
+                reader,
             )?,
             (None, None) => candidate.2.clone(),
             _ => return Err("invalid indexed Git byte range".into()),
@@ -1262,7 +1249,7 @@ pub fn search(
     };
     if mode == "exact" || mode == "combined" {
         for candidate in &mut results {
-            hydrate(candidate, &mut blob_cache)?;
+            hydrate(candidate, &mut blob_reader)?;
         }
         results.retain(|candidate| {
             candidate
@@ -1296,10 +1283,11 @@ pub fn search(
         });
         if mode == "semantic" {
             for candidate in &mut results {
-                hydrate(candidate, &mut blob_cache)?;
+                hydrate(candidate, &mut blob_reader)?;
             }
         }
     }
+    blob_reader.finish()?;
     Ok(results.into_iter().map(|candidate| candidate.3).collect())
 }
 

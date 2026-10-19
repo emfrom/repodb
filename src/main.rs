@@ -9,6 +9,7 @@ use std::{
 
 mod budget;
 mod config;
+mod git_objects;
 mod history;
 mod imports;
 mod process;
