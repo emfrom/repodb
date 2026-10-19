@@ -7,6 +7,18 @@ fn skill(path: &str) -> String {
 }
 
 #[test]
+fn distributed_skills_match_the_repo_local_pi_skills() {
+    for skill_name in ["repodb-enabler", "repodb-help"] {
+        let local = skill(&format!(".agents/skills/{skill_name}/SKILL.md"));
+        let distributed = skill(&format!("skills/{skill_name}/SKILL.md"));
+        assert_eq!(
+            distributed, local,
+            "distributed {skill_name} must match the repo-local skill"
+        );
+    }
+}
+
+#[test]
 fn enabler_is_project_local_and_defers_repo_db_skill_loading() {
     let enabler = skill(".agents/skills/repodb-enabler/SKILL.md");
 

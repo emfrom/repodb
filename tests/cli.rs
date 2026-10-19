@@ -3206,8 +3206,10 @@ fn history_blob_larger_than_previous_limit_refreshes() {
     assert!(run(root, &["init"]).0);
     let before = search_json(root, &["TARGET", "--all-history"]);
 
-    let mut large_blob = b"oversized searchable marker\\n".to_vec();
-    large_blob.extend(std::iter::repeat_n(b'x', 32 * 1024 * 1024 + 1));
+    let mut large_blob = b"oversized searchable marker\n".to_vec();
+    // Keep the Git object above the uncached-blob threshold without generating
+    // thousands of indexed units from irrelevant padding.
+    large_blob.extend(std::iter::repeat_n(b' ', 32 * 1024 * 1024 + 1));
     fs::write(root.join("oversized.txt"), large_blob).unwrap();
     git(root, &["add", "oversized.txt"]);
     git(root, &["commit", "-qm", "oversized blob"]);
