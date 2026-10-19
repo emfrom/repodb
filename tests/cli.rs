@@ -1015,6 +1015,18 @@ fn imported_files_refresh_with_references_and_both_retention_policies() {
     let file_string = file.to_string_lossy().into_owned();
     assert!(run(root, &["import", &file_string]).0);
     assert!(run(root, &["refresh"]).0);
+    let database = rusqlite::Connection::open(root.join(".git/repodb.sqlite")).unwrap();
+    let (version, content, representation_hash): (String, String, String) = database
+        .query_row(
+            "SELECT version,content,representation_sha256 FROM imported_versions",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .unwrap();
+    assert_eq!(version, "f525d245d3da65c919757490cd56b442540a5c5f03e4ee3d6c9a662e8c1a2ea7");
+    assert_eq!(content, "imported first marker\n");
+    assert_eq!(representation_hash, version);
+    drop(database);
     let first = search_json(root, &["marker"]);
     assert!(
         first

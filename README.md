@@ -1,4 +1,4 @@
-# RepoDB v0.2.1
+# RepoDB v0.2.2
 
 A repository search CLI with exact and embedding-based search.
 
