@@ -96,6 +96,96 @@ fn repository() -> tempfile::TempDir {
 }
 
 #[test]
+fn import_preview_reports_selected_files_sizes_and_exclusions_without_db_side_effects() {
+    use std::os::unix::fs::symlink;
+
+    const MIB: u64 = 1024 * 1024;
+    let repo = repository();
+    let root = repo.path();
+    let selected = root.join("selected");
+    fs::create_dir_all(selected.join("nested/.git")).unwrap();
+    for (name, body) in [
+        ("a.md", "markdown"),
+        ("b.markdown", "mark"),
+        ("c.txt", "plain"),
+        ("d.pdf", "pdf"),
+        ("e.html", "html"),
+        ("f.org", "org"),
+        ("g.rs", "rust"),
+        ("extensionless", "text"),
+        ("nested/h.htm", "htm"),
+        ("unknown.bin", "unsupported"),
+    ] {
+        fs::write(selected.join(name), body).unwrap();
+    }
+    fs::write(selected.join("nested/.git/hidden.md"), "hidden").unwrap();
+    let outside = root.join("outside.md");
+    fs::write(&outside, "outside").unwrap();
+    symlink(&outside, selected.join("linked.md")).unwrap();
+
+    let output = root.join("preview-output");
+    assert!(!root.join(".git/repodb.sqlite").exists());
+    let (ok, json) = run(root, &["import", "--preview", selected.to_str().unwrap()]);
+    assert!(ok);
+    let preview: serde_json::Value = serde_json::from_str(&json).unwrap();
+    let files = preview["selected_supported_local_files"]
+        .as_array()
+        .unwrap();
+    assert_eq!(files.len(), 9);
+    assert!(
+        files
+            .windows(2)
+            .all(|pair| pair[0].as_str() < pair[1].as_str())
+    );
+    assert_eq!(
+        preview["unsupported_regular_files"][0]["path"],
+        selected.join("unknown.bin").to_string_lossy().as_ref()
+    );
+    assert!(
+        preview["unsupported_regular_files"][0]["reason"]
+            .as_str()
+            .unwrap()
+            .contains("unsupported")
+    );
+    assert_eq!(
+        preview["total_selected_source_bytes"],
+        8 + 4 + 5 + 3 + 4 + 3 + 4 + 4 + 3
+    );
+    assert_eq!(preview["current_db_bytes"], serde_json::Value::Null);
+    assert_eq!(
+        preview["estimated_net_db_growth_bytes"],
+        serde_json::Value::Null
+    );
+    assert_eq!(
+        preview["warning_basis_bytes"],
+        preview["total_selected_source_bytes"]
+    );
+    assert_eq!(preview["warn_large"], false);
+    assert!(!root.join(".git/repodb.sqlite").exists());
+    let (single_ok, single) = run(
+        root,
+        &[
+            "import",
+            "--preview",
+            selected.join("a.md").to_str().unwrap(),
+        ],
+    );
+    assert!(single_ok);
+    assert_eq!(serde_json::from_str::<serde_json::Value>(&single).unwrap()["selected_supported_local_files"].as_array().unwrap().len(), 1);
+    let (bad_ok, _) = run(root, &["import", "--preview", output.to_str().unwrap()]);
+    assert!(!bad_ok);
+    let (dir_import_ok, _) = run(root, &["import", selected.to_str().unwrap()]);
+    assert!(!dir_import_ok);
+    let large = root.join("large.txt");
+    fs::write(&large, vec![0; 50 * MIB as usize]).unwrap();
+    let (large_ok, large_json) = run(root, &["import", "--preview", large.to_str().unwrap()]);
+    assert!(large_ok);
+    let large_preview: serde_json::Value = serde_json::from_str(&large_json).unwrap();
+    assert_eq!(large_preview["warn_large"], true);
+    assert_eq!(large_preview["warning_basis_bytes"], 50 * MIB);
+}
+
+#[test]
 fn search_scope_filters_repo_and_document_sources_for_all_modes() {
     let repo = repository();
     let root = repo.path();

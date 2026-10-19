@@ -523,10 +523,21 @@ fn execute() -> Result<()> {
             let locator = a
                 .next()
                 .ok_or("import requires one local file, URL, or Git repository")?;
-            if a.next().is_some() {
-                return Err("import accepts one file, URL, or Git repository".into());
+            if locator == "--preview" {
+                let path = a
+                    .next()
+                    .ok_or("import --preview requires a local file or directory")?;
+                if a.next().is_some() {
+                    return Err("import --preview accepts one local file or directory".into());
+                }
+                let preview = imports::preview(std::path::Path::new(&path), &db_path)?;
+                println!("{}", serde_json::to_string(&preview)?);
+            } else {
+                if a.next().is_some() {
+                    return Err("import accepts one file, URL, or Git repository".into());
+                }
+                imports::register(&open_db(&db_path)?, &locator)?;
             }
-            imports::register(&open_db(&db_path)?, &locator)?;
         }
         "retention" => {
             let value = a.next().ok_or("retention requires latest or all")?;

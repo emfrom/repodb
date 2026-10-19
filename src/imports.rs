@@ -17,7 +17,7 @@ mod cache;
 mod sources;
 use cache::{checksum, visit_cache_pages, write_cache};
 use sources::{column_exists, init};
-pub(crate) use sources::{register, set_retention};
+pub(crate) use sources::{preview, register, set_retention};
 const MAX_COMMAND_STDERR_BYTES: usize = 64 * 1024;
 
 fn html_text(source: &str) -> String {

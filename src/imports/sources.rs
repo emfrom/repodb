@@ -1,6 +1,112 @@
 use crate::Result;
 use rusqlite::{Connection, params};
-use std::{path::Path, process::Command};
+use serde::Serialize;
+use std::{
+    fs,
+    path::{Path, PathBuf},
+    process::Command,
+};
+
+#[derive(Serialize)]
+pub(crate) struct Preview {
+    selected_supported_local_files: Vec<String>,
+    unsupported_regular_files: Vec<UnsupportedFile>,
+    total_selected_source_bytes: u64,
+    current_db_bytes: Option<u64>,
+    estimated_net_db_growth_bytes: Option<u64>,
+    warning_basis_bytes: u64,
+    warn_large: bool,
+}
+
+#[derive(Serialize)]
+struct UnsupportedFile {
+    path: String,
+    reason: String,
+}
+
+pub(crate) fn preview(path: &Path, database: &Path) -> Result<Preview> {
+    let metadata = fs::symlink_metadata(path)?;
+    if metadata.file_type().is_symlink() || (!metadata.is_file() && !metadata.is_dir()) {
+        return Err(format!(
+            "preview path must be a regular file or directory: {}",
+            path.display()
+        )
+        .into());
+    }
+    let mut files = Vec::new();
+    if metadata.is_file() {
+        files.push(path.to_path_buf());
+    } else {
+        collect_preview_files(path, &mut files)?;
+    }
+    files.sort();
+    let mut supported = Vec::new();
+    let mut unsupported = Vec::new();
+    let mut total = 0u64;
+    for file in files {
+        let metadata = fs::symlink_metadata(&file)?;
+        if !metadata.is_file() || metadata.file_type().is_symlink() {
+            continue;
+        }
+        if preview_supported(&file) {
+            total = total
+                .checked_add(metadata.len())
+                .ok_or("selected source byte total overflow")?;
+            supported.push(file.to_string_lossy().into_owned());
+        } else {
+            unsupported.push(UnsupportedFile {
+                path: file.to_string_lossy().into_owned(),
+                reason: "unsupported local document format".into(),
+            });
+        }
+    }
+    let current_db_bytes = fs::metadata(database)
+        .ok()
+        .filter(|metadata| metadata.is_file())
+        .map(|metadata| metadata.len());
+    let warn_large = total >= 50 * 1024 * 1024
+        || current_db_bytes.is_some_and(|size| total > size.saturating_mul(2));
+    Ok(Preview {
+        selected_supported_local_files: supported,
+        unsupported_regular_files: unsupported,
+        total_selected_source_bytes: total,
+        current_db_bytes,
+        estimated_net_db_growth_bytes: None,
+        warning_basis_bytes: total,
+        warn_large,
+    })
+}
+
+fn preview_supported(path: &Path) -> bool {
+    path.extension().is_none_or(|extension| {
+        extension.to_str().is_some_and(|extension| {
+            matches!(
+                extension.to_ascii_lowercase().as_str(),
+                "md" | "markdown" | "txt" | "pdf" | "html" | "htm" | "org" | "rs"
+            )
+        })
+    })
+}
+
+fn collect_preview_files(directory: &Path, files: &mut Vec<PathBuf>) -> Result<()> {
+    let mut entries = fs::read_dir(directory)?.collect::<std::io::Result<Vec<_>>>()?;
+    entries.sort_by_key(|entry| entry.file_name());
+    for entry in entries {
+        let path = entry.path();
+        let metadata = fs::symlink_metadata(&path)?;
+        if metadata.file_type().is_symlink() {
+            continue;
+        }
+        if metadata.is_dir() {
+            if entry.file_name() != ".git" {
+                collect_preview_files(&path, files)?;
+            }
+        } else if metadata.is_file() {
+            files.push(path);
+        }
+    }
+    Ok(())
+}
 
 pub(super) fn init(c: &Connection) -> Result<()> {
     c.execute_batch("CREATE TABLE IF NOT EXISTS imported_sources(id TEXT PRIMARY KEY, locator TEXT NOT NULL UNIQUE, kind TEXT NOT NULL, object_store TEXT); CREATE TABLE IF NOT EXISTS imported_versions(source_id TEXT NOT NULL, version TEXT NOT NULL, content TEXT NOT NULL, fetched_order INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(source_id,version)); CREATE TABLE IF NOT EXISTS imported_units(source_id TEXT NOT NULL, version TEXT NOT NULL, line INTEGER NOT NULL, text TEXT NOT NULL, vector BLOB, page INTEGER, line_end INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(source_id,version,line,text)); CREATE TABLE IF NOT EXISTS import_config(key TEXT PRIMARY KEY,value TEXT NOT NULL); CREATE TABLE IF NOT EXISTS imported_git_units(source_id TEXT NOT NULL,commit_id TEXT NOT NULL,path TEXT NOT NULL,blob_id TEXT NOT NULL,segmentation_kind TEXT NOT NULL,byte_start INTEGER NOT NULL,byte_end INTEGER NOT NULL,line INTEGER NOT NULL,line_end INTEGER NOT NULL,vector BLOB,PRIMARY KEY(source_id,commit_id,path,byte_start));")?;
@@ -142,9 +248,14 @@ pub(crate) fn register(c: &Connection, locator: &str) -> Result<()> {
     let is_git = is_remote_git
         || path.is_dir()
             && Command::new("git")
-                .args(["-C", locator, "rev-parse", "--git-dir"])
+                .args(["-C", locator, "rev-parse", "--show-toplevel"])
                 .output()
-                .is_ok_and(|o| o.status.success());
+                .ok()
+                .filter(|output| output.status.success())
+                .and_then(|output| String::from_utf8(output.stdout).ok())
+                .is_some_and(|root| {
+                    Path::new(root.trim()).canonicalize().ok() == path.canonicalize().ok()
+                });
     if !is_url && !is_git && !path.is_file() {
         return Err(
             "imports must name an individual local file, HTTP(S) URL, or Git repository".into(),
