@@ -22,4 +22,4 @@ Use the single-context layout. See `docs/agents/domain.md`.
 
 ### Installations
 
-For dependency installations or removals, read `UNINSTALL.md` and update its linked ledger.
+For installations or removals, read `UNINSTALL.md` and update its linked ledger.
