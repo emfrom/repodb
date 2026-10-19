@@ -19,6 +19,26 @@ mod semgrep_languages;
 
 type Result<T> = std::result::Result<T, Box<dyn Error>>;
 
+// NUL cannot occur in a Git path, so this internal tag cannot collide with UTF-8 paths.
+// Invalid paths are exposed as `bytes:<lowercase-hex>` plus `path_bytes_hex` in JSON.
+const ENCODED_GIT_PATH_PREFIX: &str = "\0repodb-git-path:";
+
+fn encode_git_path(path: Vec<u8>) -> String {
+    let hex = path
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    format!("{ENCODED_GIT_PATH_PREFIX}{hex}")
+}
+
+fn decoded_git_path_hex(path: &str) -> Option<&str> {
+    path.strip_prefix(ENCODED_GIT_PATH_PREFIX)
+}
+
+fn readable_path(path: &str) -> String {
+    decoded_git_path_hex(path).map_or_else(|| path.to_owned(), |hex| format!("bytes:{hex}"))
+}
+
 #[derive(Serialize)]
 struct SearchResult {
     path: String,
@@ -642,7 +662,17 @@ fn execute() -> Result<()> {
                 }
             }
             if json {
-                println!("{}", serde_json::to_string_pretty(&result)?)
+                let mut values = result
+                    .iter()
+                    .map(serde_json::to_value)
+                    .collect::<std::result::Result<Vec<_>, _>>()?;
+                for (value, result) in values.iter_mut().zip(&result) {
+                    if let Some(hex) = decoded_git_path_hex(&result.path) {
+                        value["path"] = serde_json::Value::String(format!("bytes:{hex}"));
+                        value["path_bytes_hex"] = serde_json::Value::String(hex.to_owned());
+                    }
+                }
+                println!("{}", serde_json::to_string_pretty(&values)?)
             } else {
                 for x in result {
                     let mut reference = String::new();
@@ -655,12 +685,13 @@ fn execute() -> Result<()> {
                     if let Some(repo_id) = x.repo_id {
                         reference.push_str(&format!(" [repo {repo_id}]"));
                     }
+                    let path = readable_path(&x.path);
                     if let Some(page) = x.page {
-                        println!("{}:page {}{}: {}", x.path, page, reference, x.text);
+                        println!("{}:page {}{}: {}", path, page, reference, x.text);
                     } else {
                         println!(
                             "{}:{}-{}{}: {}",
-                            x.path, x.line_start, x.line_end, reference, x.text
+                            path, x.line_start, x.line_end, reference, x.text
                         );
                     }
                 }

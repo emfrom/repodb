@@ -402,21 +402,39 @@ fn database_option_resolves_relative_to_cwd_and_rejects_missing_paths() {
 }
 
 #[test]
-fn history_search_skips_non_utf8_paths_and_returns_valid_paths() {
+fn history_search_reports_non_utf8_paths_losslessly_without_changing_utf8_paths() {
     use std::os::unix::ffi::OsStrExt;
 
     let repo = repository();
     let root = repo.path();
     let invalid_path = std::ffi::OsStr::from_bytes(b"invalid-\xff.txt");
     fs::write(root.join(invalid_path), "nonutf marker\n").unwrap();
+    fs::write(root.join("bytes:ff"), "utf8 collision marker\n").unwrap();
     fs::write(root.join("valid.txt"), "valid history marker\n").unwrap();
     git(root, &["add", "."]);
     git(root, &["commit", "-qm", "non-UTF-8 path"]);
     assert!(run(root, &["init"]).0);
 
-    let results = search_json(root, &["valid history marker"]);
+    let results = search_json(root, &["nonutf marker"]);
     assert_eq!(results.len(), 1);
-    assert_eq!(results[0]["path"], "valid.txt");
+    assert_eq!(results[0]["path"], "bytes:696e76616c69642dff2e747874");
+    assert_eq!(results[0]["path_bytes_hex"], "696e76616c69642dff2e747874");
+
+    let utf8_collision = search_json(root, &["utf8 collision marker"]);
+    assert_eq!(utf8_collision.len(), 1);
+    assert_eq!(utf8_collision[0]["path"], "bytes:ff");
+    assert!(utf8_collision[0].get("path_bytes_hex").is_none());
+
+    let ordinary = search_json(root, &["valid history marker"]);
+    assert_eq!(ordinary.len(), 1);
+    assert_eq!(ordinary[0]["path"], "valid.txt");
+    assert!(ordinary[0].get("path_bytes_hex").is_none());
+
+    let (_, readable) = run(root, &["search", "nonutf marker"]);
+    assert!(
+        readable.contains("bytes:696e76616c69642dff2e747874:"),
+        "{readable}"
+    );
 }
 
 #[test]

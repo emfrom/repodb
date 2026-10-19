@@ -1210,10 +1210,10 @@ pub fn search(
     let mut results = vec![];
     for row in rows {
         let (path, byte_start, byte_end, legacy_text, mut result) = row?;
-        let Ok(path) = String::from_utf8(path) else {
-            continue;
+        result.path = match String::from_utf8(path) {
+            Ok(path) => path,
+            Err(error) => crate::encode_git_path(error.into_bytes()),
         };
-        result.path = path;
         results.push((byte_start, byte_end, legacy_text, result));
     }
     let mut blob_reader = GitBlobReader::new(None)?;
