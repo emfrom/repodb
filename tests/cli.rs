@@ -3254,6 +3254,7 @@ fn refresh_update_indexes_an_unreachable_commit_additively() {
     let root = repo.path();
     assert!(run(root, &["init"]).0);
     let baseline = git_text(root, &["rev-parse", "HEAD"]);
+    let original_branch = git_text(root, &["branch", "--show-current"]);
 
     let imported = root.join("imported.txt");
     fs::write(&imported, "PRESERVED_IMPORT_TOKEN\n").unwrap();
@@ -3264,6 +3265,12 @@ fn refresh_update_indexes_an_unreachable_commit_additively() {
     git(root, &["commit", "-qm", "historical target"]);
     let target = git_text(root, &["rev-parse", "HEAD"]);
     git(root, &["checkout", "-q", &baseline]);
+    git(root, &["branch", "-f", &original_branch, &baseline]);
+    let reachable_commits = git_text(root, &["rev-list", "--all"]);
+    assert!(
+        !reachable_commits.lines().any(|commit| commit == target),
+        "target commit must be unreachable from all refs before --update"
+    );
 
     let (ok, output) = run(root, &["refresh", "--update", &target[..12]]);
     assert!(ok, "refresh --update: {output}");

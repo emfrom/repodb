@@ -753,7 +753,7 @@ fn refresh_scoped(c: &mut Connection, target: Option<&str>) -> Result<()> {
         MAX_REFRESH_ACCOUNTING_BYTES,
         "scoped history refresh preparation accounting",
     );
-    let head_id = match target {
+    let target_commit_id = match target {
         Some(commit_id) => commit_id.to_owned(),
         None => {
             let id = head(&mut budget)?.ok_or("scoped refresh requires a committed HEAD")?;
@@ -770,7 +770,7 @@ fn refresh_scoped(c: &mut Connection, target: Option<&str>) -> Result<()> {
     };
     let already_indexed: bool = c.query_row(
         "SELECT EXISTS(SELECT 1 FROM git_commits WHERE commit_id=?1)",
-        [&head_id],
+        [&target_commit_id],
         |row| row.get(0),
     )?;
     if already_indexed {
@@ -781,12 +781,12 @@ fn refresh_scoped(c: &mut Connection, target: Option<&str>) -> Result<()> {
         None
     } else {
         let parent_record = String::from_utf8(git_output(
-            &["rev-list", "--parents", "-n", "1", &head_id],
+            &["rev-list", "--parents", "-n", "1", &target_commit_id],
             256,
             &mut budget,
         )?)?;
         let mut parents = parent_record.split_whitespace();
-        if parents.next() != Some(head_id.as_str()) {
+        if parents.next() != Some(target_commit_id.as_str()) {
             return Err("Git returned an invalid HEAD record".into());
         }
         let parent = parents.next().map(str::to_owned);
@@ -806,7 +806,7 @@ fn refresh_scoped(c: &mut Connection, target: Option<&str>) -> Result<()> {
         parent
     };
     let timestamp: i64 = String::from_utf8(git_output(
-        &["show", "-s", "--format=%ct", &head_id],
+        &["show", "-s", "--format=%ct", &target_commit_id],
         128,
         &mut budget,
     )?)?
@@ -827,7 +827,7 @@ fn refresh_scoped(c: &mut Connection, target: Option<&str>) -> Result<()> {
         CREATE TEMP TABLE scoped_config(key TEXT PRIMARY KEY,value TEXT NOT NULL);")?;
     c.execute(
         "INSERT INTO temp.scoped_commit VALUES(?1,?2)",
-        params![head_id, timestamp],
+        params![target_commit_id, timestamp],
     )?;
 
     let (command, model, configured_dimension) = configuration(c)?;
@@ -858,7 +858,7 @@ fn refresh_scoped(c: &mut Connection, target: Option<&str>) -> Result<()> {
         let mut unit_stage =
             c.prepare("INSERT INTO temp.scoped_units VALUES(?1,?2,?3,?4,?5,?6,?7,?8)")?;
 
-        for_each_tree_record(&head_id, &mut budget, |record, budget| {
+        for_each_tree_record(&target_commit_id, &mut budget, |record, budget| {
             let tab = record
                 .iter()
                 .position(|byte| *byte == b'\t')
@@ -889,7 +889,7 @@ fn refresh_scoped(c: &mut Connection, target: Option<&str>) -> Result<()> {
                 false
             };
             if unchanged {
-                occurrence_stage.execute(params![head_id, blob_id, path, kind])?;
+                occurrence_stage.execute(params![target_commit_id, blob_id, path, kind])?;
                 return Ok(());
             }
 
@@ -898,7 +898,7 @@ fn refresh_scoped(c: &mut Connection, target: Option<&str>) -> Result<()> {
             let has_staged_variant: bool =
                 staged_variant.query_row(params![blob_id, kind], |row| row.get(0))?;
             if has_existing_variant || has_staged_variant {
-                occurrence_stage.execute(params![head_id, blob_id, path, kind])?;
+                occurrence_stage.execute(params![target_commit_id, blob_id, path, kind])?;
                 return Ok(());
             }
 
@@ -919,7 +919,7 @@ fn refresh_scoped(c: &mut Connection, target: Option<&str>) -> Result<()> {
                     .is_some_and(|status| status != "text")
                 {
                     variant_stage.execute(params![blob_id, kind])?;
-                    occurrence_stage.execute(params![head_id, blob_id, path, kind])?;
+                    occurrence_stage.execute(params![target_commit_id, blob_id, path, kind])?;
                     return Ok(());
                 }
                 let size: u64 =
@@ -975,7 +975,7 @@ fn refresh_scoped(c: &mut Connection, target: Option<&str>) -> Result<()> {
                 }
             }
             variant_stage.execute(params![blob_id, kind])?;
-            occurrence_stage.execute(params![head_id, blob_id, path, kind])?;
+            occurrence_stage.execute(params![target_commit_id, blob_id, path, kind])?;
             Ok(())
         })?;
     }
