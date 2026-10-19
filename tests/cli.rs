@@ -1087,6 +1087,30 @@ fn local_document_formats_import_searchable_text_and_reject_unsupported_files() 
 }
 
 #[test]
+fn html_import_excludes_script_and_style_contents_from_search() {
+    let repo = repository();
+    let root = repo.path();
+    assert!(run(root, &["init"]).0);
+    let path = root.join("page.html");
+    fs::write(
+        &path,
+        "<html><head><style>STYLE_SECRET_MARKER { color: red; }</style></head><body><p>VISIBLE_PAGE_MARKER</p><script>const SCRIPT_SECRET_MARKER = 'hidden';</script></body></html>",
+    )
+    .unwrap();
+    let path = path.to_string_lossy().into_owned();
+    assert!(run(root, &["import", &path]).0);
+    assert!(run(root, &["refresh"]).0);
+
+    let visible = search_json(root, &["VISIBLE_PAGE_MARKER"]);
+    assert!(
+        visible.iter().any(|result| result["path"] == path),
+        "{visible:?}"
+    );
+    assert!(search_json(root, &["SCRIPT_SECRET_MARKER"]).is_empty());
+    assert!(search_json(root, &["STYLE_SECRET_MARKER"]).is_empty());
+}
+
+#[test]
 fn html_import_versions_hash_original_bytes_and_preserve_distinct_sources() {
     let repo = repository();
     let root = repo.path();

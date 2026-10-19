@@ -21,9 +21,52 @@ pub(crate) use sources::{register, set_retention};
 const MAX_COMMAND_STDERR_BYTES: usize = 64 * 1024;
 
 fn html_text(source: &str) -> String {
-    let mut text = String::with_capacity(source.len());
+    let lowercase = source.to_ascii_lowercase();
+    let mut visible_source = String::with_capacity(source.len());
+    let mut cursor = 0;
+    loop {
+        let next_element = ["<script", "<style"]
+            .iter()
+            .filter_map(|tag| {
+                lowercase[cursor..]
+                    .find(tag)
+                    .map(|offset| (cursor + offset, *tag))
+            })
+            .filter(|(start, tag)| {
+                lowercase
+                    .as_bytes()
+                    .get(start + tag.len())
+                    .is_some_and(|byte| {
+                        byte.is_ascii_whitespace() || *byte == b'>' || *byte == b'/'
+                    })
+            })
+            .min_by_key(|(start, _)| *start);
+        let Some((start, tag)) = next_element else {
+            visible_source.push_str(&source[cursor..]);
+            break;
+        };
+        let Some(open_end) = lowercase[start..].find('>') else {
+            visible_source.push_str(&source[cursor..start]);
+            break;
+        };
+        let close_tag = format!("</{}", &tag[1..]);
+        let close_start = start + open_end + 1;
+        let Some(close_offset) = lowercase[close_start..].find(&close_tag) else {
+            visible_source.push_str(&source[cursor..start]);
+            break;
+        };
+        let close_start = close_start + close_offset;
+        let Some(close_end) = lowercase[close_start..].find('>') else {
+            visible_source.push_str(&source[cursor..start]);
+            break;
+        };
+        visible_source.push_str(&source[cursor..start]);
+        cursor = close_start + close_end + 1;
+    }
+
+    let mut text = String::with_capacity(visible_source.len());
     let mut inside_tag = false;
-    for character in source.chars() {
+    for character in visible_source.chars() {
         match character {
             '<' => inside_tag = true,
             '>' => {
