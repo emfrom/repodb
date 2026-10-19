@@ -1031,6 +1031,61 @@ fn imported_text_and_git_blobs_use_document_and_source_units_with_line_ranges() 
 }
 
 #[test]
+fn local_document_formats_import_searchable_text_and_reject_unsupported_files() {
+    let repo = repository();
+    let root = repo.path();
+    assert!(run(root, &["init"]).0);
+    for (name, contents, query) in [
+        (
+            "guide.md",
+            "Markdown searchable marker",
+            "Markdown searchable marker",
+        ),
+        (
+            "guide.markdown",
+            "Markdown extension marker",
+            "Markdown extension marker",
+        ),
+        (
+            "guide.txt",
+            "Plain text searchable marker",
+            "Plain text searchable marker",
+        ),
+        (
+            "guide.org",
+            "Org searchable marker",
+            "Org searchable marker",
+        ),
+        (
+            "guide.html",
+            "<html><body><p>HTML searchable marker</p></body></html>",
+            "HTML searchable marker",
+        ),
+        (
+            "guide.htm",
+            "<html><body><p>HTM searchable marker</p></body></html>",
+            "HTM searchable marker",
+        ),
+    ] {
+        let path = root.join(name);
+        fs::write(&path, contents).unwrap();
+        let path = path.to_string_lossy().into_owned();
+        assert!(run(root, &["import", &path]).0, "import {name}");
+        assert!(run(root, &["refresh"]).0, "refresh {name}");
+        let results = search_json(root, &[query]);
+        assert!(
+            results.iter().any(|result| result["path"] == path),
+            "{name}: {results:?}"
+        );
+    }
+
+    let unsupported = root.join("notes.csv");
+    fs::write(&unsupported, "unsupported format").unwrap();
+    let unsupported = unsupported.to_string_lossy().into_owned();
+    assert!(!run(root, &["import", &unsupported]).0);
+}
+
+#[test]
 fn imported_files_refresh_with_references_and_both_retention_policies() {
     let repo = repository();
     let root = repo.path();

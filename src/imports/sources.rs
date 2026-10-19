@@ -150,6 +150,24 @@ pub(crate) fn register(c: &Connection, locator: &str) -> Result<()> {
             "imports must name an individual local file, HTTP(S) URL, or Git repository".into(),
         );
     }
+    if !is_url && !is_git {
+        let supported = path
+            .extension()
+            .and_then(|extension| extension.to_str())
+            .is_some_and(|extension| {
+                matches!(
+                    extension.to_ascii_lowercase().as_str(),
+                    "md" | "markdown" | "txt" | "pdf" | "html" | "htm" | "org"
+                )
+            });
+        if !supported {
+            return Err(format!(
+                "unsupported local document format for {}; supported formats are .md, .markdown, .txt, .pdf, .html, .htm, and .org",
+                path.display()
+            )
+            .into());
+        }
+    }
     init(c)?;
     let kind = if is_git {
         "git"

@@ -20,6 +20,28 @@ use sources::{column_exists, init};
 pub(crate) use sources::{register, set_retention};
 const MAX_COMMAND_STDERR_BYTES: usize = 64 * 1024;
 
+fn html_text(source: &str) -> String {
+    let mut text = String::with_capacity(source.len());
+    let mut inside_tag = false;
+    for character in source.chars() {
+        match character {
+            '<' => inside_tag = true,
+            '>' => {
+                inside_tag = false;
+                text.push(' ');
+            }
+            _ if !inside_tag => text.push(character),
+            _ => {}
+        }
+    }
+    text.replace("&nbsp;", " ")
+        .replace("&amp;", "&")
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&quot;", "\"")
+        .replace("&#39;", "'")
+}
+
 fn pdf_representation(pages: &[String]) -> Result<String> {
     let pages_json = serde_json::to_string(pages)?;
     Ok(serde_json::to_string(&serde_json::json!({
@@ -560,7 +582,21 @@ pub fn refresh(c: &Connection) -> Result<()> {
             (source_version, Some(pdf_representation(&pages)?))
         } else {
             // Transfer ownership into decoded text instead of retaining source bytes too.
-            let content = String::from_utf8(source_bytes)?;
+            let source_text = String::from_utf8(source_bytes)?;
+            let is_html = Path::new(&locator)
+                .extension()
+                .and_then(|extension| extension.to_str())
+                .is_some_and(|extension| {
+                    matches!(extension.to_ascii_lowercase().as_str(), "html" | "htm")
+                });
+            let content = if is_html {
+                html_text(&source_text)
+            } else {
+                source_text
+            };
+            if content.trim().is_empty() {
+                return Err(format!("no searchable text found in local document {locator}").into());
+            }
             refresh_memory_bytes.charge(content.len(), "decoded local import text")?;
             (checksum(content.as_bytes()), Some(content))
         };
