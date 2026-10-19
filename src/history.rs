@@ -708,7 +708,41 @@ pub fn prepare_refresh(c: &Connection) -> Result<()> {
     Ok(())
 }
 
+pub fn resolve_update_commit(commit_id: &str) -> Result<String> {
+    if commit_id.len() < 4 || !commit_id.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return Err("--update requires a full or unique hexadecimal commit ID (not a ref or revision expression)".into());
+    }
+    let mut budget = Budget::new(
+        MAX_REFRESH_ACCOUNTING_BYTES,
+        "targeted history refresh preparation accounting",
+    );
+    let output = git_output(
+        &[
+            "rev-parse",
+            "--verify",
+            "--quiet",
+            "--end-of-options",
+            &format!("{commit_id}^{{commit}}"),
+        ],
+        256,
+        &mut budget,
+    )?;
+    let canonical = std::str::from_utf8(&output)?.trim();
+    if canonical.is_empty() || !canonical.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return Err(format!("cannot resolve {commit_id} to a commit object").into());
+    }
+    Ok(canonical.to_owned())
+}
+
 pub fn refresh_changed(c: &mut Connection) -> Result<()> {
+    refresh_scoped(c, None)
+}
+
+pub fn refresh_update(c: &mut Connection, commit_id: &str) -> Result<()> {
+    refresh_scoped(c, Some(commit_id))
+}
+
+fn refresh_scoped(c: &mut Connection, target: Option<&str>) -> Result<()> {
     let version = snapshot_version(c)?;
     let schema: i64 = c.query_row("PRAGMA user_version", [], |row| row.get(0))?;
     if schema != 4 {
@@ -719,15 +753,21 @@ pub fn refresh_changed(c: &mut Connection) -> Result<()> {
         MAX_REFRESH_ACCOUNTING_BYTES,
         "scoped history refresh preparation accounting",
     );
-    let head_id = head(&mut budget)?.ok_or("scoped refresh requires a committed HEAD")?;
-    let branch = git_output(
-        &["symbolic-ref", "--quiet", "--short", "HEAD"],
-        1024,
-        &mut budget,
-    )?;
-    if std::str::from_utf8(&branch)?.trim().is_empty() {
-        return Err("scoped refresh requires HEAD to be on a branch".into());
-    }
+    let head_id = match target {
+        Some(commit_id) => commit_id.to_owned(),
+        None => {
+            let id = head(&mut budget)?.ok_or("scoped refresh requires a committed HEAD")?;
+            let branch = git_output(
+                &["symbolic-ref", "--quiet", "--short", "HEAD"],
+                1024,
+                &mut budget,
+            )?;
+            if std::str::from_utf8(&branch)?.trim().is_empty() {
+                return Err("scoped refresh requires HEAD to be on a branch".into());
+            }
+            id
+        }
+    };
     let already_indexed: bool = c.query_row(
         "SELECT EXISTS(SELECT 1 FROM git_commits WHERE commit_id=?1)",
         [&head_id],
@@ -737,29 +777,34 @@ pub fn refresh_changed(c: &mut Connection) -> Result<()> {
         return Ok(());
     }
 
-    let parent_record = String::from_utf8(git_output(
-        &["rev-list", "--parents", "-n", "1", &head_id],
-        256,
-        &mut budget,
-    )?)?;
-    let mut parents = parent_record.split_whitespace();
-    if parents.next() != Some(head_id.as_str()) {
-        return Err("Git returned an invalid HEAD record".into());
-    }
-    let parent = parents.next().map(str::to_owned);
-    if let Some(parent) = parent.as_deref() {
-        let parent_indexed: bool = c.query_row(
-            "SELECT EXISTS(SELECT 1 FROM git_commits WHERE commit_id=?1)",
-            [parent],
-            |row| row.get(0),
-        )?;
-        if !parent_indexed {
-            return Err(format!(
-                "first parent {parent} is not indexed; run repodb refresh before scoped refresh"
-            )
-            .into());
+    let parent = if target.is_some() {
+        None
+    } else {
+        let parent_record = String::from_utf8(git_output(
+            &["rev-list", "--parents", "-n", "1", &head_id],
+            256,
+            &mut budget,
+        )?)?;
+        let mut parents = parent_record.split_whitespace();
+        if parents.next() != Some(head_id.as_str()) {
+            return Err("Git returned an invalid HEAD record".into());
         }
-    }
+        let parent = parents.next().map(str::to_owned);
+        if let Some(parent) = parent.as_deref() {
+            let parent_indexed: bool = c.query_row(
+                "SELECT EXISTS(SELECT 1 FROM git_commits WHERE commit_id=?1)",
+                [parent],
+                |row| row.get(0),
+            )?;
+            if !parent_indexed {
+                return Err(format!(
+                    "first parent {parent} is not indexed; run repodb refresh before scoped refresh"
+                )
+                .into());
+            }
+        }
+        parent
+    };
     let timestamp: i64 = String::from_utf8(git_output(
         &["show", "-s", "--format=%ct", &head_id],
         128,

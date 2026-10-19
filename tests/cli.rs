@@ -3248,6 +3248,119 @@ fn history_search_preserves_blob_and_line_references_without_broadening_default_
     assert_eq!(current[0]["commit_id"], old_commit);
 }
 
+#[test]
+fn refresh_update_indexes_an_unreachable_commit_additively() {
+    let repo = repository();
+    let root = repo.path();
+    assert!(run(root, &["init"]).0);
+    let baseline = git_text(root, &["rev-parse", "HEAD"]);
+
+    let imported = root.join("imported.txt");
+    fs::write(&imported, "PRESERVED_IMPORT_TOKEN\n").unwrap();
+    assert!(run(root, &["import", imported.to_str().unwrap()]).0);
+    assert!(run(root, &["refresh"]).0);
+    fs::write(root.join("notes.txt"), "HISTORICAL_UPDATE_TOKEN\n").unwrap();
+    git(root, &["add", "notes.txt"]);
+    git(root, &["commit", "-qm", "historical target"]);
+    let target = git_text(root, &["rev-parse", "HEAD"]);
+    git(root, &["checkout", "-q", &baseline]);
+
+    let (ok, output) = run(root, &["refresh", "--update", &target[..12]]);
+    assert!(ok, "refresh --update: {output}");
+    let target_results = search_json(root, &["HISTORICAL_UPDATE_TOKEN", "--commit", &target]);
+    assert_eq!(target_results.len(), 1);
+    assert_eq!(target_results[0]["commit_id"], target);
+    assert!(!search_json(root, &["TARGET", "--commit", &baseline]).is_empty());
+    assert_eq!(search_json(root, &["PRESERVED_IMPORT_TOKEN"]).len(), 1);
+
+    let all = search_json(root, &["HISTORICAL_UPDATE_TOKEN", "--all-history"]);
+    assert_eq!(all.len(), 1, "target commit alone is indexed");
+    let (ok, output) = run(root, &["refresh", "--update", &target]);
+    assert!(ok, "repeat update must be a no-op: {output}");
+}
+
+#[test]
+fn refresh_update_rejects_non_commit_ids_without_changing_searchable_content() {
+    let repo = repository();
+    let root = repo.path();
+    assert!(run(root, &["init"]).0);
+    let blob = git_text(root, &["rev-parse", "HEAD:notes.txt"]);
+
+    for invalid in [
+        "HEAD",
+        "not-a-commit",
+        "0000000000000000000000000000000000000000",
+        blob.as_str(),
+    ] {
+        let (ok, output) = run(root, &["refresh", "--update", invalid]);
+        assert!(!ok, "accepted {invalid}: {output}");
+        assert!(output.is_empty());
+        assert_eq!(search_json(root, &["TARGET"]).len(), 1);
+    }
+}
+
+#[test]
+fn refresh_update_embedding_failure_preserves_the_published_snapshot() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let repo = repository();
+    let root = repo.path();
+    assert!(run(root, &["init"]).0);
+    let baseline = git_text(root, &["rev-parse", "HEAD"]);
+    let config_home = test_config_home(root);
+    let embedder = root.join(".git/repodb-test-embedder");
+    fs::write(&embedder, "#!/bin/sh\ncat >/dev/null\nexit 1\n").unwrap();
+    fs::set_permissions(&embedder, fs::Permissions::from_mode(0o755)).unwrap();
+    fs::write(root.join("new.txt"), "ATOMIC_UPDATE_TOKEN\n").unwrap();
+    git(root, &["add", "new.txt"]);
+    git(root, &["commit", "-qm", "new target"]);
+    let target = git_text(root, &["rev-parse", "HEAD"]);
+    git(root, &["checkout", "-q", &baseline]);
+
+    let output = Command::new(env!("CARGO_BIN_EXE_repodb"))
+        .args(["refresh", "--update", &target])
+        .current_dir(root)
+        .env("XDG_CONFIG_HOME", &config_home)
+        .env(
+            "REPODB_SEMGREP_CORE",
+            semgrep_corpus::required_semgrep_core(),
+        )
+        .output()
+        .unwrap();
+    assert!(!output.status.success(), "failed embedder must fail update");
+    assert_eq!(
+        search_json(root, &["TARGET", "--commit", &baseline]).len(),
+        1
+    );
+    assert!(search_json(root, &["ATOMIC_UPDATE_TOKEN", "--all-history"]).is_empty());
+}
+
+#[test]
+fn refresh_update_indexes_the_full_tree_of_a_merge_commit() {
+    let repo = repository();
+    let root = repo.path();
+    assert!(run(root, &["init"]).0);
+    let main_branch = git_text(root, &["branch", "--show-current"]);
+    git(root, &["checkout", "-qb", "side"]);
+    fs::write(root.join("side.txt"), "MERGE_SIDE_TOKEN\n").unwrap();
+    git(root, &["add", "side.txt"]);
+    git(root, &["commit", "-qm", "side"]);
+    git(root, &["checkout", "-q", &main_branch]);
+    fs::write(root.join("main.txt"), "MERGE_MAIN_TOKEN\n").unwrap();
+    git(root, &["add", "main.txt"]);
+    git(root, &["commit", "-qm", "main"]);
+    git(root, &["merge", "-q", "--no-ff", "side", "-m", "merge"]);
+    let merge = git_text(root, &["rev-parse", "HEAD"]);
+
+    let (ok, output) = run(root, &["refresh", "--update", &merge]);
+    assert!(ok, "refresh --update merge: {output}");
+    for token in ["MERGE_SIDE_TOKEN", "MERGE_MAIN_TOKEN"] {
+        let results = search_json(root, &[token, "--commit", &merge]);
+        assert_eq!(results.len(), 1, "{token}");
+    }
+    assert!(search_json(root, &["MERGE_SIDE_TOKEN", "--all-history"]).len() == 1);
+}
+
 fn fake_embedder(root: &Path, body: &str) -> std::path::PathBuf {
     use std::os::unix::fs::PermissionsExt;
     let path = root.join("fake-history-embedder");

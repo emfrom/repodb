@@ -16,6 +16,7 @@ Custom embedding commands receive each text on stdin and must print a JSON numer
 repodb init                          # build the first history snapshot
 repodb refresh                       # full snapshot from current refs + HEAD
 repodb refresh --changed              # incrementally index current branch HEAD vs first parent
+repodb refresh --update COMMIT         # add one historical commit without pruning
 repodb search 'literal text'          # checked-out HEAD only (the default)
 repodb search 'literal text' --all-history --json
 repodb search 'literal text' --commit COMMIT_ID
@@ -33,10 +34,21 @@ are resolved against the caller's current working directory. Selecting a
 file does not change which Git repository is indexed.
 
 Search does not refresh the index. Run `repodb refresh` on demand after ref
-changes or when indexed content may be stale. `repodb refresh --changed` only
-indexes the current branch's HEAD relative to its first parent: unchanged paths
-reuse their indexed blob units and vectors, while changed paths are re-read and
-re-segmented only when their blob/segmentation variant is not already indexed.
+changes or when indexed content may be stale. `repodb refresh --update COMMIT`
+adds only the specified commit's complete tree, without indexing ancestors,
+refreshing imported sources, or pruning prior history. It accepts a full
+hexadecimal commit ID or a unique hexadecimal prefix and stores the canonical
+full ID. The commit object must already exist locally, but need not be reachable
+from a ref; RepoDB does not fetch. Merge commits use their complete tree. An
+already-indexed commit is a no-op. Invalid IDs, missing objects, embedding
+failures, and concurrent index changes leave the published snapshot unchanged.
+Use regular `repodb refresh` when you explicitly want to rebuild and prune the
+snapshot.
+
+`repodb refresh --changed` only indexes the current branch's HEAD relative to
+its first parent: unchanged paths reuse their indexed blob units and vectors,
+while changed paths are re-read and re-segmented only when their
+blob/segmentation variant is not already indexed.
 Merge commits use their first parent; an initial commit indexes its tracked tree.
 When a first parent exists, it must already be indexed; otherwise this mode
 fails with guidance to run a full refresh. An initial commit has no baseline
