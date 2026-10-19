@@ -8,7 +8,7 @@ fn skill(path: &str) -> String {
 
 #[test]
 fn distributed_skills_match_the_repo_local_pi_skills() {
-    for skill_name in ["repodb-enabler", "repodb-help"] {
+    for skill_name in ["repodb-enabler", "repodb-help", "repodb-import"] {
         let local = skill(&format!(".agents/skills/{skill_name}/SKILL.md"));
         let distributed = skill(&format!("skills/{skill_name}/SKILL.md"));
         assert_eq!(
@@ -36,10 +36,43 @@ fn enabler_is_project_local_and_defers_repo_db_skill_loading() {
         "repo-local",
         "Pi",
         "global-availability",
+        "preview and import one explicitly selected local documentation file or directory",
+        ".agents/skills/repodb-import/SKILL.md",
     ] {
         assert!(
             enabler.contains(required),
             "enabler must document {required:?}"
+        );
+    }
+}
+
+#[test]
+fn import_skill_documents_preview_scope_and_policy_contract() {
+    let import = skill(".agents/skills/repodb-import/SKILL.md");
+
+    for required in [
+        "name: repodb-import",
+        "repodb import --preview PATH",
+        "No imports have been performed until the preview has been shown",
+        "every selected supported file",
+        "every unsupported path with its reason",
+        "source_bytes",
+        "database_bytes",
+        "estimated_growth_bytes",
+        "warning_basis_bytes",
+        "warn_large",
+        "50 MiB",
+        "excluded symlinks and `.git` directories",
+        "extensionless files",
+        "`.rs` files",
+        "Do not initialize",
+        "Do not block solely on size",
+        "one explicit `repodb refresh`",
+        "source provenance",
+    ] {
+        assert!(
+            import.contains(required),
+            "import skill must document {required:?}"
         );
     }
 }

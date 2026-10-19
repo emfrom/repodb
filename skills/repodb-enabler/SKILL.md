@@ -21,12 +21,12 @@ If both are available, explain that indexed results can be stale after repositor
 When RepoDB is available, make these helper skills discoverable by name and load them only when needed:
 
 - `repodb_help` — answer RepoDB usage and capability questions; load `.agents/skills/repodb-help/SKILL.md`.
-- `repodb_import` — import a selected source; definition is not included in this ticket.
+- `repodb_import` — preview and import one explicitly selected local documentation file or directory; load `.agents/skills/repodb-import/SKILL.md`.
 - `repodb_search` — combined exact and semantic discovery; definition is not included in this ticket.
 - `repodb_search_exact` — literal matching; definition is not included in this ticket.
 - `repodb_search_semantic` — conceptual search; definition is not included in this ticket.
 
-For a direct question about RepoDB, load `repodb_help` and answer from that guidance. For other tasks, describe the available skills and let the agent decide whether one is useful. Never imply that the other four skill definitions exist in this repository yet.
+For a direct question about RepoDB, load `repodb_help` and answer from that guidance. For other tasks, describe the available skills and let the agent decide whether one is useful. The `repodb_import` definition is available as a repo-local skill. Do not imply that the search skill definitions are available in this repository yet.
 
 ## Distribution limitation
 
