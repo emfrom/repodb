@@ -1023,7 +1023,10 @@ fn imported_files_refresh_with_references_and_both_retention_policies() {
             |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
         )
         .unwrap();
-    assert_eq!(version, "f525d245d3da65c919757490cd56b442540a5c5f03e4ee3d6c9a662e8c1a2ea7");
+    assert_eq!(
+        version,
+        "f525d245d3da65c919757490cd56b442540a5c5f03e4ee3d6c9a662e8c1a2ea7"
+    );
     assert_eq!(content, "imported first marker\n");
     assert_eq!(representation_hash, version);
     drop(database);
