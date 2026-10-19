@@ -74,12 +74,12 @@ The import skill supports one explicitly selected source per invocation: a websi
 
 ## Testing Decisions
 
-- Prefer black-box tests at the agent-skill invocation boundary: verify what availability information the enabler exposes, which skill definitions it loads for each case, how it routes the five skills, and what limitations/provenance it communicates. Tests should assert externally observable behavior rather than internal prompt wording or implementation structure.
-- Use one high-level skill-invocation seam for the integration behavior. Exercise an isolated repository with a real RepoDB executable/database where possible, and verify interactions through the public CLI. Existing CLI integration coverage remains responsible for RepoDB command semantics and search/import results.
-- Cover missing executable, missing database, initialized-but-stale database, help routing, search mode selection and source references, unavailable semantic capability, weak/empty results, missing source content, and import failures.
-- Exercise imports using local fixtures and a local HTTP server rather than network-dependent tests. Cover website single-page vs bounded crawl, local file/directory selection and supported document formats, pinned repository revision, no batch import, and large-import warnings/agent policy handoff.
-- Good tests use observable skill availability, user-visible guidance, CLI outcomes, provenance, and side effects. Avoid assertions about helper internals or exact prose where equivalent clear guidance suffices.
-- Prior art includes the repository's existing end-to-end CLI integration tests, which use isolated temporary Git repositories and a deterministic embedding command, plus the import and history-search integration coverage.
+- Validate skill and enabler artifacts statically: verify the distributed definitions exist, stay synchronized with project-local copies, accurately describe available capabilities and limitations, and document intended routing.
+- Test RepoDB behavior through the public CLI using isolated repositories and local fixtures. CLI integration tests are authoritative for search/import semantics, outputs, provenance, and side effects.
+- Cover missing executable/database guidance, initialized-but-stale guidance, help and search guidance, unavailable semantic capability, weak/empty results, missing source content, and import failures through artifact checks and applicable CLI tests.
+- Exercise imports using local fixtures and a local HTTP server rather than network-dependent tests. Cover website single-page vs bounded crawl, local file/directory selection and supported formats, pinned repository revision, no batch import, and large-import warnings/policy handoff.
+- Prefer assertions about artifact consistency, public CLI outcomes, provenance, and side effects over exact prose where equivalent clear guidance suffices.
+- Prior art includes the repository's existing end-to-end CLI integration tests, which use isolated temporary Git repositories and deterministic embedding commands, plus the import and history-search integration coverage.
 
 ## Out of Scope
 
