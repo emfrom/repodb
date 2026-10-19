@@ -864,6 +864,19 @@ fn hydrate_git_unit_with_reader(
     slice_git_unit(&bytes, blob_id, start, end)
 }
 
+fn batch_reader<'a>(
+    readers: &'a mut std::collections::HashMap<String, GitBlobReader>,
+    object_store: &str,
+) -> Result<&'a mut GitBlobReader> {
+    if !readers.contains_key(object_store) {
+        readers.insert(
+            object_store.to_owned(),
+            GitBlobReader::new(Some(object_store))?,
+        );
+    }
+    Ok(readers.get_mut(object_store).unwrap())
+}
+
 pub fn search(c: &Connection, query: &str, mode: &str, limit: usize) -> Result<Vec<SearchResult>> {
     init(c)?;
     let semantic = mode != "exact";
@@ -993,13 +1006,7 @@ pub fn search(c: &Connection, query: &str, mode: &str, limit: usize) -> Result<V
         } else {
             match (blob_id.as_deref(), byte_start, byte_end) {
                 (Some(blob), Some(start), Some(end)) => {
-                    if !batch_readers.contains_key(&object_store) {
-                        batch_readers.insert(
-                            object_store.clone(),
-                            GitBlobReader::new(Some(&object_store))?,
-                        );
-                    }
-                    let reader = batch_readers.get_mut(&object_store).unwrap();
+                    let reader = batch_reader(&mut batch_readers, &object_store)?;
                     hydrate_git_unit_with_reader(reader, blob, start, end)?
                 }
                 (None, None, None) => legacy_text.ok_or("missing legacy imported Git text")?,
@@ -1065,10 +1072,7 @@ pub fn search(c: &Connection, query: &str, mode: &str, limit: usize) -> Result<V
         .into_iter()
         .map(|(_, mut result, deferred)| {
             if let Some((store, blob, start, end)) = deferred {
-                if !batch_readers.contains_key(&store) {
-                    batch_readers.insert(store.clone(), GitBlobReader::new(Some(&store))?);
-                }
-                let reader = batch_readers.get_mut(&store).unwrap();
+                let reader = batch_reader(&mut batch_readers, &store)?;
                 result.text = hydrate_git_unit_with_reader(reader, &blob, start, end)?;
             }
             Ok(result)

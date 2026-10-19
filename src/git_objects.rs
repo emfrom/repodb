@@ -34,6 +34,7 @@ pub struct GitBlobReader {
     stderr: Option<thread::JoinHandle<Vec<u8>>>,
     cache: HashMap<String, Vec<u8>>,
     cached_bytes: usize,
+    large_blob: Option<(String, Vec<u8>)>,
     finished: bool,
 }
 
@@ -62,6 +63,7 @@ impl GitBlobReader {
             stderr,
             cache: HashMap::new(),
             cached_bytes: 0,
+            large_blob: None,
             finished: false,
         })
     }
@@ -89,6 +91,11 @@ impl GitBlobReader {
     }
 
     pub fn blob(&mut self, id: &str) -> Result<Vec<u8>> {
+        if let Some((cached_id, bytes)) = &self.large_blob {
+            if cached_id == id {
+                return Ok(bytes.clone());
+            }
+        }
         if !self.cache.contains_key(id) {
             let stdin = self.stdin.as_mut().ok_or("git batch reader is closed")?;
             writeln!(stdin, "{id}")?;
@@ -119,6 +126,7 @@ impl GitBlobReader {
                 return Err(format!("malformed git batch payload for {id}").into());
             }
             if size <= MAX_CACHED_BLOB_BYTES {
+                self.large_blob = None;
                 while self.cached_bytes.saturating_add(size) > MAX_CACHED_BLOB_BYTES {
                     let Some(key) = self.cache.keys().next().cloned() else {
                         break;
@@ -130,8 +138,13 @@ impl GitBlobReader {
                 self.cached_bytes += size;
                 self.cache.insert(id.to_owned(), bytes);
             } else {
-                return Ok(bytes);
+                self.cache.clear();
+                self.cached_bytes = 0;
+                self.large_blob = Some((id.to_owned(), bytes));
             }
+        }
+        if let Some((_, bytes)) = &self.large_blob {
+            return Ok(bytes.clone());
         }
         self.cache
             .get(id)
@@ -184,6 +197,29 @@ mod tests {
         let mut reader = GitBlobReader::new(Some(root.path().to_str().unwrap())).unwrap();
         assert_eq!(reader.blob(&id).unwrap(), payload);
         assert_eq!(reader.blob(&id).unwrap(), payload);
+    }
+
+    #[test]
+    fn batch_reader_reuses_large_blob_across_many_units_with_bounded_retention() {
+        let root = tempfile::tempdir().unwrap();
+        git(root.path(), &["init", "-q"]);
+        let payload = vec![b'x'; super::MAX_CACHED_BLOB_BYTES + 1];
+        fs::write(root.path().join("large"), &payload).unwrap();
+        git(root.path(), &["add", "large"]);
+        let id = git(root.path(), &["hash-object", "large"]);
+
+        let mut reader = GitBlobReader::new(Some(root.path().to_str().unwrap())).unwrap();
+        for unit in 0..64 {
+            let blob = reader.blob(&id).unwrap();
+            let start = unit * 1024;
+            assert_eq!(&blob[start..start + 1024], &payload[start..start + 1024]);
+        }
+        assert_eq!(reader.cached_bytes, 0);
+        assert_eq!(
+            reader.large_blob.as_ref().map(|(blob, _)| blob.as_str()),
+            Some(id.as_str())
+        );
+        assert_eq!(reader.large_blob.as_ref().unwrap().1.len(), payload.len());
     }
 
     #[test]
