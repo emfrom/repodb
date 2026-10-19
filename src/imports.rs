@@ -826,10 +826,21 @@ pub fn reembed(c: &Connection, command: &str, model: &str) -> Result<Option<usiz
     Ok(dimension)
 }
 
-fn hydrate_git_unit(locator: &str, blob_id: &str, start: usize, end: usize) -> Result<String> {
+fn slice_git_unit(blob_bytes: &[u8], blob_id: &str, start: usize, end: usize) -> Result<String> {
     if start > end {
         return Err(format!("invalid imported Git byte range {start}..{end}").into());
     }
+    let blob = std::str::from_utf8(blob_bytes)
+        .map_err(|_| format!("imported Git blob {blob_id} is no longer valid UTF-8"))?;
+    Ok(blob
+        .get(start..end)
+        .ok_or_else(|| {
+            format!("invalid imported Git byte range {start}..{end} for blob {blob_id}")
+        })?
+        .to_owned())
+}
+
+fn hydrate_git_unit(locator: &str, blob_id: &str, start: usize, end: usize) -> Result<String> {
     let output = Command::new("git")
         .args(["-C", locator, "cat-file", "blob", blob_id])
         .output()?;
@@ -840,14 +851,7 @@ fn hydrate_git_unit(locator: &str, blob_id: &str, start: usize, end: usize) -> R
         )
         .into());
     }
-    let blob = std::str::from_utf8(&output.stdout)
-        .map_err(|_| format!("imported Git blob {blob_id} is no longer valid UTF-8"))?;
-    Ok(blob
-        .get(start..end)
-        .ok_or_else(|| {
-            format!("invalid imported Git byte range {start}..{end} for blob {blob_id}")
-        })?
-        .to_owned())
+    slice_git_unit(&output.stdout, blob_id, start, end)
 }
 
 fn hydrate_git_unit_with_reader(
@@ -856,18 +860,8 @@ fn hydrate_git_unit_with_reader(
     start: usize,
     end: usize,
 ) -> Result<String> {
-    if start > end {
-        return Err(format!("invalid imported Git byte range {start}..{end}").into());
-    }
     let bytes = reader.blob(blob_id)?;
-    let blob = std::str::from_utf8(&bytes)
-        .map_err(|_| format!("imported Git blob {blob_id} is no longer valid UTF-8"))?;
-    Ok(blob
-        .get(start..end)
-        .ok_or_else(|| {
-            format!("invalid imported Git byte range {start}..{end} for blob {blob_id}")
-        })?
-        .to_owned())
+    slice_git_unit(&bytes, blob_id, start, end)
 }
 
 pub fn search(c: &Connection, query: &str, mode: &str, limit: usize) -> Result<Vec<SearchResult>> {
@@ -1089,11 +1083,37 @@ pub fn search(c: &Connection, query: &str, mode: &str, limit: usize) -> Result<V
 #[cfg(test)]
 mod tests {
     use super::{
-        bounded_command_output_with_input, checksum, pdf_representation, visit_cache_pages,
-        write_cache,
+        bounded_command_output_with_input, checksum, pdf_representation, slice_git_unit,
+        visit_cache_pages, write_cache,
     };
     use crate::budget::Budget;
     use std::process::{Command, Stdio};
+
+    #[test]
+    fn git_unit_slice_validates_utf8_byte_ranges() {
+        assert_eq!(
+            slice_git_unit("héllo".as_bytes(), "blob", 1, 3).unwrap(),
+            "é"
+        );
+        assert!(
+            slice_git_unit(b"text", "blob", 3, 2)
+                .unwrap_err()
+                .to_string()
+                .contains("invalid imported Git byte range 3..2")
+        );
+        assert!(
+            slice_git_unit(b"text", "blob", 0, 99)
+                .unwrap_err()
+                .to_string()
+                .contains("invalid imported Git byte range 0..99 for blob blob")
+        );
+        assert!(
+            slice_git_unit(b"\xff", "blob", 0, 1)
+                .unwrap_err()
+                .to_string()
+                .contains("no longer valid UTF-8")
+        );
+    }
 
     #[test]
     fn pdf_representation_keeps_pages_and_detects_tampering() {

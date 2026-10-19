@@ -8,6 +8,22 @@ use std::{
 
 const MAX_CACHED_BLOB_BYTES: usize = 32 * 1024 * 1024;
 const MAX_HYDRATED_BLOB_BYTES: usize = 256 * 1024 * 1024;
+const MAX_STDERR_EXCERPT_BYTES: usize = 8 * 1024;
+
+fn drain_stderr(mut stderr: impl Read) -> Vec<u8> {
+    let mut excerpt = Vec::with_capacity(MAX_STDERR_EXCERPT_BYTES);
+    let mut buffer = [0; 4096];
+    loop {
+        match stderr.read(&mut buffer) {
+            Ok(0) | Err(_) => break,
+            Ok(count) => {
+                let retained = (MAX_STDERR_EXCERPT_BYTES - excerpt.len()).min(count);
+                excerpt.extend_from_slice(&buffer[..retained]);
+            }
+        }
+    }
+    excerpt
+}
 
 /// A query-scoped persistent `git cat-file --batch` reader. Blob retention is
 /// bounded; a blob larger than the cache limit is streamed and not retained.
@@ -35,13 +51,10 @@ impl GitBlobReader {
             .spawn()?;
         let stdin = child.stdin.take().ok_or("missing git batch stdin")?;
         let stdout = BufReader::new(child.stdout.take().ok_or("missing git batch stdout")?);
-        let stderr = child.stderr.take().map(|mut stderr| {
-            thread::spawn(move || {
-                let mut bytes = Vec::new();
-                let _ = stderr.read_to_end(&mut bytes);
-                bytes
-            })
-        });
+        let stderr = child
+            .stderr
+            .take()
+            .map(|stderr| thread::spawn(move || drain_stderr(stderr)));
         Ok(Self {
             child,
             stdin: Some(stdin),
@@ -141,7 +154,7 @@ impl Drop for GitBlobReader {
 
 #[cfg(test)]
 mod tests {
-    use super::GitBlobReader;
+    use super::{GitBlobReader, MAX_STDERR_EXCERPT_BYTES};
     use std::{fs, process::Command};
 
     fn git(root: &std::path::Path, args: &[&str]) -> String {
@@ -171,6 +184,15 @@ mod tests {
         let mut reader = GitBlobReader::new(Some(root.path().to_str().unwrap())).unwrap();
         assert_eq!(reader.blob(&id).unwrap(), payload);
         assert_eq!(reader.blob(&id).unwrap(), payload);
+    }
+
+    #[test]
+    fn stderr_drainer_retains_only_a_bounded_excerpt_while_draining() {
+        let input = vec![b'x'; MAX_STDERR_EXCERPT_BYTES * 128];
+        let excerpt = super::drain_stderr(input.as_slice());
+
+        assert_eq!(excerpt.len(), MAX_STDERR_EXCERPT_BYTES);
+        assert_eq!(excerpt, vec![b'x'; MAX_STDERR_EXCERPT_BYTES]);
     }
 
     #[test]
