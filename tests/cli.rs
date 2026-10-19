@@ -186,6 +186,31 @@ fn import_preview_reports_selected_files_sizes_and_exclusions_without_db_side_ef
 }
 
 #[test]
+fn import_preview_warns_when_source_exceeds_twice_existing_database_size() {
+    let repo = repository();
+    let root = repo.path();
+    let source = root.join("threshold.txt");
+    fs::write(&source, vec![b'x'; 100]).unwrap();
+    let database = root.join(".git/repodb.sqlite");
+
+    fs::write(&database, vec![b'd'; 50]).unwrap();
+    let (equal_ok, equal_json) = run(root, &["import", "--preview", source.to_str().unwrap()]);
+    assert!(equal_ok, "{equal_json}");
+    let equal_preview: serde_json::Value = serde_json::from_str(&equal_json).unwrap();
+    assert_eq!(equal_preview["total_selected_source_bytes"], 100);
+    assert_eq!(equal_preview["current_db_bytes"], 50);
+    assert_eq!(equal_preview["warn_large"], false);
+
+    fs::write(&database, vec![b'd'; 49]).unwrap();
+    let (greater_ok, greater_json) = run(root, &["import", "--preview", source.to_str().unwrap()]);
+    assert!(greater_ok, "{greater_json}");
+    let greater_preview: serde_json::Value = serde_json::from_str(&greater_json).unwrap();
+    assert_eq!(greater_preview["total_selected_source_bytes"], 100);
+    assert_eq!(greater_preview["current_db_bytes"], 49);
+    assert_eq!(greater_preview["warn_large"], true);
+}
+
+#[test]
 fn search_scope_filters_repo_and_document_sources_for_all_modes() {
     let repo = repository();
     let root = repo.path();
