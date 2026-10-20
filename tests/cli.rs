@@ -4375,6 +4375,187 @@ fn exact_commit_inclusion_and_exclusion_select_before_all_search_modes() {
     }
 }
 
+#[test]
+fn coarse_history_selectors_distinguish_refs_reachable_paths_and_imports() {
+    let repo = repository();
+    let root = repo.path();
+    let main_branch = git_text(root, &["branch", "--show-current"]);
+    let base = git_text(root, &["rev-parse", "HEAD"]);
+    git(root, &["branch", "side"]);
+    fs::write(
+        root.join("src/main.rs"),
+        "fn main() { println!(\"MAIN_PATH_TOKEN\"); }\n",
+    )
+    .unwrap();
+    fs::write(root.join("notes.txt"), "UNRELATED_TO_SRC_TOKEN\n").unwrap();
+    git(root, &["add", "."]);
+    git(root, &["commit", "-qm", "main path change"]);
+    let main_commit = git_text(root, &["rev-parse", "HEAD"]);
+
+    git(root, &["checkout", "-q", "side"]);
+    fs::write(root.join("src/side.rs"), "SIDE_REF_ONLY_TOKEN\n").unwrap();
+    git(root, &["add", "."]);
+    git(root, &["commit", "-qm", "side-only path"]);
+    let side_commit = git_text(root, &["rev-parse", "HEAD"]);
+    git(root, &["checkout", "-q", &main_branch]);
+    assert!(run(root, &["init"]).0);
+
+    let all = search_json(root, &["SIDE_REF_ONLY_TOKEN", "--history=all"]);
+    assert!(all.iter().any(|result| result["commit_id"] == side_commit));
+    let bare_all = search_json(root, &["SIDE_REF_ONLY_TOKEN", "--history"]);
+    assert_eq!(bare_all, all);
+    assert!(search_json(root, &["SIDE_REF_ONLY_TOKEN", "--history=20"]).is_empty());
+    assert!(search_json(root, &["SIDE_REF_ONLY_TOKEN", "--history=src/"]).is_empty());
+    let additive = search_json(
+        root,
+        &[
+            "SIDE_REF_ONLY_TOKEN",
+            "--history=off",
+            "--include-commit",
+            &side_commit,
+        ],
+    );
+    assert_eq!(additive.len(), 1, "{additive:?}");
+    assert!(
+        search_json(
+            root,
+            &[
+                "SIDE_REF_ONLY_TOKEN",
+                "--history=off",
+                "--include-commit",
+                &side_commit,
+                "--exclude-commit",
+                &side_commit,
+            ]
+        )
+        .is_empty()
+    );
+
+    let path_results = search_json(root, &["MAIN_PATH_TOKEN", "--history=src/"]);
+    assert_eq!(path_results.len(), 1, "{path_results:?}");
+    assert_eq!(path_results[0]["path"], "src/main.rs");
+    assert_eq!(path_results[0]["commit_id"], main_commit);
+    assert_eq!(
+        search_json(root, &["MAIN_PATH_TOKEN", "--history=./src/"]),
+        path_results
+    );
+    assert!(search_json(root, &["UNRELATED_TO_SRC_TOKEN", "--history=src/"]).is_empty());
+    let path_diffs = search_json(root, &["MAIN_PATH_TOKEN", "--history=src/", "--diffs"]);
+    assert!(
+        path_diffs
+            .iter()
+            .any(|result| { result["kind"] == "diff" && result["new_path"] == "src/main.rs" }),
+        "{path_diffs:?}"
+    );
+    assert!(
+        search_json(
+            root,
+            &["UNRELATED_TO_SRC_TOKEN", "--history=src/", "--diffs"]
+        )
+        .is_empty()
+    );
+    assert!(
+        search_json(
+            root,
+            &["MAIN_PATH_TOKEN", "--history=src/", "--commit", &base]
+        )
+        .is_empty()
+    );
+    let alternate_start = search_json(root, &["Rust phrase", "--history=src/", "--commit", &base]);
+    assert!(
+        alternate_start
+            .iter()
+            .any(|result| result["commit_id"] == base)
+    );
+    let commit_equals = format!("--commit={base}");
+    let equals_start = search_json(root, &["Rust phrase", "--history=src/", &commit_equals]);
+    assert!(
+        equals_start
+            .iter()
+            .any(|result| result["commit_id"] == base)
+    );
+    let off_at_start = search_json(root, &["Rust phrase", "--history=off", "--commit", &base]);
+    assert!(
+        off_at_start
+            .iter()
+            .any(|result| result["commit_id"] == base)
+    );
+
+    let imported = root.join("history-independent.txt");
+    fs::write(&imported, "IMPORTED_HISTORY_INDEPENDENT_TOKEN\n").unwrap();
+    let imported_path = imported.to_string_lossy().into_owned();
+    assert!(run(root, &["import", &imported_path]).0);
+    assert!(run(root, &["refresh"]).0);
+    let imported_results = search_json(
+        root,
+        &[
+            "IMPORTED_HISTORY_INDEPENDENT_TOKEN",
+            "--history=src/main.rs",
+        ],
+    );
+    assert!(
+        imported_results
+            .iter()
+            .any(|result| result["path"] == imported_path),
+        "{imported_results:?}"
+    );
+
+    for flags in [
+        vec!["--history=all", "--commit", &main_commit],
+        vec!["--history=all", "--all-history"],
+        vec!["--history=0"],
+        vec!["--history=../src"],
+        vec!["--history=/src"],
+    ] {
+        let mut args = vec!["search", "MAIN_PATH_TOKEN"];
+        args.extend(flags);
+        assert!(!run(root, &args).0, "{args:?}");
+    }
+}
+
+#[test]
+fn path_history_labels_detected_rename_links_in_json_and_human_output() {
+    let repo = repository();
+    let root = repo.path();
+    let rename_context = "stable rename-specific context\n".repeat(40);
+    fs::write(
+        root.join("src/main.rs"),
+        format!("OLD_RENAME_TOKEN\n{rename_context}"),
+    )
+    .unwrap();
+    git(root, &["add", "."]);
+    git(root, &["commit", "-qm", "old path content"]);
+    let old_commit = git_text(root, &["rev-parse", "HEAD"]);
+    fs::rename(root.join("src/main.rs"), root.join("src/new.rs")).unwrap();
+    fs::write(
+        root.join("src/new.rs"),
+        format!("NEW_RENAME_TOKEN\n{rename_context}"),
+    )
+    .unwrap();
+    git(root, &["add", "-A"]);
+    git(root, &["commit", "-qm", "rename path"]);
+    assert!(run(root, &["init"]).0);
+
+    let results = search_json(root, &["OLD_RENAME_TOKEN", "--history=src/new.rs"]);
+    assert_eq!(results.len(), 1, "{results:?}");
+    assert_eq!(results[0]["path"], "src/main.rs");
+    let links = results[0]["history_path_links"].as_array().unwrap();
+    assert!(links.iter().any(|link| {
+        link["heuristic"] == true
+            && link["parent_commit_id"] == old_commit
+            && link["old_path"] == "src/main.rs"
+            && link["new_path"] == "src/new.rs"
+            && link["similarity_percent"].as_u64().is_some()
+    }));
+    let (ok, output) = run(
+        root,
+        &["search", "OLD_RENAME_TOKEN", "--history=src/new.rs"],
+    );
+    assert!(ok);
+    assert!(output.contains("heuristic rename link"), "{output}");
+    assert!(output.contains("src/main.rs ->"), "{output}");
+}
+
 fn commit_at(root: &Path, message: &str, timestamp: &str) -> String {
     let output = Command::new("git")
         .args(["commit", "-qm", message])

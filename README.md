@@ -18,8 +18,10 @@ repodb refresh                       # full snapshot from current refs + HEAD
 repodb refresh --changed              # incrementally index current branch HEAD vs first parent
 repodb refresh --update COMMIT         # add one historical commit without pruning
 repodb search 'literal text'          # checked-out HEAD only (the default)
-repodb search 'literal text' --all-history --json
-repodb search 'literal text' --commit COMMIT_ID
+repodb search 'literal text' --history=all --json
+repodb search 'literal text' --history=20 --commit COMMIT_ID
+repodb search 'literal text' --history=src/
+repodb search 'literal text' --all-history --json  # legacy alias
 repodb search 'question' --semantic --include-commit ID1 --include-commit ID2
 repodb search 'question' --combined --all-history --exclude-commit ID3
 repodb search 'question' --scope repo-local-docs
@@ -62,23 +64,44 @@ indexed commit changes that scope without rebuilding. A HEAD not in the snapshot
 returns no matches; run `refresh` to index it. Search never refreshes, prunes, or
 migrates the index, including after refs are deleted.
 
-Choose exactly one scope family:
+Use one coarse history selector:
 
-- No selector, or `--current-worktree`: checked-out HEAD.
-- `--all-history`: every commit in the captured snapshot.
-- `--commit ID`: exactly one captured commit, not its ancestors.
-- Repeatable `--include-commit ID`: the union of those exact captured commits.
+- No selector or `--history=off`: checked-out HEAD only (the default). Bare
+  `--history` means `--history=all`.
+- `--history=all`: every captured commit in the indexed snapshot.
+- `--history=N`: the first N commits in deterministic topological traversal
+  reachable from HEAD, including merged ancestry; N must be positive. A numeric
+  path can be written as `./123` to distinguish it from a count.
+- `--history=PATH`: content and changes for a repository-relative file or
+  directory (including descendants), following detected renames as explicitly
+  heuristic links. Results show the path at each commit and exclude unrelated
+  files from the same commit.
 
-These families conflict; `--commit` cannot be repeated. Repeatable
-`--exclude-commit ID` subtracts commits from **any** selected scope, including the
-default. Repeating an include/exclude ID is harmless; exclusion wins if an ID is
-both included and excluded. Selecting an empty set returns no matches.
+For `--history=off`, `--history=N`, or `--history=PATH`, `--commit ID` (or
+`--commit=ID`) chooses the starting commit instead of HEAD. With `off`, this
+selects that single committed view; with N or PATH, it changes the traversal
+start. It conflicts with `--history=all`; `--commit` without `--history` keeps
+its legacy meaning of selecting exactly one captured commit. `--all-history` remains a legacy alias for the all-history scope and
+conflicts with `--history`, `--current-worktree`, `--commit`, and
+`--include-commit`; prefer `--history=all`. `--current-worktree` remains HEAD-only
+and conflicts with explicit `--history`.
 
-IDs must be full hexadecimal commit IDs or unambiguous hexadecimal prefixes of
-at least four characters, resolved against **indexed commits**, not live refs.
-Unknown and ambiguous IDs are errors. Branch/tag names, revision expressions,
-and ranges are not accepted. A deleted ref's captured commit remains selectable
-until a successful explicit refresh removes it.
+In `--history` mode, repeatable `--include-commit ID` adds exact captured commits
+and repeatable `--exclude-commit ID` removes them; exclusion wins. With legacy
+selectors, `--include-commit` retains its existing meaning of selecting the union
+of those exact commits, and conflicts with `--all-history`, `--current-worktree`,
+or `--commit`. Repeating an ID is harmless. Selecting an empty set returns no
+local history matches. IDs must be full hexadecimal commit IDs or unambiguous
+hexadecimal prefixes of at least four characters, resolved against indexed
+commits. Unknown and ambiguous IDs are errors; branch/tag names, revision
+expressions, and ranges are not accepted.
+
+History selectors apply only to this repository's indexed Git history. They do
+not filter imported files, websites, or imported Git repositories; imported
+sources are searched independently and may still appear in results.
+
+A deleted ref's captured commit remains selectable until a successful explicit
+refresh removes it.
 
 All commit selectors and filters apply equally to exact, semantic, and combined search.
 Exact search remains a case-insensitive literal substring search.
@@ -92,7 +115,8 @@ Search results can also be filtered with `--scope` (default `all`):
 - `all`: every matching result, including files whose type is unknown.
 
 Scopes are orthogonal to commit selectors: repository-local results still obey
-`--all-history`, `--commit`, `--include-commit`, and `--exclude-commit`.
+`--history`, the legacy `--all-history`, `--commit`, `--include-commit`, and
+`--exclude-commit`.
 Documentation is recognized from supported file extensions (`.md`, `.markdown`,
 `.txt`, `.pdf`, `.html`, `.htm`, `.org`), known documentation basenames such as
 `README` and `LICENSE`, or PDF page metadata. This is a metadata-based

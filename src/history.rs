@@ -4149,14 +4149,17 @@ fn topological_graph(
 }
 
 fn normalized_history_path(path: &[u8]) -> Vec<u8> {
-    let mut path = path.to_vec();
-    while path.last() == Some(&b'/') {
-        path.pop();
+    let mut normalized = Vec::new();
+    for component in path.split(|byte| *byte == b'/') {
+        if component.is_empty() || component == b"." {
+            continue;
+        }
+        if !normalized.is_empty() {
+            normalized.push(b'/');
+        }
+        normalized.extend_from_slice(component);
     }
-    if path == b"." {
-        path.clear();
-    }
-    path
+    normalized
 }
 
 fn initial_history_paths(
@@ -4164,10 +4167,14 @@ fn initial_history_paths(
     requested_path: &[u8],
     budget: &mut Budget,
 ) -> Result<Vec<Vec<u8>>> {
-    let path = normalized_history_path(requested_path);
-    if path.starts_with(b"/") || path.split(|byte| *byte == b'/').any(|part| part == b"..") {
+    if requested_path.starts_with(b"/")
+        || requested_path
+            .split(|byte| *byte == b'/')
+            .any(|part| part == b"..")
+    {
         return Err("history path must be repository-relative and cannot contain '..'".into());
     }
+    let path = normalized_history_path(requested_path);
     let root_query = path.is_empty();
     let mut directory_prefix = path.clone();
     if !root_query {

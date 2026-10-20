@@ -1,7 +1,7 @@
 use rusqlite::{Connection, ffi::sqlite3_auto_extension, params};
 use serde::Serialize;
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     env,
     error::Error,
     path::PathBuf,
@@ -310,6 +310,49 @@ fn diff_search_json(
 
 fn diff_path_display(path: &[u8]) -> String {
     diff_path_fields(Some(path)).0.unwrap_or_default()
+}
+
+fn internal_git_path(path: &[u8]) -> String {
+    match String::from_utf8(path.to_vec()) {
+        Ok(path) => path,
+        Err(error) => encode_git_path(error.into_bytes()),
+    }
+}
+
+fn history_path_link_json(link: &history::HeuristicPathLink) -> serde_json::Value {
+    let (old_path, old_path_bytes_hex) = diff_path_fields(Some(&link.old_path));
+    let (new_path, new_path_bytes_hex) = diff_path_fields(Some(&link.new_path));
+    let mut value = serde_json::json!({
+        "heuristic": true,
+        "parent_commit_id": link.parent_commit_id,
+        "child_commit_id": link.child_commit_id,
+        "old_path": old_path,
+        "new_path": new_path,
+        "similarity_percent": link.similarity_percent,
+    });
+    if let Some(hex) = old_path_bytes_hex {
+        value["old_path_bytes_hex"] = serde_json::Value::String(hex);
+    }
+    if let Some(hex) = new_path_bytes_hex {
+        value["new_path_bytes_hex"] = serde_json::Value::String(hex);
+    }
+    value
+}
+
+fn parse_history_selector(value: &str) -> Result<history::HistorySelector> {
+    match value {
+        "off" => Ok(history::HistorySelector::Head),
+        "all" => Ok(history::HistorySelector::All),
+        "" => Err("--history= requires off, all, a path, or a positive commit count".into()),
+        _ if value.bytes().all(|byte| byte.is_ascii_digit()) => {
+            let limit: usize = value.parse()?;
+            if limit == 0 {
+                return Err("--history commit count must be greater than zero".into());
+            }
+            Ok(history::HistorySelector::Topological(limit))
+        }
+        _ => Ok(history::HistorySelector::Path(value.as_bytes().to_vec())),
+    }
 }
 
 fn diff_endpoint(path: Option<&[u8]>, start: Option<usize>, end: Option<usize>) -> String {
@@ -1023,6 +1066,7 @@ fn execute() -> Result<()> {
         "search" => {
             let mut query = None;
             let mut scope = history::Scope::default();
+            let mut history_selector = None;
             let mut result_scope = SearchScope::default();
             let mut result_scope_set = false;
             let mut include_diffs = false;
@@ -1038,6 +1082,12 @@ fn execute() -> Result<()> {
                             SearchScope::parse(&a.next().ok_or("--scope requires a value")?)?;
                         result_scope_set = true;
                     }
+                    "--history" => {
+                        if history_selector.is_some() {
+                            return Err("--history may only be specified once".into());
+                        }
+                        history_selector = Some(history::HistorySelector::All);
+                    }
                     "--all-history" => scope.all_history = true,
                     "--current-worktree" => scope.current_worktree = true,
                     "--commit" => {
@@ -1046,12 +1096,28 @@ fn execute() -> Result<()> {
                         }
                         scope.commit = Some(a.next().ok_or("--commit requires ID")?);
                     }
+                    _ if x.starts_with("--commit=") => {
+                        if scope.commit.is_some() {
+                            return Err("--commit may only be specified once".into());
+                        }
+                        let commit = &x[9..];
+                        if commit.is_empty() {
+                            return Err("--commit= requires ID".into());
+                        }
+                        scope.commit = Some(commit.to_owned());
+                    }
                     "--include-commit" => scope
                         .include
                         .push(a.next().ok_or("--include-commit requires ID")?),
                     "--exclude-commit" => scope
                         .exclude
                         .push(a.next().ok_or("--exclude-commit requires ID")?),
+                    _ if x.starts_with("--history=") => {
+                        if history_selector.is_some() {
+                            return Err("--history may only be specified once".into());
+                        }
+                        history_selector = Some(parse_history_selector(&x[10..])?);
+                    }
                     "--semantic" => mode = "semantic",
                     "--combined" => mode = "combined",
                     "--diffs" => include_diffs = true,
@@ -1067,24 +1133,84 @@ fn execute() -> Result<()> {
             let mut connection = open_db(&db_path)?;
             // Scope, model configuration and results belong to one read snapshot.
             let c = connection.transaction()?;
-            let commits = scope.resolve(&c)?;
+            let (commits, history_path_filter, history_path_links) = if let Some(selector) =
+                history_selector
+            {
+                if scope.all_history || scope.current_worktree {
+                    return Err("--history conflicts with legacy --all-history and --current-worktree; use one selector".into());
+                }
+                let start_commit = match (&selector, scope.commit.as_ref()) {
+                    (
+                        history::HistorySelector::Head
+                        | history::HistorySelector::Topological(_)
+                        | history::HistorySelector::Path(_),
+                        commit,
+                    ) => commit.cloned(),
+                    (_, Some(_)) => {
+                        return Err("--commit is a starting commit only with --history=off, --history=<path>, or --history=<n>; it conflicts with --history=all".into());
+                    }
+                    _ => None,
+                };
+                let path_history = matches!(&selector, history::HistorySelector::Path(_));
+                let entries = history::select_history(
+                    &c,
+                    &history::HistoryQuery {
+                        selector,
+                        start_commit,
+                        include_commits: scope.include.clone(),
+                        exclude_commits: scope.exclude.clone(),
+                    },
+                )?;
+                let mut commits = Vec::new();
+                let mut seen_commits = HashSet::new();
+                let mut path_filter = path_history.then(HashSet::new);
+                let mut path_links = HashMap::new();
+                for entry in entries {
+                    if seen_commits.insert(entry.commit_id.clone()) {
+                        commits.push(entry.commit_id.clone());
+                    }
+                    if let Some(path) = entry.path {
+                        let path = internal_git_path(&path);
+                        if let Some(paths) = &mut path_filter {
+                            paths.insert((entry.commit_id.clone(), path.clone()));
+                        }
+                        if !entry.heuristic_links.is_empty() {
+                            path_links.insert((entry.commit_id, path), entry.heuristic_links);
+                        }
+                    }
+                }
+                (commits, path_filter, path_links)
+            } else {
+                (scope.resolve(&c)?, None, HashMap::new())
+            };
+            let matches_history_path = |candidate: &SearchResult| {
+                let Some(paths) = &history_path_filter else {
+                    return true;
+                };
+                let Some(commit_id) = candidate.commit_id.as_ref() else {
+                    return true;
+                };
+                if candidate.repo_id.is_some() {
+                    return true;
+                }
+                paths.contains(&(commit_id.clone(), candidate.path.clone()))
+            };
+            let include_result = |candidate: &SearchResult| {
+                result_scope.matches(candidate) && matches_history_path(candidate)
+            };
             let mut result = if history::is_current(&c)? {
-                history::search(&c, &q, mode, limit, &commits, |result| {
-                    result_scope.matches(result)
-                })?
+                history::search(&c, &q, mode, limit, &commits, include_result)?
             } else if mode == "exact" {
                 exact(&c, &q, &commits)?
             } else if mode == "combined" {
                 let v = query_vector(&c, &q)?;
-                let mut candidates = semantic_with_vector(&c, &v, limit, &commits, |result| {
-                    result_scope.matches(result)
-                })?;
+                let mut candidates = semantic_with_vector(&c, &v, limit, &commits, include_result)?;
                 let mut seen = std::collections::HashSet::new();
                 for x in &candidates {
                     seen.insert((x.path.clone(), x.line_start));
                 }
                 for mut x in exact(&c, &q, &commits)? {
-                    if result_scope.matches(&x) && seen.insert((x.path.clone(), x.line_start)) {
+                    if include_result(&x) && seen.insert((x.path.clone(), x.line_start)) {
                         let distance: f64 = c.query_row(
                             "SELECT vec_distance_cosine(vector,?1) FROM embeddings WHERE path=?2 AND line=?3",
                             params![as_bytes(&v), x.path, x.line_start as i64], |r| r.get(0),
@@ -1102,27 +1228,26 @@ fn execute() -> Result<()> {
                 });
                 candidates
             } else {
-                semantic(&c, &q, limit, &commits, |result| {
-                    result_scope.matches(result)
-                })?
+                semantic(&c, &q, limit, &commits, include_result)?
             };
             if mode == "exact" || mode == "semantic" || mode == "combined" {
                 result.extend(imports::search(&c, &q, mode, limit, |result| {
                     result_scope.matches(result)
                 })?);
             }
-            result.retain(|candidate| result_scope.matches(candidate));
+            result.retain(|candidate| include_result(candidate));
             let has_commit_message_index: bool = c.query_row(
                 "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='commit_message_units')",
                 [],
                 |row| row.get(0),
             )?;
-            if history::is_current(&c)? && has_commit_message_index {
+            if history::is_current(&c)? && has_commit_message_index && history_path_filter.is_none()
+            {
                 result.extend(history::search_commit_messages(
                     &c, &q, mode, limit, &commits,
                 )?);
             }
-            result.retain(|candidate| result_scope.matches(candidate));
+            result.retain(|candidate| include_result(candidate));
             if mode == "semantic" || mode == "combined" {
                 result.sort_by(|a, b| {
                     a.distance
@@ -1160,15 +1285,25 @@ fn execute() -> Result<()> {
                     return Err("diff search is not indexed; run `repodb refresh`".into());
                 }
                 let include_diff = |reference: &history::DiffReference| {
-                    let path = match reference.side {
-                        history::DiffSide::Added => reference.new_path.as_deref(),
-                        history::DiffSide::Removed => reference.old_path.as_deref(),
+                    let (path, commit_id) = match reference.side {
+                        history::DiffSide::Added => {
+                            (reference.new_path.as_deref(), &reference.child_commit_id)
+                        }
+                        history::DiffSide::Removed => {
+                            (reference.old_path.as_deref(), &reference.parent_commit_id)
+                        }
                     };
-                    path.is_some_and(|path| result_scope.matches_diff(path))
+                    path.is_some_and(|path| {
+                        result_scope.matches_diff(path)
+                            && history_path_filter.as_ref().map_or(true, |paths| {
+                                paths.contains(&(commit_id.clone(), internal_git_path(path)))
+                            })
+                    })
                 };
                 let search_diff_results =
                     |search_mode, search_limit| -> Result<Vec<history::DiffSearchResult>> {
-                        if matches!(result_scope, SearchScope::All) {
+                        if matches!(result_scope, SearchScope::All) && history_path_filter.is_none()
+                        {
                             history::search_diffs(&c, &q, search_mode, search_limit, &commits)
                         } else {
                             history::search_diffs_filtered(
@@ -1218,6 +1353,15 @@ fn execute() -> Result<()> {
                     values.push(diff_search_json(&c, hit, &mut diff_metadata_cache)?);
                 }
                 for (value, result) in values.iter_mut().zip(&result) {
+                    if let Some(commit_id) = result.commit_id.as_ref() {
+                        if let Some(links) =
+                            history_path_links.get(&(commit_id.clone(), result.path.clone()))
+                        {
+                            value["history_path_links"] = serde_json::Value::Array(
+                                links.iter().map(history_path_link_json).collect(),
+                            );
+                        }
+                    }
                     if result.path == "[commit message]" {
                         value["kind"] = serde_json::Value::String("commit_message".to_owned());
                         if let Some(commit) = &result.commit_id {
@@ -1236,6 +1380,23 @@ fn execute() -> Result<()> {
                     let mut reference = String::new();
                     if let Some(commit) = x.commit_id.as_deref() {
                         reference.push_str(&format!(" [commit {commit}]"));
+                        if let Some(links) =
+                            history_path_links.get(&(commit.to_owned(), x.path.clone()))
+                        {
+                            for link in links {
+                                let similarity = link.similarity_percent.map_or_else(
+                                    || "similarity estimate unavailable".to_owned(),
+                                    |score| format!("similarity estimate {score}%"),
+                                );
+                                reference.push_str(&format!(
+                                    " [heuristic rename link {}:{} -> {}:{}; {similarity}]",
+                                    link.parent_commit_id,
+                                    diff_path_display(&link.old_path).escape_debug(),
+                                    link.child_commit_id,
+                                    diff_path_display(&link.new_path).escape_debug(),
+                                ));
+                            }
+                        }
                     }
                     if let Some(blob) = x.blob_id {
                         reference.push_str(&format!(" [blob {blob}]"));
