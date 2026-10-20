@@ -147,10 +147,12 @@ fn semantic_search_finds_test_file_content_by_meaning() {
     let root = repo.path();
     run(root, &["init"]);
 
-    // The test embedder is deterministic and maps query and fixture to the same
-    // vector. The isolated database contains only this document, so the result
-    // proves that semantic search returns the indexed test-file content.
+    // The test embedder maps query, fixture, and commit message to the same
+    // vector. Ensure the indexed test-file content remains among semantic hits.
     let results = search_results(root, &["philosophy", "--semantic"]);
-    assert_eq!(results.len(), 1);
-    assert_eq!(results[0]["path"], relative_path.to_string_lossy().as_ref());
+    assert!(
+        results
+            .iter()
+            .any(|result| { result["path"] == relative_path.to_string_lossy().as_ref() })
+    );
 }

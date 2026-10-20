@@ -805,11 +805,23 @@ fn execute() -> Result<()> {
                 })?);
             }
             result.retain(|candidate| result_scope.matches(candidate));
+            let has_commit_message_index: bool = c.query_row(
+                "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='commit_message_units')",
+                [],
+                |row| row.get(0),
+            )?;
+            if history::is_current(&c)? && has_commit_message_index {
+                result.extend(history::search_commit_messages(
+                    &c, &q, mode, limit, &commits,
+                )?);
+            }
+            result.retain(|candidate| result_scope.matches(candidate));
             if mode == "semantic" || mode == "combined" {
                 result.sort_by(|a, b| {
                     a.distance
                         .unwrap_or(f64::INFINITY)
                         .total_cmp(&b.distance.unwrap_or(f64::INFINITY))
+                        .then((a.path == "[commit message]").cmp(&(b.path == "[commit message]")))
                         .then(a.path.cmp(&b.path))
                         .then(a.line_start.cmp(&b.line_start))
                 });
@@ -831,7 +843,14 @@ fn execute() -> Result<()> {
                     .map(serde_json::to_value)
                     .collect::<std::result::Result<Vec<_>, _>>()?;
                 for (value, result) in values.iter_mut().zip(&result) {
-                    if let Some(hex) = decoded_git_path_hex(&result.path) {
+                    if result.path == "[commit message]" {
+                        value["kind"] = serde_json::Value::String("commit_message".to_owned());
+                        if let Some(commit) = &result.commit_id {
+                            value["source_reference"] = serde_json::Value::String(format!(
+                                "git show --no-patch --format=%B {commit}"
+                            ));
+                        }
+                    } else if let Some(hex) = decoded_git_path_hex(&result.path) {
                         value["path"] = serde_json::Value::String(format!("bytes:{hex}"));
                         value["path_bytes_hex"] = serde_json::Value::String(hex.to_owned());
                     }
@@ -840,7 +859,7 @@ fn execute() -> Result<()> {
             } else {
                 for x in result {
                     let mut reference = String::new();
-                    if let Some(commit) = x.commit_id {
+                    if let Some(commit) = x.commit_id.as_deref() {
                         reference.push_str(&format!(" [commit {commit}]"));
                     }
                     if let Some(blob) = x.blob_id {
@@ -856,6 +875,13 @@ fn execute() -> Result<()> {
                         reference.push_str(&format!(" [last retrieved {last}]"));
                     }
                     let path = readable_path(&x.path);
+                    if x.path == "[commit message]" {
+                        if let Some(commit) = x.commit_id.as_deref() {
+                            reference.push_str(&format!(
+                                " [source: git show --no-patch --format=%B {commit}]"
+                            ));
+                        }
+                    }
                     if let Some(page) = x.page {
                         println!("{}:page {}{}: {}", path, page, reference, x.text);
                     } else {

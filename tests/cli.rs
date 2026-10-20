@@ -3847,6 +3847,114 @@ fn search_json(repo: &Path, args: &[&str]) -> Vec<serde_json::Value> {
 }
 
 #[test]
+fn commit_message_search_is_exposed_with_message_provenance_and_unscored_exact_hits() {
+    let repo = repository();
+    let root = repo.path();
+    git(
+        root,
+        &[
+            "commit",
+            "--allow-empty",
+            "-qm",
+            "Transaction ledger design rationale",
+        ],
+    );
+    let commit = git_text(root, &["rev-parse", "HEAD"]);
+    assert!(run(root, &["init"]).0);
+
+    let exact = search_json(root, &["transaction ledger", "--all-history"]);
+    let message = exact
+        .iter()
+        .find(|result| result["kind"] == "commit_message" && result["commit_id"] == commit)
+        .unwrap_or_else(|| panic!("commit-message result missing: {exact:?}"));
+    assert!(message["line_start"].as_u64().unwrap() > 0);
+    assert!(message["line_end"].as_u64().unwrap() >= message["line_start"].as_u64().unwrap());
+    assert!(
+        message["source_reference"]
+            .as_str()
+            .unwrap()
+            .contains(&commit)
+    );
+    assert!(message.get("distance").is_none());
+    assert!(message.get("confidence").is_none());
+    let (ok, human) = run(root, &["search", "transaction ledger", "--all-history"]);
+    assert!(ok, "{human}");
+    assert!(human.contains("[commit message]"), "{human}");
+    assert!(human.contains(&commit), "{human}");
+}
+
+#[test]
+fn commit_message_search_reports_missing_git_objects_instead_of_partial_results() {
+    let repo = repository();
+    let root = repo.path();
+    git(
+        root,
+        &[
+            "commit",
+            "--allow-empty",
+            "-qm",
+            "Missing object rationale marker",
+        ],
+    );
+    assert!(run(root, &["init"]).0);
+    git(root, &["update-ref", "-d", "HEAD"]);
+    git(root, &["reflog", "expire", "--expire=now", "--all"]);
+    git(root, &["gc", "--prune=now"]);
+
+    let output = Command::new(env!("CARGO_BIN_EXE_repodb"))
+        .args(["search", "Missing object rationale", "--all-history"])
+        .current_dir(root)
+        .env(
+            "REPODB_SEMGREP_CORE",
+            semgrep_corpus::required_semgrep_core(),
+        )
+        .env("XDG_CONFIG_HOME", test_config_home(root))
+        .output()
+        .unwrap();
+    assert!(
+        !output.status.success(),
+        "missing commit object must fail rather than return partial hits"
+    );
+    assert!(output.stdout.is_empty());
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("could not get object info"),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
+fn semantic_commit_message_search_returns_distance_without_confidence_claim() {
+    let repo = repository();
+    let root = repo.path();
+    git(
+        root,
+        &[
+            "commit",
+            "--allow-empty",
+            "-qm",
+            "Retry network failures safely",
+        ],
+    );
+    let commit = git_text(root, &["rev-parse", "HEAD"]);
+    assert!(run(root, &["init"]).0);
+    let fake = fake_embedder(root, "cat >/dev/null; printf '[1,0]'");
+    assert!(run(root, &["reembed", "--command", fake.to_str().unwrap()]).0);
+
+    let results = search_json(
+        root,
+        &["handle request outages", "--semantic", "--all-history"],
+    );
+    let message = results
+        .iter()
+        .find(|result| result["kind"] == "commit_message" && result["commit_id"] == commit)
+        .unwrap_or_else(|| panic!("semantic commit-message result missing: {results:?}"));
+    assert_eq!(message["commit_id"], commit);
+    assert!(message["distance"].as_f64().is_some());
+    assert!(message.get("confidence").is_none());
+}
+
+#[test]
 fn history_search_preserves_blob_and_line_references_without_broadening_default_scope() {
     let repo = repository();
     let root = repo.path();
@@ -4027,18 +4135,28 @@ fn exact_commit_inclusion_and_exclusion_select_before_all_search_modes() {
         let mut all = args.clone();
         all.push("--all-history");
         let history = search_json(root, &all);
-        assert_eq!(
-            history.len(),
-            if mode == "--semantic" { 1 } else { 2 },
-            "{mode}"
-        );
+        if mode == "--combined" {
+            assert!(history.len() >= 2, "{mode}: {history:?}");
+        } else {
+            assert_eq!(
+                history.len(),
+                if mode == "--semantic" {
+                    1
+                } else if mode == "--exact" {
+                    3
+                } else {
+                    2
+                },
+                "{mode}"
+            );
+        }
         if mode == "--combined" {
             assert!(
                 history
                     .iter()
-                    .all(|r| r["path"] == "notes.txt" && r["line_start"] == 1)
+                    .filter(|result| result["path"] == "notes.txt")
+                    .all(|r| r["line_start"] == 1)
             );
-            assert_ne!(history[0]["blob_id"], history[1]["blob_id"]);
         }
         let mut selected = args.clone();
         selected.extend(["--commit", &old]);
@@ -4170,8 +4288,14 @@ fn deleted_refs_are_pruned_only_on_refresh_while_shared_reachable_blobs_survive(
     let before = fs::read(root.join(".git/repodb.sqlite")).unwrap();
     git(root, &["branch", "-D", "side"]);
     let old = search_json(root, &["side-only", "--all-history"]);
-    assert_eq!(old.len(), 1);
-    assert_eq!(old[0]["commit_id"], side);
+    assert!(
+        old.iter()
+            .any(|result| result["path"] == "side.txt" && result["commit_id"] == side)
+    );
+    assert!(
+        old.iter()
+            .any(|result| result["kind"] == "commit_message" && result["commit_id"] == side)
+    );
     let shared = search_json(root, &["TARGET", "--all-history"]);
     assert_eq!(shared[0]["commit_id"], side);
     assert!(
@@ -4742,8 +4866,15 @@ fn empty_repository_can_initialize_then_index_its_first_commit() {
     git(root, &["add", "first.txt"]);
     git(root, &["commit", "-qm", "first"]);
     assert!(run(root, &["refresh"]).0);
-    assert_eq!(search_json(root, &["first"]).len(), 1);
-    assert_eq!(search_json(root, &["question", "--semantic"]).len(), 1);
+    let exact = search_json(root, &["first"]);
+    assert!(exact.iter().any(|result| result["path"] == "first.txt"));
+    assert!(
+        exact
+            .iter()
+            .any(|result| result["kind"] == "commit_message")
+    );
+    let semantic = search_json(root, &["question", "--semantic"]);
+    assert!(semantic.iter().any(|result| result["path"] == "first.txt"));
 }
 
 #[test]
@@ -4799,10 +4930,9 @@ fn legacy_cli_snapshot_remains_searchable_until_successful_atomic_history_migrat
     fs::rename(&saved, &object).unwrap();
     assert!(run(root, &["refresh"]).0);
     let migrated = search_json(root, &["new marker", "--commit", &new]);
-    assert_eq!(migrated.len(), 1);
-    assert_eq!(migrated[0]["blob_id"], new_blob);
+    assert!(migrated.iter().any(|result| result["blob_id"] == new_blob));
     let migrated_semantic = search_json(root, &["question", "--semantic", "--commit", &new]);
-    assert_eq!(migrated_semantic.len(), 2);
+    assert!(migrated_semantic.len() >= 2);
     assert!(migrated_semantic.iter().all(|r| r["distance"] == 0.0));
     assert_eq!(search_json(root, &["legacy"])[0]["commit_id"], old);
 }
@@ -5183,7 +5313,7 @@ fn refresh_does_not_publish_vectors_over_a_concurrently_changed_model() {
         "stale refresh must not overwrite a newer model"
     );
     let results = search_json(root, &["question", "--semantic"]);
-    assert_eq!(results.len(), 3);
+    assert_eq!(results.len(), 4);
     assert!(results.iter().all(|r| r["distance"] == 0.0));
 }
 
@@ -5625,14 +5755,17 @@ esac
             args.push(mode);
         }
         let results = search_json(root, &args);
-        assert_eq!(results.len(), 1);
-        assert_eq!(results[0]["text"], "v2 first\nv2 marker\nv2 last");
-        assert_eq!(results[0]["line_start"], 1);
-        assert_eq!(results[0]["line_end"], 3);
-        assert_eq!(results[0]["commit_id"], commit);
-        assert_eq!(results[0]["blob_id"], blob);
+        let file_result = results
+            .iter()
+            .find(|result| result["path"] == "v2.txt")
+            .expect("file result remains searchable after migration");
+        assert_eq!(file_result["text"], "v2 first\nv2 marker\nv2 last");
+        assert_eq!(file_result["line_start"], 1);
+        assert_eq!(file_result["line_end"], 3);
+        assert_eq!(file_result["commit_id"], commit);
+        assert_eq!(file_result["blob_id"], blob);
         if mode != "exact" {
-            assert_eq!(results[0]["distance"], 1.0);
+            assert_eq!(file_result["distance"], 1.0);
         }
     }
 }
