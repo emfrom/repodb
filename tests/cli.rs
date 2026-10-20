@@ -690,9 +690,27 @@ fn git_snapshot_stores_ranges_not_verbatim_text_and_hydrates_search_results() {
         .join(&blob_id[..2])
         .join(&blob_id[2..]);
     fs::remove_file(object).unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_repodb"))
+        .args(["search", "Exact [literal] TARGET"])
+        .current_dir(root)
+        .env(
+            "REPODB_SEMGREP_CORE",
+            semgrep_corpus::required_semgrep_core(),
+        )
+        .env("XDG_CONFIG_HOME", test_config_home(root))
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
     assert!(
-        !run(root, &["search", "Exact [literal] TARGET"]).0,
-        "missing indexed Git objects must fail instead of silently omitting results"
+        output.stdout.is_empty(),
+        "must not fabricate partial results"
+    );
+    let error = String::from_utf8(output.stderr).unwrap();
+    assert!(
+        error.contains(&format!(
+            "cannot hydrate Git blob {blob_id}: object is missing"
+        )),
+        "missing-object error must include the actionable blob ID: {error}"
     );
 }
 
