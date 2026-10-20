@@ -96,6 +96,69 @@ fn repository() -> tempfile::TempDir {
 }
 
 #[test]
+fn git_import_accepts_one_optional_revision_and_pins_it_to_the_resolved_commit() {
+    let repo = repository();
+    let root = repo.path();
+    let external = tempfile::tempdir().unwrap();
+    git(external.path(), &["init", "-q"]);
+    git(
+        external.path(),
+        &["config", "user.email", "test@example.com"],
+    );
+    git(external.path(), &["config", "user.name", "Test"]);
+    fs::write(external.path().join("notes.txt"), "first snapshot marker\n").unwrap();
+    git(external.path(), &["add", "."]);
+    git(external.path(), &["commit", "-qm", "first"]);
+    let first = String::from_utf8(
+        Command::new("git")
+            .args(["rev-parse", "HEAD"])
+            .current_dir(external.path())
+            .output()
+            .unwrap()
+            .stdout,
+    )
+    .unwrap()
+    .trim()
+    .to_owned();
+    git(external.path(), &["tag", "v1"]);
+    fs::write(
+        external.path().join("notes.txt"),
+        "second snapshot marker\n",
+    )
+    .unwrap();
+    git(external.path(), &["commit", "-qam", "second"]);
+    let latest = String::from_utf8(
+        Command::new("git")
+            .args(["rev-parse", "HEAD"])
+            .current_dir(external.path())
+            .output()
+            .unwrap()
+            .stdout,
+    )
+    .unwrap()
+    .trim()
+    .to_owned();
+
+    let locator = external.path().to_str().unwrap();
+    assert!(run(root, &["init"]).0);
+    assert!(run(root, &["import", "--revision", "v1", locator]).0);
+    assert!(run(root, &["refresh"]).0);
+    assert_eq!(search_json(root, &["first snapshot marker"]).len(), 1);
+    assert!(search_json(root, &["second snapshot marker"]).is_empty());
+    let database = rusqlite::Connection::open(root.join(".git/repodb.sqlite")).unwrap();
+    let (selected, count): (String, i64) = database.query_row(
+        "SELECT pinned_commit,(SELECT count(*) FROM imported_versions WHERE source_id=imported_sources.id) FROM imported_sources WHERE locator=?1",
+        [locator], |row| Ok((row.get(0)?, row.get(1)?)),
+    ).unwrap();
+    assert_eq!(selected, first);
+    assert_eq!(count, 1);
+
+    assert!(!run(root, &["import", "--revision", "not-a-revision", locator]).0);
+    assert!(!run(root, &["import", locator, "another-source"]).0);
+    assert_ne!(first, latest);
+}
+
+#[test]
 fn import_preview_reports_selected_files_sizes_and_exclusions_without_db_side_effects() {
     use std::os::unix::fs::symlink;
 
@@ -1574,7 +1637,7 @@ fn oversized_import_embedding_output_does_not_replace_imported_snapshot() {
 }
 
 #[test]
-fn imported_git_retention_all_preserves_unreachable_commit_after_refresh() {
+fn imported_git_retention_all_keeps_only_the_imported_commit_pin() {
     let repo = repository();
     let root = repo.path();
     let external = tempfile::tempdir().unwrap();
@@ -1584,155 +1647,27 @@ fn imported_git_retention_all_preserves_unreachable_commit_after_refresh() {
         &["config", "user.email", "test@example.com"],
     );
     git(external.path(), &["config", "user.name", "Test"]);
-    fs::create_dir(external.path().join("history")).unwrap();
-    fs::write(
-        external.path().join("history/old.md"),
-        "unreachable imported marker\n",
-    )
-    .unwrap();
+    fs::write(external.path().join("marker.md"), "pinned import marker\n").unwrap();
     git(external.path(), &["add", "."]);
-    git(external.path(), &["commit", "-qm", "old source commit"]);
-    let old_commit = git_text(external.path(), &["rev-parse", "HEAD"]);
-    let old_branch = git_text(external.path(), &["branch", "--show-current"]);
+    git(external.path(), &["commit", "-qm", "first"]);
+    let first = git_text(external.path(), &["rev-parse", "HEAD"]);
     let locator = external.path().to_string_lossy().into_owned();
-
     assert!(run(root, &["import", &locator]).0);
     assert!(run(root, &["retention", "all"]).0);
-    assert!(run(root, &["refresh"]).0);
-    let before = search_json(root, &["unreachable imported marker"]);
-    assert_eq!(before.len(), 1, "{before:?}");
-    assert_eq!(before[0]["commit_id"], old_commit);
-    assert_eq!(before[0]["path"], "history/old.md");
-    assert_eq!(before[0]["text"], "unreachable imported marker");
-
-    let database = rusqlite::Connection::open(root.join(".git/repodb.sqlite")).unwrap();
-    let old_vector: Option<Vec<u8>> = database
-        .query_row(
-            "SELECT vector FROM imported_git_units WHERE commit_id=?1",
-            [&old_commit],
-            |row| row.get(0),
-        )
-        .unwrap();
-    assert!(
-        old_vector.is_some(),
-        "fixture must contain a populated vector"
-    );
-    database.execute_batch(&format!(
-        "CREATE TABLE imported_git_units_legacy(source_id TEXT NOT NULL,commit_id TEXT NOT NULL,path TEXT NOT NULL,line INTEGER NOT NULL,line_end INTEGER NOT NULL,text TEXT NOT NULL,vector BLOB,PRIMARY KEY(source_id,commit_id,path,line,text));
-         INSERT INTO imported_git_units_legacy SELECT source_id,commit_id,path,line,line_end,'unreachable imported marker',vector FROM imported_git_units WHERE commit_id='{old_commit}';
-         DROP TABLE imported_git_units;
-         ALTER TABLE imported_git_units_legacy RENAME TO imported_git_units;"
-    )).unwrap();
-
-    git(external.path(), &["checkout", "--orphan", "replacement"]);
-    git(external.path(), &["rm", "-rf", "."]);
-    fs::write(
-        external.path().join("new.md"),
-        "replacement imported marker\n",
-    )
-    .unwrap();
+    fs::write(external.path().join("marker.md"), "later ancestor marker\n").unwrap();
     git(external.path(), &["add", "."]);
-    git(
-        external.path(),
-        &["commit", "-qm", "replacement source commit"],
-    );
-    git(external.path(), &["branch", "-D", &old_branch]);
-    assert!(
-        !git_text(external.path(), &["rev-list", "--all"])
-            .lines()
-            .any(|commit| commit == old_commit),
-        "the old source commit must be unreachable from every branch/ref"
-    );
-
-    let old_blob = git_text(
-        external.path(),
-        &["rev-parse", &format!("{old_commit}:history/old.md")],
-    );
-    let old_object = external
-        .path()
-        .join(".git/objects")
-        .join(&old_blob[..2])
-        .join(&old_blob[2..]);
-    assert!(
-        old_object.exists(),
-        "expected the old blob to be a loose object"
-    );
-    let withheld_object = old_object.with_extension("withheld");
-    fs::rename(&old_object, &withheld_object).unwrap();
-    let (success, _) = run(root, &["refresh"]);
-    assert!(
-        !success,
-        "refresh must fail when a retained commit's blob is missing"
-    );
-    let failed_refresh_results = search_json(root, &["unreachable imported marker"]);
-    assert_eq!(
-        failed_refresh_results.len(),
-        1,
-        "{failed_refresh_results:?}"
-    );
-    assert_eq!(failed_refresh_results[0]["commit_id"], old_commit);
-    assert_eq!(failed_refresh_results[0]["path"], "history/old.md");
-    assert_eq!(
-        failed_refresh_results[0]["text"],
-        "unreachable imported marker"
-    );
-    let legacy_columns = database
-        .prepare("PRAGMA table_info(imported_git_units)")
-        .unwrap()
-        .query_map([], |row| row.get::<_, String>(1))
-        .unwrap()
-        .collect::<std::result::Result<Vec<_>, _>>()
-        .unwrap();
-    assert!(
-        legacy_columns.iter().any(|column| column == "text"),
-        "{legacy_columns:?}"
-    );
-    let still_legacy_vector: Option<Vec<u8>> = database
-        .query_row(
-            "SELECT vector FROM imported_git_units WHERE commit_id=?1",
-            [&old_commit],
-            |row| row.get(0),
-        )
-        .unwrap();
-    assert_eq!(still_legacy_vector, old_vector);
-
-    fs::rename(&withheld_object, &old_object).unwrap();
+    git(external.path(), &["commit", "-qm", "second"]);
     assert!(run(root, &["refresh"]).0);
-    let after = search_json(root, &["unreachable imported marker"]);
-    assert_eq!(after.len(), 1, "{after:?}");
-    assert_eq!(after[0]["commit_id"], old_commit);
-    assert_eq!(after[0]["path"], "history/old.md");
-    assert_eq!(after[0]["text"], "unreachable imported marker");
-    let migrated_vector: Option<Vec<u8>> = database
-        .query_row(
-            "SELECT vector FROM imported_git_units WHERE commit_id=?1",
-            [&old_commit],
-            |row| row.get(0),
-        )
-        .unwrap();
-    assert_eq!(migrated_vector, old_vector);
-    assert!(
-        migrated_vector.is_some(),
-        "migrated vector must remain populated"
-    );
-    assert!(!search_json(root, &["replacement imported marker"]).is_empty());
-    let columns = database
-        .prepare("PRAGMA table_info(imported_git_units)")
-        .unwrap()
-        .query_map([], |row| row.get::<_, String>(1))
-        .unwrap()
-        .collect::<std::result::Result<Vec<_>, _>>()
-        .unwrap();
-    assert!(
-        !columns.iter().any(|column| column == "text"),
-        "{columns:?}"
-    );
-    for column in ["blob_id", "byte_start", "byte_end", "line_end"] {
-        assert!(
-            columns.iter().any(|existing| existing == column),
-            "{columns:?}"
-        );
-    }
+    let pinned = search_json(root, &["pinned import marker"]);
+    assert_eq!(pinned.len(), 1, "{pinned:?}");
+    assert_eq!(pinned[0]["commit_id"], first);
+    assert!(search_json(root, &["later ancestor marker"]).is_empty());
+    let database = rusqlite::Connection::open(root.join(".git/repodb.sqlite")).unwrap();
+    let count: i64 = database.query_row(
+        "SELECT count(*) FROM imported_git_units WHERE source_id=(SELECT id FROM imported_sources WHERE locator=?1)",
+        [&locator], |row| row.get(0),
+    ).unwrap();
+    assert_eq!(count, 1);
 }
 
 #[test]
@@ -1867,7 +1802,7 @@ fn latest_retention_skips_unreachable_legacy_git_rows_with_missing_blobs() {
 }
 
 #[test]
-fn latest_retention_drops_legacy_rows_when_no_commits_are_selected() {
+fn refresh_preserves_legacy_snapshot_when_pinned_commit_blob_is_missing() {
     let repo = repository();
     let root = repo.path();
     let external = tempfile::tempdir().unwrap();
@@ -1926,7 +1861,10 @@ fn latest_retention_drops_legacy_rows_when_no_commits_are_selected() {
     fs::remove_file(old_object).unwrap();
 
     let (ok, output) = run(root, &["refresh"]);
-    assert!(ok, "{output}");
+    assert!(
+        !ok,
+        "refresh must fail when the pinned commit's blob is missing: {output}"
+    );
     let count: i64 = database
         .query_row(
             "SELECT count(*) FROM imported_git_units WHERE source_id=?1",
@@ -1934,7 +1872,7 @@ fn latest_retention_drops_legacy_rows_when_no_commits_are_selected() {
             |row| row.get(0),
         )
         .unwrap();
-    assert_eq!(count, 0);
+    assert_eq!(count, 1);
     let versions: i64 = database
         .query_row(
             "SELECT count(*) FROM imported_versions WHERE source_id=?1",
@@ -1942,8 +1880,8 @@ fn latest_retention_drops_legacy_rows_when_no_commits_are_selected() {
             |row| row.get(0),
         )
         .unwrap();
-    assert_eq!(versions, 0);
-    assert!(search_json(root, &["legacy marker"]).is_empty());
+    assert_eq!(versions, 1);
+    assert_eq!(search_json(root, &["legacy marker"]).len(), 1);
     let columns = database
         .prepare("PRAGMA table_info(imported_git_units)")
         .unwrap()
@@ -1951,10 +1889,19 @@ fn latest_retention_drops_legacy_rows_when_no_commits_are_selected() {
         .unwrap()
         .collect::<Result<Vec<_>, _>>()
         .unwrap();
-    assert!(!columns.contains(&"text".to_owned()), "{columns:?}");
-    for column in ["blob_id", "byte_start", "byte_end"] {
-        assert!(columns.contains(&column.to_owned()), "{columns:?}");
-    }
+    assert!(columns.contains(&"text".to_owned()), "{columns:?}");
+    assert_eq!(
+        columns,
+        [
+            "source_id",
+            "commit_id",
+            "path",
+            "line",
+            "line_end",
+            "text",
+            "vector"
+        ]
+    );
 }
 
 #[test]
@@ -2148,7 +2095,14 @@ fn imported_git_repository_refreshes_with_identity_commit_path_and_line_refs() {
     assert!(search_json(root, &["second git marker"]).is_empty());
     assert!(run(root, &["retention", "all"]).0);
     assert!(run(root, &["refresh"]).0);
+    assert!(search_json(root, &["second git marker"]).is_empty());
+    let still_pinned = search_json(root, &["first git marker"]);
+    assert_eq!(still_pinned.len(), 1);
+    assert_eq!(still_pinned[0]["commit_id"], first);
+    assert!(run(root, &["import", &locator]).0);
+    assert!(run(root, &["refresh"]).0);
     let newest = search_json(root, &["second git marker"]);
+    assert_eq!(newest.len(), 1);
     assert_eq!(newest[0]["commit_id"], second);
     assert!(!search_json(root, &["first git marker"]).is_empty());
     assert!(run(root, &["retention", "latest"]).0);
@@ -2163,8 +2117,19 @@ fn imported_git_repository_refreshes_with_identity_commit_path_and_line_refs() {
         .unwrap();
     assert!(clone.status.success());
     let remote = format!("file://{}", bare.display());
-    assert!(run(root, &["import", &remote]).0);
+    assert!(run(root, &["import", "--revision", "HEAD", &remote]).0);
+    fs::write(external.path().join("guide.md"), "third remote marker\\n").unwrap();
+    git(external.path(), &["add", "."]);
+    git(external.path(), &["commit", "-qm", "third"]);
+    let third = git_text(external.path(), &["rev-parse", "HEAD"]);
+    let remote_branch = git_text(external.path(), &["branch", "--show-current"]);
+    git(&bare, &["fetch", external.path().to_str().unwrap(), &third]);
+    git(
+        &bare,
+        &["update-ref", &format!("refs/heads/{remote_branch}"), &third],
+    );
     assert!(run(root, &["refresh"]).0);
+    assert!(search_json(root, &["third remote marker"]).is_empty());
     let remote_result = search_json(root, &["second git marker"]);
     assert!(
         remote_result

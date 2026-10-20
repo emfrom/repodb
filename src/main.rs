@@ -530,10 +530,10 @@ fn execute() -> Result<()> {
             }
         }
         "import" => {
-            let locator = a
+            let first = a
                 .next()
                 .ok_or("import requires one local file, URL, or Git repository")?;
-            if locator == "--preview" {
+            if first == "--preview" {
                 let path = a
                     .next()
                     .ok_or("import --preview requires a local file or directory")?;
@@ -543,10 +543,21 @@ fn execute() -> Result<()> {
                 let preview = imports::preview(std::path::Path::new(&path), &db_path)?;
                 println!("{}", serde_json::to_string(&preview)?);
             } else {
+                let (revision, locator) = if first == "--revision" {
+                    let revision = a
+                        .next()
+                        .ok_or("import --revision requires a branch, tag, or commit")?;
+                    let locator = a
+                        .next()
+                        .ok_or("import --revision requires one Git repository")?;
+                    (Some(revision), locator)
+                } else {
+                    (None, first)
+                };
                 if a.next().is_some() {
                     return Err("import accepts one file, URL, or Git repository".into());
                 }
-                imports::register(&open_db(&db_path)?, &locator)?;
+                imports::register(&open_db(&db_path)?, &locator, revision.as_deref())?;
             }
         }
         "retention" => {
