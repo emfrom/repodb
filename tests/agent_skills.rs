@@ -26,7 +26,34 @@ fn distributed_skills_match_the_repo_local_pi_skills() {
 }
 
 #[test]
-fn enabler_is_project_local_and_defers_repo_db_skill_loading() {
+fn pi_package_exposes_only_the_enabler_globally() {
+    let manifest: serde_json::Value =
+        serde_json::from_str(&skill("package.json")).expect("valid Pi package manifest");
+    assert_eq!(
+        manifest["pi"]["skills"],
+        serde_json::json!(["./skills/repodb-enabler"]),
+        "global package should register only the enabler skill"
+    );
+
+    for helper in [
+        "repodb-help",
+        "repodb-import",
+        "repodb-search",
+        "repodb-search-exact",
+        "repodb-search-semantic",
+    ] {
+        assert!(
+            Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("skills/repodb-enabler")
+                .join(format!("../{helper}/SKILL.md"))
+                .is_file(),
+            "global enabler must be able to read sibling helper {helper}"
+        );
+    }
+}
+
+#[test]
+fn enabler_checks_repo_availability_and_defers_helper_loading() {
     let enabler = skill(".agents/skills/repodb-enabler/SKILL.md");
 
     for required in [
@@ -40,14 +67,16 @@ fn enabler_is_project_local_and_defers_repo_db_skill_loading() {
         "repodb init",
         "repodb refresh",
         "Do not run searches automatically",
-        "repo-local",
         "Pi",
-        "global-availability",
+        "globally with `pi install",
         "preview and import one explicitly selected local documentation file or directory",
-        ".agents/skills/repodb-import/SKILL.md",
-        ".agents/skills/repodb-search/SKILL.md",
-        ".agents/skills/repodb-search-exact/SKILL.md",
-        ".agents/skills/repodb-search-semantic/SKILL.md",
+        "../repodb-help/SKILL.md",
+        "../repodb-import/SKILL.md",
+        "../repodb-search/SKILL.md",
+        "../repodb-search-exact/SKILL.md",
+        "../repodb-search-semantic/SKILL.md",
+        "pi install git:github.com/emfrom/repodb",
+        "only the enabler is registered as a Pi skill",
     ] {
         assert!(
             enabler.contains(required),

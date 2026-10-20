@@ -20,14 +20,14 @@ If both are available, explain that indexed results can be stale after repositor
 
 When RepoDB is available, make these helper skills discoverable by name and load them only when needed:
 
-- `repodb_help` — answer RepoDB usage and capability questions; load `.agents/skills/repodb-help/SKILL.md`.
-- `repodb_import` — preview and import one explicitly selected local documentation file or directory; load `.agents/skills/repodb-import/SKILL.md`.
-- `repodb_search` — combined exact and semantic discovery; load `.agents/skills/repodb-search/SKILL.md`.
-- `repodb_search_exact` — literal matching; load `.agents/skills/repodb-search-exact/SKILL.md`.
-- `repodb_search_semantic` — conceptual search; load `.agents/skills/repodb-search-semantic/SKILL.md`.
+- `repodb_help` — answer RepoDB usage and capability questions; read `../repodb-help/SKILL.md` relative to this skill file.
+- `repodb_import` — preview and import one explicitly selected local documentation file or directory; read `../repodb-import/SKILL.md` relative to this skill file.
+- `repodb_search` — combined exact and semantic discovery; read `../repodb-search/SKILL.md` relative to this skill file.
+- `repodb_search_exact` — literal matching; read `../repodb-search-exact/SKILL.md` relative to this skill file.
+- `repodb_search_semantic` — conceptual search; read `../repodb-search-semantic/SKILL.md` relative to this skill file.
 
-For a direct question about RepoDB, load `repodb_help` and answer from that guidance. For other tasks, describe the available skills and let the agent decide whether one is useful. The `repodb_import` definition is available as a repo-local skill. The search skill definitions are available in this repository.
+For a direct question about RepoDB, read `../repodb-help/SKILL.md` relative to this skill file and answer from that guidance. For other tasks, describe the available skills and let the agent decide whether one is useful. Read helper skills only when they apply; their sibling definitions ship with this package but only the enabler is registered as a Pi skill.
 
-## Distribution limitation
+## Distribution
 
-This is a repo-local skill artifact under `.agents/skills/`; the repository does not currently provide a supported distribution or installation mechanism for making it globally available. Pi's naming and global-availability behavior cannot be verified or claimed by the repository's automated tests. The underscored identifiers above are the required skill names in the RepoDB specification; the project-local Pi skill directories use portable hyphenated names.
+This skill is distributed as the RepoDB Pi package. Install it globally with `pi install git:github.com/emfrom/repodb`. The package manifest registers only this enabler, keeping helper skill definitions out of the always-loaded skill list. The helper Markdown files are siblings in the package and are read on demand. The underscored identifiers above are logical capability names; Pi skill directories use portable hyphenated names.
