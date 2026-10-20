@@ -38,8 +38,8 @@ pub(crate) enum DiffChangeKind {
     Added,
     Removed,
     Modified,
-    Renamed,
-    Copied,
+    HeuristicRename,
+    HeuristicCopy,
     TypeChanged,
 }
 
@@ -540,7 +540,11 @@ fn stage_diff_pair(
             b'R' | b'C' => {
                 let second_path = *records.get(i).ok_or("missing Git destination path")?;
                 i += 1;
-                let kind = if status == b'R' { "renamed" } else { "copied" };
+                let kind = if status == b'R' {
+                    "heuristic_rename"
+                } else {
+                    "heuristic_copy"
+                };
                 (kind, Some(first_path), Some(second_path))
             }
             _ => continue,
@@ -2022,7 +2026,7 @@ mod tests {
         let rename_change = rename
             .changes
             .iter()
-            .find(|change| change.kind == DiffChangeKind::Renamed)
+            .find(|change| change.kind == DiffChangeKind::HeuristicRename)
             .unwrap();
         assert_eq!(
             rename_change.old_path.as_deref(),
@@ -2042,7 +2046,7 @@ mod tests {
             .iter()
             .find(|change| change.old_path.as_deref() == Some(b"pure-old.txt".as_slice()))
             .unwrap();
-        assert_eq!(pure_rename.kind, DiffChangeKind::Renamed);
+        assert_eq!(pure_rename.kind, DiffChangeKind::HeuristicRename);
         assert_eq!(
             pure_rename.new_path.as_deref(),
             Some(b"pure-new.txt".as_slice())
@@ -2058,7 +2062,7 @@ mod tests {
         let copy_change = copy
             .changes
             .iter()
-            .find(|change| change.kind == DiffChangeKind::Copied)
+            .find(|change| change.kind == DiffChangeKind::HeuristicCopy)
             .unwrap();
         assert_eq!(
             copy_change.old_path.as_deref(),
@@ -3019,7 +3023,7 @@ pub fn publish_refresh(tx: &Transaction<'_>) -> Result<()> {
         CREATE TABLE git_blob_units(blob_id TEXT NOT NULL REFERENCES blob_contents, unit_id INTEGER NOT NULL REFERENCES indexed_units, segmentation_kind TEXT NOT NULL, PRIMARY KEY(blob_id,segmentation_kind,unit_id));
         CREATE TABLE commit_message_units(commit_id TEXT NOT NULL REFERENCES git_commits, unit_id INTEGER NOT NULL REFERENCES indexed_units, byte_start INTEGER NOT NULL, byte_end INTEGER NOT NULL, line_start INTEGER NOT NULL, line_end INTEGER NOT NULL, PRIMARY KEY(commit_id,unit_id));
         CREATE TABLE diff_references(parent_commit_id TEXT NOT NULL,child_commit_id TEXT NOT NULL REFERENCES git_commits,hunk_id INTEGER NOT NULL,side TEXT NOT NULL,old_path BLOB,new_path BLOB,old_line_start INTEGER,old_line_end INTEGER,new_line_start INTEGER,new_line_end INTEGER,blob_id TEXT NOT NULL,unit_id INTEGER NOT NULL REFERENCES indexed_units,byte_start INTEGER NOT NULL,byte_end INTEGER NOT NULL,line_start INTEGER NOT NULL,line_end INTEGER NOT NULL,PRIMARY KEY(parent_commit_id,child_commit_id,hunk_id,side,unit_id));
-        CREATE TABLE diff_file_changes(parent_commit_id TEXT NOT NULL,child_commit_id TEXT NOT NULL REFERENCES git_commits,change_index INTEGER NOT NULL,change_kind TEXT NOT NULL CHECK(change_kind IN ('added','removed','modified','renamed','copied','type_changed')),old_path BLOB,new_path BLOB,similarity_percent INTEGER CHECK(similarity_percent IS NULL OR similarity_percent BETWEEN 0 AND 100),PRIMARY KEY(parent_commit_id,child_commit_id,change_index));
+        CREATE TABLE diff_file_changes(parent_commit_id TEXT NOT NULL,child_commit_id TEXT NOT NULL REFERENCES git_commits,change_index INTEGER NOT NULL,change_kind TEXT NOT NULL CHECK(change_kind IN ('added','removed','modified','heuristic_rename','heuristic_copy','type_changed')),old_path BLOB,new_path BLOB,similarity_percent INTEGER CHECK(similarity_percent IS NULL OR similarity_percent BETWEEN 0 AND 100),PRIMARY KEY(parent_commit_id,child_commit_id,change_index));
         CREATE TABLE diff_detection_settings(id INTEGER PRIMARY KEY CHECK(id=1),rename_threshold_percent INTEGER NOT NULL,copy_threshold_percent INTEGER NOT NULL,find_copies_harder INTEGER NOT NULL,git_version TEXT NOT NULL,diff_algorithm TEXT NOT NULL);
         CREATE TABLE unit_embeddings(unit_id INTEGER PRIMARY KEY REFERENCES indexed_units, vector BLOB NOT NULL);")?;
     tx.execute(
@@ -3135,8 +3139,8 @@ fn parse_diff_change_kind(value: &str) -> rusqlite::Result<DiffChangeKind> {
         "added" => Ok(DiffChangeKind::Added),
         "removed" => Ok(DiffChangeKind::Removed),
         "modified" => Ok(DiffChangeKind::Modified),
-        "renamed" => Ok(DiffChangeKind::Renamed),
-        "copied" => Ok(DiffChangeKind::Copied),
+        "heuristic_rename" => Ok(DiffChangeKind::HeuristicRename),
+        "heuristic_copy" => Ok(DiffChangeKind::HeuristicCopy),
         "type_changed" => Ok(DiffChangeKind::TypeChanged),
         _ => Err(rusqlite::Error::InvalidQuery),
     }
