@@ -143,12 +143,18 @@ fn search_skills_document_modes_provenance_and_limitations() {
     let exact = skill(".agents/skills/repodb-search-exact/SKILL.md");
     for required in [
         "name: repodb-search-exact",
-        "known identifiers, symbols, or literal phrases",
+        "known literal identifiers, symbols, and phrases",
+        "literal matching, not a regular-expression search",
         "repodb search 'QUERY'",
         "all indexed sources by default",
+        "repository history, imported repositories, and imported documentation",
         "repository, commit/version, path, and line/page",
         "source content is missing",
+        "without fetching or reconstructing the content",
+        "weak or empty results",
         "semantic/combined search",
+        "filesystem tools",
+        "Open a known file directly",
         "does not refresh the index",
     ] {
         assert!(
