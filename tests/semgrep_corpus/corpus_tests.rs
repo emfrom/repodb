@@ -237,7 +237,7 @@ fn verify_language(fixture: &Fixture) {
 
     let db = rusqlite::Connection::open(database).unwrap();
     let indexed: Vec<(usize, usize)> = db
-        .prepare("SELECT byte_start,byte_end FROM indexed_units ORDER BY byte_start")
+        .prepare("SELECT u.byte_start,u.byte_end FROM indexed_units u JOIN git_blob_units b USING(unit_id) ORDER BY u.byte_start")
         .unwrap()
         .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
         .unwrap()
