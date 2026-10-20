@@ -5281,6 +5281,40 @@ fn diff_search_cli_exposes_added_and_removed_hits_with_bounded_paired_references
         assert_eq!(hit["new_path"], "notes.txt");
         assert_eq!(hit["old_line_start"], 2);
         assert_eq!(hit["new_line_start"], 2);
+        assert_eq!(hit["file_change"]["kind"], "modified");
+        assert_eq!(hit["file_change"]["heuristic"], false);
+        assert_eq!(
+            hit["parent_git_show_command"],
+            format!("git show '{parent}:notes.txt'")
+        );
+        assert_eq!(
+            hit["child_git_show_command"],
+            format!("git show '{child}:notes.txt'")
+        );
+        for (key, expected) in [
+            (
+                "parent_git_show_command",
+                format!("First line\n{old_line}last line\n"),
+            ),
+            (
+                "child_git_show_command",
+                format!("First line\n{new_line}last line\n"),
+            ),
+        ] {
+            let command = hit[key].as_str().unwrap();
+            let output = Command::new("sh")
+                .arg("-c")
+                .arg(command)
+                .current_dir(root)
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{command}: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            assert_eq!(output.stdout, expected.as_bytes());
+        }
         assert_eq!(hit["matching_line_start"], 2);
         assert_eq!(hit["matching_line_end"], 2);
     }
@@ -5299,6 +5333,12 @@ fn diff_search_cli_exposes_added_and_removed_hits_with_bounded_paired_references
         human.contains("old=notes.txt:2-2 new=notes.txt:2-2"),
         "{human}"
     );
+    assert!(
+        human.contains("file_change=modified heuristic=false"),
+        "{human}"
+    );
+    assert!(human.contains("detection=rename=50%"), "{human}");
+    assert!(human.contains("parent-file-command=git show"), "{human}");
 
     let (ok, output) = run(
         root,
@@ -5382,6 +5422,320 @@ fn diff_search_cli_exposes_added_and_removed_hits_with_bounded_paired_references
             .iter()
             .any(|result| result["kind"] == "diff" && result["side"] == "removed")
     );
+}
+
+#[test]
+fn diff_search_json_reports_merge_parent_and_heuristic_identity() {
+    let repo = repository();
+    let root = repo.path();
+    let rename_context = "rename-specific context ".repeat(100);
+    let copy_context = "copy-specific context ".repeat(100);
+    fs::write(
+        root.join("old-name.txt"),
+        format!("before rename marker\n{rename_context}\n"),
+    )
+    .unwrap();
+    fs::write(
+        root.join("copy-source.txt"),
+        format!("before copy marker\n{copy_context}\n"),
+    )
+    .unwrap();
+    git(root, &["add", "-A"]);
+    git(root, &["commit", "-qm", "base for diff provenance"]);
+    let base = git_text(root, &["rev-parse", "HEAD"]);
+    let main_branch = git_text(root, &["branch", "--show-current"]);
+    git(root, &["branch", "side"]);
+
+    git(root, &["checkout", "-q", "side"]);
+    fs::write(
+        root.join("side-only.txt"),
+        "merge parent marker from side\n",
+    )
+    .unwrap();
+    git(root, &["add", "side-only.txt"]);
+    git(
+        root,
+        &[
+            "-c",
+            "user.name=Test",
+            "-c",
+            "user.email=test@example.com",
+            "commit",
+            "-qm",
+            "side",
+            "--date",
+            "2020-01-01T00:00:00Z",
+        ],
+    );
+    let side = git_text(root, &["rev-parse", "HEAD"]);
+
+    git(root, &["checkout", "-q", &main_branch]);
+    fs::rename(root.join("old-name.txt"), root.join("new-name.txt")).unwrap();
+    fs::write(
+        root.join("new-name.txt"),
+        format!("after rename marker\n{rename_context}\n"),
+    )
+    .unwrap();
+    fs::copy(root.join("copy-source.txt"), root.join("copied.txt")).unwrap();
+    fs::write(
+        root.join("copied.txt"),
+        format!("after copy marker\n{copy_context}\n"),
+    )
+    .unwrap();
+    git(root, &["add", "-A"]);
+    git(root, &["commit", "-qm", "rename and copy"]);
+    let main = git_text(root, &["rev-parse", "HEAD"]);
+    git(root, &["merge", "--no-ff", "-m", "merge", "side"]);
+    let merge = git_text(root, &["rev-parse", "HEAD"]);
+    assert!(run(root, &["init"]).0);
+
+    let (ok, output) = run(
+        root,
+        &[
+            "search",
+            "after rename marker",
+            "--diffs",
+            "--all-history",
+            "--json",
+        ],
+    );
+    assert!(ok, "rename diff search failed: {output}");
+    let results: Vec<serde_json::Value> = serde_json::from_str(&output).unwrap();
+    let rename = results
+        .iter()
+        .find(|result| {
+            result["kind"] == "diff"
+                && result["parent_commit_id"] == side
+                && result["child_commit_id"] == merge
+                && result["new_path"] == "new-name.txt"
+        })
+        .unwrap_or_else(|| panic!("missing side-parent rename hit: {results:?}"));
+    assert_eq!(rename["file_change"]["kind"], "heuristic_rename");
+    assert_eq!(rename["file_change"]["heuristic"], true);
+    assert!(rename["file_change"]["similarity_percent"].is_number());
+    assert_eq!(
+        rename["file_change"]["detection_settings"]["rename_threshold_percent"],
+        50
+    );
+    assert_eq!(rename["old_path"], "old-name.txt");
+    assert_eq!(rename["new_path"], "new-name.txt");
+    assert_eq!(
+        rename["parent_git_show_command"],
+        format!("git show '{side}:old-name.txt'")
+    );
+    assert_eq!(
+        rename["child_git_show_command"],
+        format!("git show '{merge}:new-name.txt'")
+    );
+    for (key, expected) in [
+        (
+            "parent_git_show_command",
+            format!("before rename marker\n{rename_context}\n"),
+        ),
+        (
+            "child_git_show_command",
+            format!("after rename marker\n{rename_context}\n"),
+        ),
+    ] {
+        let output = Command::new("sh")
+            .arg("-c")
+            .arg(rename[key].as_str().unwrap())
+            .current_dir(root)
+            .output()
+            .unwrap();
+        assert!(output.status.success());
+        assert_eq!(output.stdout, expected.as_bytes());
+    }
+
+    let (ok, output) = run(
+        root,
+        &[
+            "search",
+            "after copy marker",
+            "--diffs",
+            "--all-history",
+            "--json",
+        ],
+    );
+    assert!(ok, "copy diff search failed: {output}");
+    let results: Vec<serde_json::Value> = serde_json::from_str(&output).unwrap();
+    let copy = results
+        .iter()
+        .find(|result| {
+            result["kind"] == "diff"
+                && result["parent_commit_id"] == side
+                && result["child_commit_id"] == merge
+                && result["new_path"] == "copied.txt"
+        })
+        .unwrap_or_else(|| panic!("missing side-parent copy hit: {results:?}"));
+    assert_eq!(copy["file_change"]["kind"], "heuristic_copy");
+    assert_eq!(copy["file_change"]["heuristic"], true);
+    assert_eq!(copy["old_path"], "copy-source.txt");
+    assert_eq!(copy["new_path"], "copied.txt");
+    assert_eq!(copy["parent_commit_id"], side);
+    assert_eq!(copy["child_commit_id"], merge);
+    assert_eq!(
+        copy["parent_git_show_command"],
+        format!("git show '{side}:copy-source.txt'")
+    );
+    assert_eq!(
+        copy["child_git_show_command"],
+        format!("git show '{merge}:copied.txt'")
+    );
+    for (key, expected) in [
+        (
+            "parent_git_show_command",
+            format!("before copy marker\n{copy_context}\n"),
+        ),
+        (
+            "child_git_show_command",
+            format!("after copy marker\n{copy_context}\n"),
+        ),
+    ] {
+        let output = Command::new("sh")
+            .arg("-c")
+            .arg(copy[key].as_str().unwrap())
+            .current_dir(root)
+            .output()
+            .unwrap();
+        assert!(output.status.success());
+        assert_eq!(output.stdout, expected.as_bytes());
+    }
+    assert_ne!(side, main);
+    assert_ne!(side, base);
+}
+
+#[test]
+fn diff_search_shell_safely_dumps_files_with_unusual_path_bytes() {
+    use std::os::unix::ffi::OsStrExt;
+
+    let repo = repository();
+    let root = repo.path();
+    let path = b"evil$(touch pwned);'\xff\n";
+    let contents = "unusual path marker\n";
+    let quoted_path = std::ffi::OsStr::new("quote'path.txt");
+    let quoted_contents = "quoted path marker\n";
+    let removed_contents = "removed-only path marker\n";
+    fs::write(root.join(std::ffi::OsStr::from_bytes(path)), contents).unwrap();
+    fs::write(root.join(quoted_path), quoted_contents).unwrap();
+    fs::write(root.join("deleted-only.txt"), removed_contents).unwrap();
+    git(root, &["add", "-A"]);
+    git(root, &["commit", "-qm", "add unusual and removable paths"]);
+    let add_commit = git_text(root, &["rev-parse", "HEAD"]);
+    fs::remove_file(root.join("deleted-only.txt")).unwrap();
+    git(root, &["add", "-A"]);
+    git(root, &["commit", "-qm", "delete path"]);
+    let delete_commit = git_text(root, &["rev-parse", "HEAD"]);
+    assert!(run(root, &["init"]).0);
+
+    let (ok, output) = run(
+        root,
+        &[
+            "search",
+            "unusual path marker",
+            "--diffs",
+            "--all-history",
+            "--json",
+        ],
+    );
+    assert!(ok, "diff search failed: {output}");
+    let results: Vec<serde_json::Value> = serde_json::from_str(&output).unwrap();
+    let hit = results
+        .iter()
+        .find(|result| result["kind"] == "diff")
+        .unwrap_or_else(|| panic!("missing unusual-path diff hit: {results:?}"));
+    assert_eq!(hit["old_path"], serde_json::Value::Null);
+    assert_eq!(
+        hit["new_path_bytes_hex"],
+        path.iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>()
+    );
+    assert_eq!(hit["parent_git_show_command"], serde_json::Value::Null);
+    assert_eq!(hit["file_change"]["kind"], "added");
+    let command = hit["child_git_show_command"].as_str().unwrap();
+    assert!(command.is_ascii() && !command.contains('\n'), "{command:?}");
+    assert!(command.contains("printf '%b'"), "{command}");
+    let output = Command::new("sh")
+        .arg("-c")
+        .arg(command)
+        .current_dir(root)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{command}: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(output.stdout, contents.as_bytes());
+    assert!(!root.join("pwned").exists());
+    assert!(
+        hit["child_git_show_command"]
+            .as_str()
+            .unwrap()
+            .contains(&add_commit)
+    );
+
+    let (ok, output) = run(
+        root,
+        &[
+            "search",
+            "quoted path marker",
+            "--diffs",
+            "--all-history",
+            "--json",
+        ],
+    );
+    assert!(ok, "quoted-path diff search failed: {output}");
+    let results: Vec<serde_json::Value> = serde_json::from_str(&output).unwrap();
+    let hit = results
+        .iter()
+        .find(|result| result["kind"] == "diff")
+        .unwrap();
+    let command = hit["child_git_show_command"].as_str().unwrap();
+    assert!(command.contains("'\\''"), "{command}");
+    let output = Command::new("sh")
+        .arg("-c")
+        .arg(command)
+        .current_dir(root)
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{command}");
+    assert_eq!(output.stdout, quoted_contents.as_bytes());
+
+    let (ok, output) = run(
+        root,
+        &[
+            "search",
+            "removed-only path marker",
+            "--diffs",
+            "--all-history",
+            "--json",
+        ],
+    );
+    assert!(ok, "deleted-file diff search failed: {output}");
+    let results: Vec<serde_json::Value> = serde_json::from_str(&output).unwrap();
+    let hit = results
+        .iter()
+        .find(|result| result["kind"] == "diff" && result["side"] == "removed")
+        .unwrap_or_else(|| panic!("missing deleted-file diff hit: {results:?}"));
+    assert_eq!(hit["parent_commit_id"], add_commit);
+    assert_eq!(hit["child_commit_id"], delete_commit);
+    assert_eq!(hit["new_path"], serde_json::Value::Null);
+    assert_eq!(hit["child_git_show_command"], serde_json::Value::Null);
+    let command = hit["parent_git_show_command"].as_str().unwrap();
+    let output = Command::new("sh")
+        .arg("-c")
+        .arg(command)
+        .current_dir(root)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{command}: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(output.stdout, removed_contents.as_bytes());
 }
 
 #[test]

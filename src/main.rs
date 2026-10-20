@@ -1,6 +1,7 @@
 use rusqlite::{Connection, ffi::sqlite3_auto_extension, params};
 use serde::Serialize;
 use std::{
+    collections::HashMap,
     env,
     error::Error,
     path::PathBuf,
@@ -158,8 +159,119 @@ fn diff_path_fields(path: Option<&[u8]>) -> (Option<String>, Option<String>) {
     )
 }
 
-fn diff_search_json(hit: &history::DiffSearchResult) -> serde_json::Value {
+fn posix_shell_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "'\\''"))
+}
+
+fn git_show_command(commit_id: &str, path: &[u8]) -> String {
+    let printable_path = std::str::from_utf8(path).ok().filter(|path| {
+        path.bytes()
+            .all(|byte| byte.is_ascii_graphic() || byte == b' ')
+    });
+    if let Some(path) = printable_path {
+        return format!(
+            "git show {}",
+            posix_shell_quote(&format!("{commit_id}:{path}"))
+        );
+    }
+
+    // Encode unusual path bytes as POSIX printf octal escapes. A sentinel keeps
+    // command substitution from stripping trailing newlines in the decoded path.
+    let path_bytes = path
+        .iter()
+        .map(|byte| format!("\\0{byte:03o}"))
+        .collect::<String>();
+    format!(
+        "_repodb_path=$(printf '%b' '{path_bytes}'; printf .); _repodb_path=${{_repodb_path%.}}; git show {}\"$_repodb_path\"",
+        posix_shell_quote(&format!("{commit_id}:"))
+    )
+}
+
+fn diff_change_kind_label(kind: history::DiffChangeKind) -> &'static str {
+    match kind {
+        history::DiffChangeKind::Added => "added",
+        history::DiffChangeKind::Removed => "removed",
+        history::DiffChangeKind::Modified => "modified",
+        history::DiffChangeKind::HeuristicRename => "heuristic_rename",
+        history::DiffChangeKind::HeuristicCopy => "heuristic_copy",
+        history::DiffChangeKind::TypeChanged => "type_changed",
+    }
+}
+
+#[derive(Default)]
+struct DiffMetadataCache {
+    schema_version: Option<i64>,
+    by_parent_child: HashMap<(String, String), history::DiffMetadata>,
+}
+
+fn diff_file_change_json(
+    c: &Connection,
+    reference: &history::DiffReference,
+    cache: &mut DiffMetadataCache,
+) -> Result<serde_json::Value> {
+    let schema_version = if let Some(version) = cache.schema_version {
+        version
+    } else {
+        let version: i64 = c.query_row("PRAGMA user_version", [], |row| row.get(0))?;
+        cache.schema_version = Some(version);
+        version
+    };
+    if schema_version < 5 {
+        return Ok(serde_json::json!({"available": false, "refresh_required": true}));
+    }
+    let key = (
+        reference.parent_commit_id.clone(),
+        reference.child_commit_id.clone(),
+    );
+    if !cache.by_parent_child.contains_key(&key) {
+        let metadata = history::diff_metadata(c, Some(&key.0), Some(&key.1))?;
+        cache.by_parent_child.insert(key.clone(), metadata);
+    }
+    let metadata = cache.by_parent_child.get(&key).unwrap();
+    let change = metadata.changes.iter().find(|change| {
+        change.old_path == reference.old_path && change.new_path == reference.new_path
+    });
+    let (kind, heuristic, similarity_percent) = change.map_or((None, false, None), |change| {
+        let heuristic = matches!(
+            change.kind,
+            history::DiffChangeKind::HeuristicRename | history::DiffChangeKind::HeuristicCopy
+        );
+        (
+            Some(diff_change_kind_label(change.kind)),
+            heuristic,
+            change.similarity_percent,
+        )
+    });
+    Ok(serde_json::json!({
+        "available": change.is_some(),
+        "kind": kind,
+        "heuristic": heuristic,
+        "similarity_percent": similarity_percent,
+        "detection_settings": {
+            "rename_threshold_percent": metadata.settings.rename_threshold_percent,
+            "copy_threshold_percent": metadata.settings.copy_threshold_percent,
+            "find_copies_harder": metadata.settings.find_copies_harder,
+            "git_version": metadata.settings.git_version,
+            "diff_algorithm": metadata.settings.diff_algorithm,
+        }
+    }))
+}
+
+fn diff_search_json(
+    c: &Connection,
+    hit: &history::DiffSearchResult,
+    cache: &mut DiffMetadataCache,
+) -> Result<serde_json::Value> {
     let reference = &hit.reference;
+    let parent_git_show_command = reference
+        .old_path
+        .as_deref()
+        .map(|path| git_show_command(&reference.parent_commit_id, path));
+    let child_git_show_command = reference
+        .new_path
+        .as_deref()
+        .map(|path| git_show_command(&reference.child_commit_id, path));
+    let file_change = diff_file_change_json(c, reference, cache)?;
     let (old_path, old_path_bytes_hex) = diff_path_fields(reference.old_path.as_deref());
     let (new_path, new_path_bytes_hex) = diff_path_fields(reference.new_path.as_deref());
     let side = match reference.side {
@@ -183,6 +295,9 @@ fn diff_search_json(hit: &history::DiffSearchResult) -> serde_json::Value {
         "matching_line_start": reference.line_start,
         "matching_line_end": reference.line_end,
         "blob_id": reference.blob_id,
+        "parent_git_show_command": parent_git_show_command,
+        "child_git_show_command": child_git_show_command,
+        "file_change": file_change,
     });
     if let Some(hex) = old_path_bytes_hex {
         value["old_path_bytes_hex"] = serde_json::Value::String(hex);
@@ -190,7 +305,7 @@ fn diff_search_json(hit: &history::DiffSearchResult) -> serde_json::Value {
     if let Some(hex) = new_path_bytes_hex {
         value["new_path_bytes_hex"] = serde_json::Value::String(hex);
     }
-    value
+    Ok(value)
 }
 
 fn diff_path_display(path: &[u8]) -> String {
@@ -1093,12 +1208,15 @@ fn execute() -> Result<()> {
                     _ => Vec::new(),
                 };
             }
+            let mut diff_metadata_cache = DiffMetadataCache::default();
             if json {
                 let mut values = result
                     .iter()
                     .map(serde_json::to_value)
                     .collect::<std::result::Result<Vec<_>, _>>()?;
-                values.extend(diff_results.iter().map(diff_search_json));
+                for hit in &diff_results {
+                    values.push(diff_search_json(&c, hit, &mut diff_metadata_cache)?);
+                }
                 for (value, result) in values.iter_mut().zip(&result) {
                     if result.path == "[commit message]" {
                         value["kind"] = serde_json::Value::String("commit_message".to_owned());
@@ -1182,8 +1300,39 @@ fn execute() -> Result<()> {
                         .distance
                         .map(|distance| format!(" [embedding distance {distance}]"))
                         .unwrap_or_default();
+                    let file_change =
+                        diff_file_change_json(&c, reference, &mut diff_metadata_cache)?;
+                    let change_kind = file_change["kind"].as_str().unwrap_or("unavailable");
+                    let heuristic = file_change["heuristic"].as_bool().unwrap_or(false);
+                    let similarity = file_change["similarity_percent"]
+                        .as_u64()
+                        .map(|score| format!("{score}%"))
+                        .unwrap_or_else(|| "n/a".to_owned());
+                    let settings = &file_change["detection_settings"];
+                    let detection = if file_change["refresh_required"] == true {
+                        "refresh required".to_owned()
+                    } else {
+                        format!(
+                            "rename={}%,copy={}%,copies-harder={},algorithm={},git={}",
+                            settings["rename_threshold_percent"],
+                            settings["copy_threshold_percent"],
+                            settings["find_copies_harder"],
+                            settings["diff_algorithm"],
+                            settings["git_version"],
+                        )
+                    };
+                    let parent_command = reference
+                        .old_path
+                        .as_deref()
+                        .map(|path| git_show_command(&reference.parent_commit_id, path))
+                        .unwrap_or_else(|| "<absent>".to_owned());
+                    let child_command = reference
+                        .new_path
+                        .as_deref()
+                        .map(|path| git_show_command(&reference.child_commit_id, path))
+                        .unwrap_or_else(|| "<absent>".to_owned());
                     println!(
-                        "diff {side} match={matching} [parent {} child {} hunk {}] old={old} new={new}{distance}: {}",
+                        "diff {side} match={matching} [parent {} child {} hunk {}] old={old} new={new} file_change={change_kind} heuristic={heuristic} similarity={similarity} detection={detection} parent-file-command={parent_command} child-file-command={child_command}{distance}: {}",
                         reference.parent_commit_id,
                         reference.child_commit_id,
                         reference.hunk_id,
