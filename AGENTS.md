@@ -1,6 +1,6 @@
 ## RepoDB search
 
-Use `repodb search 'phrase'` for exact search of the checked-out commit, or add `--semantic` / `--combined` for similarity search. Search does not update the index. Run `repodb refresh` on demand after ref changes or whenever indexed content may be stale.
+For repository code and documentation discovery, use RepoDB whenever it is available and applicable; treat this as repository policy, not an optional suggestion. Prefer `repodb search 'phrase'` for exact search of the checked-out commit, or add `--semantic` / `--combined` for similarity search. Search does not update the index. Run `repodb refresh` when indexed content may be stale. RepoDB covers indexed commits, so use filesystem tools for uncommitted changes and read known files directly. If RepoDB is unavailable, use the appropriate filesystem tools instead.
 
 An opt-in Git post-commit hook is provided at `hooks/post-commit`. To enable it for this repository, configure `git config core.hooksPath hooks` (or an absolute path to this repository's `hooks` directory). Do not enable it without user approval.
 
