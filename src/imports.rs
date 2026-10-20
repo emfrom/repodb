@@ -683,8 +683,8 @@ pub fn refresh_with_size_limit(
         let source_size = source_bytes.len() as u64;
         let source_version = checksum(&source_bytes);
         let existing_version: bool = c.query_row(
-            "SELECT EXISTS(SELECT 1 FROM temp.import_stage_versions WHERE version=?1 UNION SELECT 1 FROM imported_versions WHERE version=?1)",
-            [&source_version],
+            "SELECT EXISTS(SELECT 1 FROM temp.import_stage_versions WHERE source_id=?1 AND version=?2 UNION SELECT 1 FROM imported_versions WHERE source_id=?1 AND version=?2)",
+            params![id, source_version],
             |row| row.get(0),
         )?;
         let estimated_growth = existing_version.then_some(0);
@@ -1449,6 +1449,51 @@ mod tests {
         assert_eq!(
             std::fs::metadata(&database_path).unwrap().len(),
             database_size
+        );
+    }
+
+    #[test]
+    fn size_policy_does_not_claim_zero_growth_for_a_different_source() {
+        let root = tempfile::tempdir().unwrap();
+        let first = root.path().join("first.txt");
+        let second = root.path().join("second.txt");
+        let content = "identical imported text";
+        std::fs::write(&first, content).unwrap();
+        std::fs::write(&second, content).unwrap();
+        let (connection, _) = size_policy_database(root.path());
+        register(&connection, first.to_str().unwrap(), None).unwrap();
+        register(&connection, second.to_str().unwrap(), None).unwrap();
+        let first_id: String = connection
+            .query_row(
+                "SELECT id FROM imported_sources WHERE locator=?1",
+                [first.to_str().unwrap()],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let version = checksum(content.as_bytes());
+        connection
+            .execute(
+                "INSERT INTO imported_versions(source_id,version,content,fetched_order) VALUES(?1,?2,'',1)",
+                rusqlite::params![first_id, version],
+            )
+            .unwrap();
+
+        let assessments = refresh_with_size_limit(&connection, SizeLimit::Warn).unwrap();
+        assert_eq!(assessments.len(), 2);
+        assert_eq!(
+            assessments
+                .iter()
+                .filter(|assessment| assessment.estimated_net_db_growth_bytes == Some(0))
+                .count(),
+            1,
+            "only the source with the retained identical version can claim zero growth"
+        );
+        assert_eq!(
+            assessments
+                .iter()
+                .filter(|assessment| assessment.estimated_net_db_growth_bytes.is_none())
+                .count(),
+            1
         );
     }
 
