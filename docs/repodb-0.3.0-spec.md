@@ -1,6 +1,6 @@
-# RepoDB 0.3.0 — implementation spec (draft for review)
+# RepoDB 0.3.0 — implementation spec
 
-Status: **draft; not published as a GitHub issue**. Source: [agent-workflow research](research/agentic-workflow-weaknesses.md), [source-context research](issue-36-source-context-research.md), and open issues [#54](https://github.com/emfrom/repodb/issues/54) and [#55](https://github.com/emfrom/repodb/issues/55). Research claims about external sources and real-model performance have not been independently validated. These are requirements for 0.3.0, not descriptions of current behavior. The research proposals were reviewed individually; the decisions below supersede proposals where they differ.
+Status: **approved; tracked in [GitHub issue #57](https://github.com/emfrom/repodb/issues/57)**. Source: [agent-workflow research](research/agentic-workflow-weaknesses.md), [source-context research](issue-36-source-context-research.md), and open issues [#54](https://github.com/emfrom/repodb/issues/54) and [#55](https://github.com/emfrom/repodb/issues/55). Research claims about external sources and real-model performance have not been independently validated. These are requirements for 0.3.0, not descriptions of current behavior. The research proposals were reviewed individually; the decisions below supersede proposals where they differ.
 
 ## Outcome and boundaries
 
@@ -56,4 +56,4 @@ Build a pinned, multi-repository agent-task suite (source location, edit navigat
 
 ## Publication
 
-Review and reconcile this repository draft first. Once approved, create a GitHub 0.3.0 issue linking to this versioned spec and #54; state explicitly that #55 is deferred, not closed as delivered. No GitHub write occurs as part of this draft.
+[GitHub issue #57](https://github.com/emfrom/repodb/issues/57) is the implementation ticket and links to this versioned specification. Issue #54 is included; #55 is deferred, not closed as delivered. Subsequent decisions should update the repository specification and issue together.
