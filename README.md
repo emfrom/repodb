@@ -18,6 +18,7 @@ repodb refresh                       # full snapshot from current refs + HEAD
 repodb refresh --changed              # incrementally index current branch HEAD vs first parent
 repodb refresh --update COMMIT         # add one historical commit without pruning
 repodb search 'literal text'          # checked-out HEAD only (the default)
+repodb search 'literal text' --worktree --json  # best-effort exact live changes
 repodb search 'literal text' --history=all --json
 repodb search 'literal text' --history=20 --commit COMMIT_ID
 repodb search 'literal text' --history=src/
@@ -63,6 +64,17 @@ by explicitly configuring this repository's `core.hooksPath` to `hooks`.
 indexed commit changes that scope without rebuilding. A HEAD not in the snapshot
 returns no matches; run `refresh` to index it. Search never refreshes, prunes, or
 migrates the index, including after refs are deleted.
+
+`--worktree` opts into best-effort exact search of changed tracked files and
+Git-visible untracked supported text relative to the active indexed HEAD. It
+requires the active HEAD (no alternate `--commit`/history selector), and does
+not refresh, persist live text, or invoke embeddings. Ignored, binary,
+unsupported, unreadable, and oversized files are excluded with coverage metadata.
+Staged and live matches report distinct provenance; deleted HEAD content matches
+are removed. Concurrent edits may produce a non-atomic observation, which is
+labeled in the output. With `--json`, the opt-in output is an object containing
+`results` and a `worktree` observation/coverage summary; normal JSON search keeps
+its existing array shape. `--current-worktree` remains HEAD-only.
 
 Use one coarse history selector:
 

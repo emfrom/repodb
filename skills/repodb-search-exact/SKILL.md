@@ -12,7 +12,7 @@ Use exact search for known literal identifiers, symbols, and phrases. Run `repod
 - `all-docs` includes recognized documents from any origin, including imported documentation. Document recognition uses known path/format metadata; unknown formats are guaranteed only in `all`.
 - `all` includes every result, including imported repositories and documentation, and is the default.
 
-Scopes do not include unindexed or uncommitted filesystem content.
+By default, scopes search indexed content only. For explicit live exact search, run `repodb search --worktree 'QUERY'`. This inspects staged/live changes and Git-visible untracked supported text relative to the active indexed HEAD, labels layer provenance, and reports coverage. Ignored, unsupported, and binary files are excluded. It is best-effort, does not refresh or persist live text, and errors when HEAD is stale/unindexed or an alternate history selector is used. `--current-worktree` remains HEAD-only.
 
 Preserve repository, commit/version, path, and line/page references actually returned; never invent provenance. If an indexed Git blob is missing, exact search fails with an error that includes the available blob ID; it does not return a partial match or a path/line reference for that missing content. Report the missing-object error and blob ID, without fetching or reconstructing the content. For weak or empty results, report that and suggest checking the query and scope, rephrasing, or trying semantic/combined search. Search does not refresh the index; suggest `repodb refresh` when relevant, but do not refresh automatically.
 

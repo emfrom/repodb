@@ -1183,6 +1183,7 @@ pub fn search(
                         repo_id: None,
                         first_retrieved_at: first_retrieved_at.clone(),
                         last_retrieved_at: last_retrieved_at.clone(),
+                        worktree: None,
                     },
                     None,
                 ));
@@ -1202,6 +1203,7 @@ pub fn search(
                     repo_id: None,
                     first_retrieved_at,
                     last_retrieved_at,
+                    worktree: None,
                 },
                 None,
             ));
@@ -1288,6 +1290,7 @@ pub fn search(
                         repo_id: Some(repo_id),
                         first_retrieved_at: None,
                         last_retrieved_at: None,
+                        worktree: None,
                     },
                     deferred_payload,
                 ));
@@ -1307,6 +1310,7 @@ pub fn search(
                     repo_id: Some(repo_id),
                     first_retrieved_at: None,
                     last_retrieved_at: None,
+                    worktree: None,
                 },
                 None,
             ));

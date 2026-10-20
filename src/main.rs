@@ -3,7 +3,7 @@ use repodb::ranking::{
     rank_evidence,
 };
 use rusqlite::{Connection, ffi::sqlite3_auto_extension, params};
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use std::{
     collections::{HashMap, HashSet},
     env,
@@ -23,6 +23,28 @@ mod segmentation;
 mod semgrep_languages;
 
 type Result<T> = std::result::Result<T, Box<dyn Error>>;
+
+fn worktree_cli_error(
+    json: bool,
+    code: &str,
+    message: impl Into<String>,
+    refresh_guidance: bool,
+) -> Box<dyn Error> {
+    let message = message.into();
+    if json {
+        println!(
+            "{}",
+            serde_json::json!({
+                "error": {
+                    "code": code,
+                    "message": message,
+                    "refresh_guidance": refresh_guidance.then_some("repodb refresh"),
+                }
+            })
+        );
+    }
+    std::io::Error::other(message).into()
+}
 
 // NUL cannot occur in a Git path, so this internal tag cannot collide with UTF-8 paths.
 // Invalid paths are exposed as `bytes:<lowercase-hex>` plus `path_bytes_hex` in JSON.
@@ -45,7 +67,7 @@ fn readable_path(path: &str) -> String {
         .map_or_else(|| path.to_owned(), |hex| format!("bytes:{hex} (non-UTF-8)"))
 }
 
-#[derive(Clone, Deserialize, Serialize)]
+#[derive(Clone, Serialize)]
 struct SearchResult {
     path: String,
     line_start: usize,
@@ -63,6 +85,21 @@ struct SearchResult {
     repo_id: Option<String>,
     first_retrieved_at: Option<String>,
     last_retrieved_at: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    worktree: Option<WorktreeEvidence>,
+}
+
+#[derive(Clone, Serialize)]
+struct WorktreeEvidence {
+    origin: &'static str,
+    indexed_head: String,
+    provenance: Vec<repodb::worktree::Layer>,
+    head_line_ranges: Vec<repodb::worktree::LineRange>,
+    staged_line_ranges: Vec<repodb::worktree::LineRange>,
+    head_to_staged_changed: Option<bool>,
+    staged_to_live_changed: Option<bool>,
+    head_line_mapping_status: &'static str,
+    untracked: bool,
 }
 
 #[derive(Clone)]
@@ -106,7 +143,9 @@ fn search_evidence(
     } else {
         EvidenceComponent::Content
     };
-    let source_id = if let Some(repo_id) = &result.repo_id {
+    let source_id = if result.worktree.is_some() {
+        "live-worktree".to_owned()
+    } else if let Some(repo_id) = &result.repo_id {
         format!(
             "git-import:{repo_id}:{}",
             result.commit_id.as_deref().unwrap_or("")
@@ -209,9 +248,21 @@ impl SearchScope {
     }
 
     fn matches(self, result: &SearchResult) -> bool {
-        let repo_local = result.commit_id.is_some() && result.repo_id.is_none();
-        let is_source = source_code_path(&result.path);
-        let is_doc = documentation_path(&result.path, result.page.is_some());
+        let repo_local =
+            result.worktree.is_some() || (result.commit_id.is_some() && result.repo_id.is_none());
+        let path_bytes = result
+            .worktree
+            .is_some()
+            .then(|| evidence_path_bytes(&result.path));
+        let is_source = path_bytes.as_deref().map_or_else(
+            || source_code_path(&result.path),
+            |path| !matches!(segmentation::kind(path), "fallback" | "paragraph"),
+        );
+        let path_for_docs = path_bytes.as_deref().map_or_else(
+            || result.path.clone(),
+            |path| String::from_utf8_lossy(path).into_owned(),
+        );
+        let is_doc = documentation_path(&path_for_docs, result.page.is_some());
         match self {
             Self::Source => is_source && (repo_local || result.repo_id.is_some()),
             Self::RepoLocalSource => repo_local && is_source,
@@ -537,6 +588,84 @@ fn ranked_human_prefix(
     )
 }
 
+fn worktree_warnings(report: &repodb::worktree::WorktreeSearch) -> Vec<String> {
+    let mut warnings = Vec::new();
+    if report.head_changed_during_scan == Some(true) {
+        warnings.push("HEAD changed during inspection; the live view is best-effort".to_owned());
+    } else if report.head_changed_during_scan.is_none() {
+        warnings.push("could not re-observe HEAD after inspection".to_owned());
+    }
+    for (count, subject) in [
+        (
+            report.coverage.ignored_files_excluded,
+            "ignored files excluded",
+        ),
+        (
+            report.coverage.unsupported_files_excluded,
+            "unsupported files excluded",
+        ),
+        (
+            report.coverage.binary_files_excluded,
+            "binary files excluded",
+        ),
+        (report.coverage.unreadable_files, "unreadable files skipped"),
+        (
+            report.coverage.oversized_files_excluded,
+            "oversized files excluded",
+        ),
+        (
+            report.coverage.git_layer_failures,
+            "Git layer reads unavailable",
+        ),
+        (
+            report.coverage.match_limit_reached_files,
+            "files hit the per-file result limit",
+        ),
+    ] {
+        if count > 0 {
+            warnings.push(format!("{count} {subject}"));
+        }
+    }
+    if report.coverage.total_match_limit_reached {
+        warnings.push("overall live-result limit reached".to_owned());
+    }
+    warnings
+}
+
+fn worktree_report_json(report: &repodb::worktree::WorktreeSearch) -> serde_json::Value {
+    serde_json::json!({
+        "enabled": true,
+        "indexed_head": report.indexed_head,
+        "observed_head": report.observed_head,
+        "head_changed_during_scan": report.head_changed_during_scan,
+        "observed_at_unix_ms": report.observed_at_unix_ms,
+        "updated_path_count": report.updated_paths.len(),
+        "coverage": report.coverage,
+        "warnings": worktree_warnings(report),
+    })
+}
+
+fn print_worktree_summary(report: &repodb::worktree::WorktreeSearch) {
+    let observed = report.observed_head.as_deref().unwrap_or("unavailable");
+    println!(
+        "Worktree view: indexed HEAD {}; observed HEAD {}; best-effort observation at {} ms",
+        report.indexed_head, observed, report.observed_at_unix_ms
+    );
+    println!(
+        "Worktree coverage: {} changed tracked, {} untracked, {} ignored, {} unsupported, {} binary, {} removed, {} unreadable",
+        report.coverage.changed_tracked_files,
+        report.coverage.untracked_files,
+        report.coverage.ignored_files_excluded,
+        report.coverage.unsupported_files_excluded,
+        report.coverage.binary_files_excluded,
+        report.coverage.removed_files,
+        report.coverage.unreadable_files,
+    );
+    for warning in worktree_warnings(report) {
+        println!("Worktree warning: {warning}");
+    }
+}
+
 fn print_ranked_human(
     ranked: &[RankedEvidence],
     displays: &HashMap<String, EvidenceDisplay>,
@@ -550,7 +679,18 @@ fn print_ranked_human(
             match displays.get(&candidate.reference_id) {
                 Some(EvidenceDisplay::Search(x)) => {
                     let mut reference = String::new();
-                    if let Some(commit) = x.commit_id.as_deref() {
+                    if let Some(worktree) = x.worktree.as_ref() {
+                        let layers = worktree
+                            .provenance
+                            .iter()
+                            .map(|layer| format!("{layer:?}").to_lowercase())
+                            .collect::<Vec<_>>()
+                            .join(",");
+                        reference.push_str(&format!(
+                            " [live worktree indexed HEAD {} provenance={layers}]",
+                            worktree.indexed_head
+                        ));
+                    } else if let Some(commit) = x.commit_id.as_deref() {
                         reference.push_str(&format!(" [commit {commit}]"));
                         if let Some(links) =
                             history_path_links.get(&(commit.to_owned(), x.path.clone()))
@@ -1178,6 +1318,7 @@ fn exact(c: &Connection, q: &str, commits: &[String]) -> Result<Vec<SearchResult
                     repo_id: None,
                     first_retrieved_at: None,
                     last_retrieved_at: None,
+                    worktree: None,
                 })
             }
         }
@@ -1232,6 +1373,7 @@ fn semantic_with_vector(
             repo_id: None,
             first_retrieved_at: None,
             last_retrieved_at: None,
+            worktree: None,
         })
     })?;
     let mut results = rows.collect::<std::result::Result<Vec<_>, _>>()?;
@@ -1453,6 +1595,7 @@ fn execute() -> Result<()> {
             let mut selected_types = TypeSet::All;
             let mut type_set_selected = false;
             let mut diff_flag = false;
+            let mut worktree_flag = false;
             let (mut json, mut mode, mut limit) = (false, "exact", 20usize);
             while let Some(x) = a.next() {
                 match x.as_str() {
@@ -1473,6 +1616,7 @@ fn execute() -> Result<()> {
                     }
                     "--all-history" => scope.all_history = true,
                     "--current-worktree" => scope.current_worktree = true,
+                    "--worktree" => worktree_flag = true,
                     "--commit" => {
                         if scope.commit.is_some() {
                             return Err("--commit may only be specified once".into());
@@ -1534,6 +1678,43 @@ fn execute() -> Result<()> {
                 }
             }
             let q = query.ok_or("search requires query")?;
+            if worktree_flag {
+                if mode != "exact" {
+                    return Err(worktree_cli_error(
+                        json,
+                        "unsupported_mode",
+                        "--worktree currently supports exact search only",
+                        false,
+                    ));
+                }
+                if !selected_types
+                    .components()
+                    .contains(&EvidenceComponent::Content)
+                {
+                    return Err(worktree_cli_error(
+                        json,
+                        "content_type_required",
+                        "--worktree requires a type set that includes content",
+                        false,
+                    ));
+                }
+                if scope.all_history
+                    || scope.current_worktree
+                    || scope.commit.is_some()
+                    || !scope.include.is_empty()
+                    || !scope.exclude.is_empty()
+                    || history_selector
+                        .as_ref()
+                        .is_some_and(|selector| *selector != history::HistorySelector::Head)
+                {
+                    return Err(worktree_cli_error(
+                        json,
+                        "alternate_head",
+                        "--worktree requires the active HEAD; alternate history selectors are not supported",
+                        false,
+                    ));
+                }
+            }
             if mode == "semantic" && limit == 0 {
                 if json {
                     println!("[]");
@@ -1570,7 +1751,19 @@ fn execute() -> Result<()> {
                         include_commits: scope.include.clone(),
                         exclude_commits: scope.exclude.clone(),
                     },
-                )?;
+                )
+                .map_err(|error| {
+                    if worktree_flag {
+                        worktree_cli_error(
+                            json,
+                            "stale_or_unindexed_head",
+                            format!("--worktree requires the active indexed HEAD: {error}"),
+                            true,
+                        )
+                    } else {
+                        std::io::Error::other(error.to_string()).into()
+                    }
+                })?;
                 let mut commits = Vec::new();
                 let mut seen_commits = HashSet::new();
                 let mut path_filter = path_history.then(HashSet::new);
@@ -1591,7 +1784,41 @@ fn execute() -> Result<()> {
                 }
                 (commits, path_filter, path_links)
             } else {
-                (scope.resolve(&c)?, None, HashMap::new())
+                let commits = scope.resolve(&c).map_err(|error| {
+                    if worktree_flag {
+                        worktree_cli_error(
+                            json,
+                            "stale_or_unindexed_head",
+                            format!("--worktree requires the active indexed HEAD: {error}"),
+                            true,
+                        )
+                    } else {
+                        std::io::Error::other(error.to_string()).into()
+                    }
+                })?;
+                (commits, None, HashMap::new())
+            };
+            let worktree_report = if worktree_flag {
+                Some(
+                    repodb::worktree::search_exact(
+                        &env::current_dir()?,
+                        commits.first().map(String::as_str),
+                        &q,
+                    )
+                    .map_err(|error| {
+                        let (code, refresh) = match error {
+                            repodb::worktree::WorktreeError::MissingHead => ("missing_head", false),
+                            repodb::worktree::WorktreeError::StaleHead { .. }
+                            | repodb::worktree::WorktreeError::UnindexedHead { .. } => {
+                                ("stale_or_unindexed_head", true)
+                            }
+                            _ => ("worktree_inspection_failed", false),
+                        };
+                        worktree_cli_error(json, code, error.to_string(), refresh)
+                    })?,
+                )
+            } else {
+                None
             };
             let matches_history_path = |candidate: &SearchResult| {
                 let Some(paths) = &history_path_filter else {
@@ -1649,6 +1876,50 @@ fn execute() -> Result<()> {
                 result.extend(imports::search(&c, &q, mode, limit, |result| {
                     result_scope.matches(result)
                 })?);
+            }
+            result.retain(|candidate| include_result(candidate));
+            if let Some(report) = worktree_report.as_ref() {
+                let updated_paths = report.updated_paths.iter().cloned().collect::<HashSet<_>>();
+                result.retain(|candidate| {
+                    let is_indexed_local_content = candidate.repo_id.is_none()
+                        && candidate.commit_id.as_deref() == Some(&report.indexed_head)
+                        && candidate.path != "[commit message]";
+                    !is_indexed_local_content
+                        || !updated_paths.contains(&evidence_path_bytes(&candidate.path))
+                });
+                for found in &report.matches {
+                    let path = match String::from_utf8(found.path.clone()) {
+                        Ok(path) => path,
+                        Err(error) => encode_git_path(error.into_bytes()),
+                    };
+                    let candidate = SearchResult {
+                        path,
+                        line_start: found.line_start,
+                        line_end: found.line_end,
+                        text: found.text.clone(),
+                        commit_id: None,
+                        distance: None,
+                        blob_id: None,
+                        page: None,
+                        repo_id: None,
+                        first_retrieved_at: None,
+                        last_retrieved_at: None,
+                        worktree: Some(WorktreeEvidence {
+                            origin: "live_worktree",
+                            indexed_head: report.indexed_head.clone(),
+                            provenance: found.provenance.clone(),
+                            head_line_ranges: found.head_line_ranges.clone(),
+                            staged_line_ranges: found.staged_line_ranges.clone(),
+                            head_to_staged_changed: found.head_to_staged_changed,
+                            staged_to_live_changed: found.staged_to_live_changed,
+                            head_line_mapping_status: "same_path_query_occurrences_unmapped",
+                            untracked: found.untracked,
+                        }),
+                    };
+                    if include_result(&candidate) {
+                        result.push(candidate);
+                    }
+                }
             }
             result.retain(|candidate| include_result(candidate));
             let has_commit_message_index: bool = c.query_row(
@@ -1874,7 +2145,15 @@ fn execute() -> Result<()> {
                         annotated_ranked_payload(candidate, group, group_id, &history_path_links)
                     }));
                 }
-                println!("{}", serde_json::to_string_pretty(&values)?);
+                let output = if let Some(report) = worktree_report.as_ref() {
+                    serde_json::json!({
+                        "results": values,
+                        "worktree": worktree_report_json(report),
+                    })
+                } else {
+                    serde_json::Value::Array(values)
+                };
+                println!("{}", serde_json::to_string_pretty(&output)?);
             } else {
                 print_ranked_human(
                     &ranked,
@@ -1883,6 +2162,9 @@ fn execute() -> Result<()> {
                     &history_path_links,
                     &mut diff_metadata_cache,
                 )?;
+                if let Some(report) = worktree_report.as_ref() {
+                    print_worktree_summary(report);
+                }
             }
         }
         _ => return Err(format!("unknown command: {cmd}").into()),

@@ -6949,3 +6949,159 @@ fn imported_git_units_reject_mixed_embedding_dimensions_atomically() {
 
 #[path = "semgrep_corpus/corpus_tests.rs"]
 mod semgrep_corpus;
+
+#[test]
+fn worktree_search_returns_live_provenance_without_refreshing_the_index() {
+    let repo = repository();
+    let root = repo.path();
+    assert!(run(root, &["init"]).0);
+    let indexed_head = git_text(root, &["rev-parse", "HEAD"]);
+
+    fs::write(root.join("notes.txt"), "staged worktree needle\n").unwrap();
+    git(root, &["add", "notes.txt"]);
+    fs::write(root.join("notes.txt"), "live worktree needle\n").unwrap();
+    let (ok, output) = run(
+        root,
+        &["search", "--json", "--worktree", "needle", "--type=content"],
+    );
+    assert!(ok, "{output}");
+    let report: serde_json::Value = serde_json::from_str(&output).unwrap();
+    assert_eq!(report["results"].as_array().unwrap().len(), 1);
+    assert_eq!(report["results"][0]["text"], "live worktree needle");
+    assert_eq!(
+        report["results"][0]["worktree"]["indexed_head"],
+        indexed_head
+    );
+    assert_eq!(
+        report["results"][0]["worktree"]["provenance"],
+        serde_json::json!(["staged", "live"])
+    );
+    assert_eq!(report["worktree"]["indexed_head"], indexed_head);
+    assert!(
+        report["worktree"]["coverage"]["untracked_files"]
+            .as_u64()
+            .is_some()
+    );
+
+    let (ok, output) = run(root, &["search", "--json", "needle", "--type=content"]);
+    assert!(ok, "{output}");
+    let results: serde_json::Value = serde_json::from_str(&output).unwrap();
+    assert!(results.as_array().unwrap().is_empty(), "{results}");
+    let (ok, status) = run(root, &["status", "--json"]);
+    assert!(ok, "{status}");
+    let status: serde_json::Value = serde_json::from_str(&status).unwrap();
+    assert_eq!(status["indexed_head"], indexed_head);
+    assert_eq!(status["live_head"], indexed_head);
+
+    let (ok, human) = run(root, &["search", "--worktree", "needle", "--type=content"]);
+    assert!(ok, "{human}");
+    assert!(human.contains("provenance=staged,live"), "{human}");
+    assert!(human.contains("Worktree view: indexed HEAD"), "{human}");
+}
+
+#[test]
+fn worktree_search_does_not_return_deleted_head_matches() {
+    let repo = repository();
+    let root = repo.path();
+    assert!(run(root, &["init"]).0);
+    fs::remove_file(root.join("notes.txt")).unwrap();
+
+    let (ok, output) = run(
+        root,
+        &["search", "--json", "--worktree", "TARGET", "--type=content"],
+    );
+    assert!(ok, "{output}");
+    let report: serde_json::Value = serde_json::from_str(&output).unwrap();
+    assert!(
+        report["results"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|result| { result["component"] != "content" || result["path"] != "notes.txt" }),
+        "deleted HEAD content must not survive: {report}"
+    );
+    assert!(
+        report["worktree"]["coverage"]["removed_files"]
+            .as_u64()
+            .unwrap()
+            >= 1
+    );
+}
+
+#[test]
+fn worktree_search_excludes_ignored_files_and_includes_git_visible_untracked_text() {
+    let repo = repository();
+    let root = repo.path();
+    assert!(run(root, &["init"]).0);
+    fs::write(root.join(".gitignore"), "ignored.rs\n").unwrap();
+    fs::write(root.join("new.rs"), "visible worktree marker\n").unwrap();
+    fs::write(root.join("ignored.rs"), "hidden worktree marker\n").unwrap();
+
+    let (ok, output) = run(
+        root,
+        &[
+            "search",
+            "--json",
+            "--worktree",
+            "worktree marker",
+            "--type=content",
+        ],
+    );
+    assert!(ok, "{output}");
+    let report: serde_json::Value = serde_json::from_str(&output).unwrap();
+    assert_eq!(report["results"].as_array().unwrap().len(), 1);
+    assert_eq!(report["results"][0]["path"], "new.rs");
+    assert!(
+        report["results"][0]["worktree"]["untracked"]
+            .as_bool()
+            .unwrap()
+    );
+    assert!(
+        report["worktree"]["coverage"]["ignored_files_excluded"]
+            .as_u64()
+            .unwrap()
+            >= 1
+    );
+}
+
+#[test]
+fn worktree_search_rejects_stale_and_alternate_start_heads_without_refreshing() {
+    let repo = repository();
+    let root = repo.path();
+    assert!(run(root, &["init"]).0);
+    let indexed_head = git_text(root, &["rev-parse", "HEAD"]);
+
+    fs::write(root.join("notes.txt"), "stale head marker\n").unwrap();
+    git(root, &["add", "notes.txt"]);
+    git(root, &["commit", "-qm", "new active head"]);
+    let (ok, output) = run(
+        root,
+        &["search", "--json", "--worktree", "marker", "--type=content"],
+    );
+    assert!(!ok, "stale indexed HEAD must fail: {output}");
+    let error: serde_json::Value = serde_json::from_str(&output).unwrap();
+    assert_eq!(error["error"]["code"], "stale_or_unindexed_head");
+    assert_eq!(error["error"]["refresh_guidance"], "repodb refresh");
+    let (ok, status) = run(root, &["status", "--json"]);
+    assert!(ok, "{status}");
+    let status: serde_json::Value = serde_json::from_str(&status).unwrap();
+    assert_eq!(status["indexed_head"], indexed_head);
+    assert_ne!(status["live_head"], indexed_head);
+
+    assert!(run(root, &["refresh"]).0);
+    let (ok, output) = run(
+        root,
+        &[
+            "search",
+            "--json",
+            "--worktree",
+            "--commit",
+            &indexed_head,
+            "marker",
+            "--type=content",
+        ],
+    );
+    assert!(!ok, "alternate --commit must fail: {output}");
+    let error: serde_json::Value = serde_json::from_str(&output).unwrap();
+    assert_eq!(error["error"]["code"], "alternate_head");
+}

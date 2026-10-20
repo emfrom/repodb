@@ -3821,6 +3821,7 @@ pub fn search_commit_messages(
             repo_id: None,
             first_retrieved_at: None,
             last_retrieved_at: None,
+            worktree: None,
         });
         if mode != "combined" {
             if results.len() == limit {
@@ -3913,6 +3914,7 @@ pub fn search(
                     repo_id: None,
                     first_retrieved_at: None,
                     last_retrieved_at: None,
+                    worktree: None,
                 },
             ))
         },
