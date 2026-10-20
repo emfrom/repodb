@@ -95,7 +95,10 @@ fn distributed_skills_match_the_repo_local_pi_skills() {
     ] {
         let repo_local = skill(&format!(".agents/skills/{name}/SKILL.md"));
         let distributed = skill(&format!("skills/{name}/SKILL.md"));
-        assert_eq!(distributed, repo_local, "skill {name} must stay synchronized");
+        assert_eq!(
+            distributed, repo_local,
+            "skill {name} must stay synchronized"
+        );
     }
 }
 
