@@ -107,6 +107,7 @@ fn import_skill_documents_preview_scope_and_policy_contract() {
         "`first_retrieved_at` and `last_retrieved_at` in UTC RFC3339",
         "Search is offline and never fetches",
         "retention latest",
+        "new retained-row lifetime",
         "`all` keeps distinct hashes",
         "No imports have been performed until the preview has been shown",
         "every entry in `selected_supported_local_files`",

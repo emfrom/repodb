@@ -2702,7 +2702,7 @@ fn imported_url_and_semantic_search_use_loopback_and_fake_embeddings() {
     });
     let url = format!("http://{address}/source.txt");
     assert!(run(root, &["import", &url]).0);
-    assert!(run(root, &["refresh", "--imports"]).0);
+    assert!(run(root, &["refresh"]).0);
     let first_results = search_json(root, &["semantic", "--semantic"]);
     let first_observation = first_results
         .iter()
@@ -2760,6 +2760,72 @@ fn imported_url_and_semantic_search_use_loopback_and_fake_embeddings() {
     assert!(human.contains(imported["blob_id"].as_str().unwrap()));
     assert!(human.contains(imported["first_retrieved_at"].as_str().unwrap()));
     assert!(human.contains(imported["last_retrieved_at"].as_str().unwrap()));
+}
+
+#[test]
+fn url_parse_and_embedding_failures_preserve_the_published_snapshot_and_timestamps() {
+    use std::{
+        io::{Read, Write},
+        net::TcpListener,
+        os::unix::fs::PermissionsExt,
+    };
+
+    let repo = repository();
+    let root = repo.path();
+    assert!(run(root, &["init"]).0);
+
+    let embedder = root.join(".git/url-atomic-embedder");
+    fs::write(
+        &embedder,
+        "#!/bin/sh\ninput=$(cat)\n[ \"$input\" != 'failing imported marker' ] || exit 1\nprintf '[1,0]'\n",
+    )
+    .unwrap();
+    fs::set_permissions(&embedder, fs::Permissions::from_mode(0o755)).unwrap();
+    assert!(run(root, &["reembed", "--command", embedder.to_str().unwrap()]).0);
+
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = std::thread::spawn(move || {
+        let bodies: [&[u8]; 3] = [
+            b"good url atomic marker\n",
+            &[0xff, 0xfe],
+            b"failing imported marker\n",
+        ];
+        for body in bodies {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = [0; 1024];
+            let _ = stream.read(&mut request);
+            let headers = format!(
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                body.len()
+            );
+            stream.write_all(headers.as_bytes()).unwrap();
+            stream.write_all(body).unwrap();
+        }
+    });
+    let url = format!("http://{address}/atomic.txt");
+    assert!(run(root, &["import", &url]).0);
+    assert!(run(root, &["refresh", "--imports"]).0);
+    let published = search_json(root, &["good url atomic marker"])
+        .into_iter()
+        .find(|result| result["path"] == url)
+        .unwrap();
+
+    assert!(!run(root, &["refresh", "--imports"]).0);
+    let after_parse_failure = search_json(root, &["good url atomic marker"])
+        .into_iter()
+        .find(|result| result["path"] == url)
+        .unwrap();
+    assert_eq!(after_parse_failure, published);
+
+    assert!(!run(root, &["refresh", "--imports"]).0);
+    let after_embedding_failure = search_json(root, &["good url atomic marker"])
+        .into_iter()
+        .find(|result| result["path"] == url)
+        .unwrap();
+    assert_eq!(after_embedding_failure, published);
+    assert!(search_json(root, &["failing imported marker"]).is_empty());
+    server.join().unwrap();
 }
 
 #[test]
