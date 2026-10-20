@@ -76,9 +76,9 @@ fn enabler_checks_repo_availability_and_defers_helper_loading() {
         "../repodb-search-exact/SKILL.md",
         "../repodb-search-semantic/SKILL.md",
         "pi install git:github.com/emfrom/repodb",
-        "Only the enabler is registered as a Pi skill",
-        "usable through the enabler",
-        "read the corresponding sibling `SKILL.md`",
+        "make these helper skills discoverable by name and load them only when needed",
+        "only the enabler is registered as a Pi skill",
+        "Read helper skills only when they apply",
     ] {
         assert!(
             enabler.contains(required),
@@ -171,10 +171,13 @@ fn search_skills_document_modes_provenance_and_limitations() {
         "conceptual questions about code behavior and documentation",
         "standards, README content, and `AGENTS.md`",
         "repodb search --semantic 'QUERY'",
-        "all indexed sources by default",
+        "all indexed content by default",
+        "repository source, imported repositories, and imported documentation",
         "semantic search is unavailable",
         "do not silently fall back to exact search",
         "weak or empty results",
+        "rephrasing the query",
+        "importing/indexing a relevant source",
         "provenance actually returned",
         "without fetching or reconstructing it",
     ] {

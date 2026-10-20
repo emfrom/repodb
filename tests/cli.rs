@@ -2954,6 +2954,71 @@ fn semantic_search_uses_configured_fake_embeddings_and_precise_refs() {
 }
 
 #[test]
+fn semantic_search_covers_source_and_documentation_with_returned_provenance() {
+    let repo = repository();
+    let root = repo.path();
+    fs::write(
+        root.join("README.md"),
+        "Project guidance: use bounded retries for network requests.\n",
+    )
+    .unwrap();
+    git(root, &["add", "README.md"]);
+    git(root, &["commit", "-qm", "add project guidance"]);
+    assert!(run(root, &["init"]).0);
+    let (ok, output) = run(root, &["reembed"]);
+    assert!(ok, "{output}");
+
+    let results = search_json(
+        root,
+        &["How should requests handle network failures?", "--semantic"],
+    );
+    let source = results
+        .iter()
+        .find(|result| result["path"] == "src/main.rs");
+    let documentation = results.iter().find(|result| result["path"] == "README.md");
+    for result in [source, documentation].into_iter().flatten() {
+        assert!(result["commit_id"].as_str().is_some(), "{result:?}");
+        assert!(result["line_start"].as_u64().is_some(), "{result:?}");
+    }
+    assert!(
+        source.is_some(),
+        "semantic search omitted indexed source: {results:?}"
+    );
+    assert!(
+        documentation.is_some(),
+        "semantic search omitted indexed documentation: {results:?}"
+    );
+
+    let empty = search_json(root, &["anything", "--semantic", "--semantic-limit", "0"]);
+    assert!(
+        empty.is_empty(),
+        "expected empty semantic result set: {empty:?}"
+    );
+}
+
+#[test]
+fn semantic_search_reports_unavailable_embedding_capability_without_exact_fallback() {
+    let repo = repository();
+    let root = repo.path();
+    assert!(run(root, &["init"]).0);
+    let database = root.join(".git/repodb.sqlite");
+    let connection = rusqlite::Connection::open(database).unwrap();
+    connection
+        .execute("DELETE FROM embedding_config WHERE key='command'", [])
+        .unwrap();
+
+    let (ok, output) = run(root, &["search", "TARGET", "--semantic"]);
+    assert!(
+        !ok,
+        "semantic search must not return exact matches: {output}"
+    );
+    assert!(
+        output.is_empty(),
+        "failed semantic search returned matches: {output}"
+    );
+}
+
+#[test]
 fn embedding_model_selects_vectors_for_indexing_and_querying() {
     let repo = repository();
     let root = repo.path();
