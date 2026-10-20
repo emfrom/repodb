@@ -87,6 +87,26 @@ struct SearchResult {
     last_retrieved_at: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     worktree: Option<WorktreeEvidence>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    semantic_worktree: Option<SemanticWorktreeEvidence>,
+}
+
+#[derive(Clone, Serialize)]
+struct SemanticWorktreeEvidence {
+    origin: &'static str,
+    score_provenance: &'static str,
+    indexed_head: String,
+    head_line_start: usize,
+    head_line_end: usize,
+    head_text: String,
+    staged_line_start: Option<usize>,
+    staged_line_end: Option<usize>,
+    live_line_start: Option<usize>,
+    live_line_end: Option<usize>,
+    mapping_status: repodb::worktree::MappingStatus,
+    changed_live_text: Option<bool>,
+    #[serde(skip)]
+    indexed_exact_match: bool,
 }
 
 #[derive(Clone, Serialize)]
@@ -145,6 +165,8 @@ fn search_evidence(
     };
     let source_id = if result.worktree.is_some() {
         "live-worktree".to_owned()
+    } else if result.semantic_worktree.is_some() {
+        "live-semantic-worktree".to_owned()
     } else if let Some(repo_id) = &result.repo_id {
         format!(
             "git-import:{repo_id}:{}",
@@ -175,7 +197,12 @@ fn search_evidence(
             &result.text,
         ))?
     );
-    let exact = mode == "exact" || result.text.to_lowercase().contains(&query.to_lowercase());
+    let exact = mode == "exact"
+        || result
+            .semantic_worktree
+            .as_ref()
+            .map(|worktree| worktree.indexed_exact_match)
+            .unwrap_or_else(|| result.text.to_lowercase().contains(&query.to_lowercase()));
     Ok(EvidenceCandidate {
         component,
         source_id,
@@ -248,11 +275,10 @@ impl SearchScope {
     }
 
     fn matches(self, result: &SearchResult) -> bool {
-        let repo_local =
-            result.worktree.is_some() || (result.commit_id.is_some() && result.repo_id.is_none());
-        let path_bytes = result
-            .worktree
-            .is_some()
+        let repo_local = result.worktree.is_some()
+            || result.semantic_worktree.is_some()
+            || (result.commit_id.is_some() && result.repo_id.is_none());
+        let path_bytes = (result.worktree.is_some() || result.semantic_worktree.is_some())
             .then(|| evidence_path_bytes(&result.path));
         let is_source = path_bytes.as_deref().map_or_else(
             || source_code_path(&result.path),
@@ -645,6 +671,108 @@ fn worktree_report_json(report: &repodb::worktree::WorktreeSearch) -> serde_json
     })
 }
 
+fn semantic_worktree_warnings(report: &repodb::worktree::SemanticMappingReport) -> Vec<String> {
+    let mut warnings = Vec::new();
+    if report.head_changed_during_scan == Some(true) {
+        warnings.push(
+            "HEAD changed during semantic mapping; live locations are best-effort".to_owned(),
+        );
+    } else if report.head_changed_during_scan.is_none() {
+        warnings.push("could not re-observe HEAD after semantic mapping".to_owned());
+    }
+    if report.coverage.unembedded_addition_files > 0 {
+        warnings.push(format!(
+            "{} staged or untracked addition files have no semantic coverage",
+            report.coverage.unembedded_addition_files
+        ));
+    }
+    for (count, subject) in [
+        (
+            report.coverage.ignored_files_excluded,
+            "ignored files excluded",
+        ),
+        (
+            report.coverage.unsupported_files_excluded,
+            "unsupported files excluded",
+        ),
+        (
+            report.coverage.binary_files_excluded,
+            "binary files excluded",
+        ),
+        (report.coverage.unreadable_files, "unreadable files skipped"),
+        (
+            report.coverage.oversized_files_excluded,
+            "oversized files excluded",
+        ),
+        (
+            report.coverage.git_layer_failures,
+            "Git layer reads unavailable",
+        ),
+    ] {
+        if count > 0 {
+            warnings.push(format!("{count} {subject}"));
+        }
+    }
+    warnings
+}
+
+fn semantic_worktree_report_json(
+    report: &repodb::worktree::SemanticMappingReport,
+) -> serde_json::Value {
+    let count_status = |status| {
+        report
+            .mappings
+            .iter()
+            .filter(|mapping| mapping.mapping_status == status)
+            .count()
+    };
+    serde_json::json!({
+        "enabled": true,
+        "mode": "semantic",
+        "indexed_head": report.indexed_head,
+        "observed_head": report.observed_head,
+        "head_changed_during_scan": report.head_changed_during_scan,
+        "observed_at_unix_ms": report.observed_at_unix_ms,
+        "mapping_counts": {
+            "mapped": count_status(repodb::worktree::MappingStatus::Mapped),
+            "deleted": count_status(repodb::worktree::MappingStatus::Deleted),
+            "ambiguous": count_status(repodb::worktree::MappingStatus::Ambiguous),
+        },
+        "coverage": report.coverage,
+        "warnings": semantic_worktree_warnings(report),
+    })
+}
+
+fn print_semantic_worktree_summary(report: &repodb::worktree::SemanticMappingReport) {
+    let observed = report.observed_head.as_deref().unwrap_or("unavailable");
+    let mapped = report
+        .mappings
+        .iter()
+        .filter(|mapping| mapping.mapping_status == repodb::worktree::MappingStatus::Mapped)
+        .count();
+    let deleted = report
+        .mappings
+        .iter()
+        .filter(|mapping| mapping.mapping_status == repodb::worktree::MappingStatus::Deleted)
+        .count();
+    let ambiguous = report
+        .mappings
+        .iter()
+        .filter(|mapping| mapping.mapping_status == repodb::worktree::MappingStatus::Ambiguous)
+        .count();
+    println!(
+        "Semantic worktree view: indexed HEAD {}; observed HEAD {}; best-effort observation at {} ms",
+        report.indexed_head, observed, report.observed_at_unix_ms
+    );
+    println!(
+        "Semantic mappings: {mapped} mapped, {deleted} deleted, {ambiguous} ambiguous; {} staged or untracked addition files without semantic coverage",
+        report.coverage.unembedded_addition_files
+    );
+    for warning in semantic_worktree_warnings(report) {
+        println!("Semantic worktree warning: {warning}");
+    }
+}
+
 fn print_worktree_summary(report: &repodb::worktree::WorktreeSearch) {
     let observed = report.observed_head.as_deref().unwrap_or("unavailable");
     println!(
@@ -690,6 +818,19 @@ fn print_ranked_human(
                             " [live worktree indexed HEAD {} provenance={layers}]",
                             worktree.indexed_head
                         ));
+                    } else if let Some(worktree) = x.semantic_worktree.as_ref() {
+                        let mapping = format!("{:?}", worktree.mapping_status).to_lowercase();
+                        reference.push_str(&format!(
+                            " [semantic live mapping={mapping} indexed HEAD {} score_provenance={}] [matched HEAD lines {}-{}: {}]",
+                            worktree.indexed_head,
+                            worktree.score_provenance,
+                            worktree.head_line_start,
+                            worktree.head_line_end,
+                            worktree.head_text,
+                        ));
+                        if worktree.changed_live_text == Some(true) {
+                            reference.push_str(" [live text differs from indexed HEAD]");
+                        }
                     } else if let Some(commit) = x.commit_id.as_deref() {
                         reference.push_str(&format!(" [commit {commit}]"));
                         if let Some(links) =
@@ -737,7 +878,12 @@ fn print_ranked_human(
                     }
                     let path = readable_path(&x.path);
                     let distance = group.distance.map_or_else(String::new, |distance| {
-                        format!(" [cosine embedding distance {distance}]")
+                        let basis = x
+                            .semantic_worktree
+                            .as_ref()
+                            .map(|_| "; similarity to indexed HEAD text")
+                            .unwrap_or("");
+                        format!(" [cosine embedding distance {distance}{basis}]")
                     });
                     if let Some(page) = x.page {
                         println!(
@@ -1319,6 +1465,7 @@ fn exact(c: &Connection, q: &str, commits: &[String]) -> Result<Vec<SearchResult
                     first_retrieved_at: None,
                     last_retrieved_at: None,
                     worktree: None,
+                    semantic_worktree: None,
                 })
             }
         }
@@ -1374,6 +1521,7 @@ fn semantic_with_vector(
             first_retrieved_at: None,
             last_retrieved_at: None,
             worktree: None,
+            semantic_worktree: None,
         })
     })?;
     let mut results = rows.collect::<std::result::Result<Vec<_>, _>>()?;
@@ -1679,14 +1827,6 @@ fn execute() -> Result<()> {
             }
             let q = query.ok_or("search requires query")?;
             if worktree_flag {
-                if mode != "exact" {
-                    return Err(worktree_cli_error(
-                        json,
-                        "unsupported_mode",
-                        "--worktree currently supports exact search only",
-                        false,
-                    ));
-                }
                 if !selected_types
                     .components()
                     .contains(&EvidenceComponent::Content)
@@ -1798,7 +1938,7 @@ fn execute() -> Result<()> {
                 })?;
                 (commits, None, HashMap::new())
             };
-            let worktree_report = if worktree_flag {
+            let worktree_report = if worktree_flag && mode != "semantic" {
                 Some(
                     repodb::worktree::search_exact(
                         &env::current_dir()?,
@@ -1820,6 +1960,24 @@ fn execute() -> Result<()> {
             } else {
                 None
             };
+            if worktree_flag && mode == "semantic" {
+                repodb::worktree::validate_indexed_head(
+                    &env::current_dir()?,
+                    commits.first().map(String::as_str),
+                )
+                .map_err(|error| {
+                    let (code, refresh) = match &error {
+                        repodb::worktree::WorktreeError::MissingHead => ("missing_head", false),
+                        repodb::worktree::WorktreeError::StaleHead { .. }
+                        | repodb::worktree::WorktreeError::UnindexedHead { .. } => {
+                            ("stale_or_unindexed_head", true)
+                        }
+                        _ => ("worktree_inspection_failed", false),
+                    };
+                    worktree_cli_error(json, code, error.to_string(), refresh)
+                })?;
+            }
+            let mut semantic_worktree_report = None;
             let matches_history_path = |candidate: &SearchResult| {
                 let Some(paths) = &history_path_filter else {
                     return true;
@@ -1885,6 +2043,7 @@ fn execute() -> Result<()> {
                         && candidate.commit_id.as_deref() == Some(&report.indexed_head)
                         && candidate.path != "[commit message]";
                     !is_indexed_local_content
+                        || mode != "exact"
                         || !updated_paths.contains(&evidence_path_bytes(&candidate.path))
                 });
                 for found in &report.matches {
@@ -1915,6 +2074,7 @@ fn execute() -> Result<()> {
                             head_line_mapping_status: "same_path_query_occurrences_unmapped",
                             untracked: found.untracked,
                         }),
+                        semantic_worktree: None,
                     };
                     if include_result(&candidate) {
                         result.push(candidate);
@@ -1922,6 +2082,91 @@ fn execute() -> Result<()> {
                 }
             }
             result.retain(|candidate| include_result(candidate));
+            if worktree_flag && mode != "exact" {
+                let indexed_head = commits.first().map(String::as_str).ok_or_else(|| {
+                    worktree_cli_error(
+                        json,
+                        "stale_or_unindexed_head",
+                        "--worktree requires an indexed active HEAD",
+                        true,
+                    )
+                })?;
+                let result_indices = result
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(index, candidate)| {
+                        (candidate.worktree.is_none()
+                            && candidate.repo_id.is_none()
+                            && candidate.commit_id.as_deref() == Some(indexed_head)
+                            && candidate.path != "[commit message]")
+                            .then_some(index)
+                    })
+                    .collect::<Vec<_>>();
+                let ranges = result_indices
+                    .iter()
+                    .map(|index| {
+                        let candidate = &result[*index];
+                        repodb::worktree::IndexedRange {
+                            path: evidence_path_bytes(&candidate.path),
+                            line_start: candidate.line_start,
+                            line_end: candidate.line_end,
+                        }
+                    })
+                    .collect::<Vec<_>>();
+                let mapping_report = repodb::worktree::map_semantic_ranges(
+                    &env::current_dir()?,
+                    Some(indexed_head),
+                    &ranges,
+                )
+                .map_err(|error| {
+                    let (code, refresh) = match error {
+                        repodb::worktree::WorktreeError::MissingHead => ("missing_head", false),
+                        repodb::worktree::WorktreeError::StaleHead { .. }
+                        | repodb::worktree::WorktreeError::UnindexedHead { .. } => {
+                            ("stale_or_unindexed_head", true)
+                        }
+                        _ => ("worktree_inspection_failed", false),
+                    };
+                    worktree_cli_error(json, code, error.to_string(), refresh)
+                })?;
+                for (index, mapped) in result_indices.into_iter().zip(&mapping_report.mappings) {
+                    let candidate = &mut result[index];
+                    let indexed_exact_match =
+                        candidate.text.to_lowercase().contains(&q.to_lowercase());
+                    candidate.semantic_worktree = Some(SemanticWorktreeEvidence {
+                        origin: "indexed_head_semantic",
+                        score_provenance: "similarity_to_indexed_head_text",
+                        indexed_head: indexed_head.to_owned(),
+                        head_line_start: mapped.head_line_start,
+                        head_line_end: mapped.head_line_end,
+                        head_text: mapped.head_text.clone(),
+                        staged_line_start: mapped.staged_line_start,
+                        staged_line_end: mapped.staged_line_end,
+                        live_line_start: mapped.live_line_start,
+                        live_line_end: mapped.live_line_end,
+                        mapping_status: mapped.mapping_status,
+                        changed_live_text: mapped.changed_live_text,
+                        indexed_exact_match,
+                    });
+                    if mapped.mapping_status == repodb::worktree::MappingStatus::Mapped {
+                        candidate.line_start = mapped.live_line_start.ok_or_else(|| {
+                            "mapped semantic range omitted its live line start".to_owned()
+                        })?;
+                        candidate.line_end = mapped.live_line_end.ok_or_else(|| {
+                            "mapped semantic range omitted its live line end".to_owned()
+                        })?;
+                        candidate.text = mapped
+                            .live_text
+                            .clone()
+                            .ok_or_else(|| "mapped semantic range omitted live text".to_owned())?;
+                    } else {
+                        candidate.line_start = mapped.head_line_start;
+                        candidate.line_end = mapped.head_line_end;
+                        candidate.text = mapped.head_text.clone();
+                    }
+                }
+                semantic_worktree_report = Some(mapping_report);
+            }
             let has_commit_message_index: bool = c.query_row(
                 "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='commit_message_units')",
                 [],
@@ -2145,13 +2390,20 @@ fn execute() -> Result<()> {
                         annotated_ranked_payload(candidate, group, group_id, &history_path_links)
                     }));
                 }
-                let output = if let Some(report) = worktree_report.as_ref() {
-                    serde_json::json!({
-                        "results": values,
-                        "worktree": worktree_report_json(report),
-                    })
+                let worktree_summary = if let Some(report) = worktree_report.as_ref() {
+                    let mut summary = worktree_report_json(report);
+                    if let Some(semantic) = semantic_worktree_report.as_ref() {
+                        summary["semantic_mapping"] = semantic_worktree_report_json(semantic);
+                    }
+                    Some(summary)
                 } else {
-                    serde_json::Value::Array(values)
+                    semantic_worktree_report
+                        .as_ref()
+                        .map(semantic_worktree_report_json)
+                };
+                let output = match worktree_summary {
+                    Some(worktree) => serde_json::json!({"results": values, "worktree": worktree}),
+                    None => serde_json::Value::Array(values),
                 };
                 println!("{}", serde_json::to_string_pretty(&output)?);
             } else {
@@ -2164,6 +2416,9 @@ fn execute() -> Result<()> {
                 )?;
                 if let Some(report) = worktree_report.as_ref() {
                     print_worktree_summary(report);
+                }
+                if let Some(report) = semantic_worktree_report.as_ref() {
+                    print_semantic_worktree_summary(report);
                 }
             }
         }

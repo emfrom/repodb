@@ -19,6 +19,7 @@ repodb refresh --changed              # incrementally index current branch HEAD 
 repodb refresh --update COMMIT         # add one historical commit without pruning
 repodb search 'literal text'          # checked-out HEAD only (the default)
 repodb search 'literal text' --worktree --json  # best-effort exact live changes
+repodb search 'question' --semantic --worktree --json  # map indexed matches to live text
 repodb search 'literal text' --history=all --json
 repodb search 'literal text' --history=20 --commit COMMIT_ID
 repodb search 'literal text' --history=src/
@@ -65,16 +66,20 @@ indexed commit changes that scope without rebuilding. A HEAD not in the snapshot
 returns no matches; run `refresh` to index it. Search never refreshes, prunes, or
 migrates the index, including after refs are deleted.
 
-`--worktree` opts into best-effort exact search of changed tracked files and
-Git-visible untracked supported text relative to the active indexed HEAD. It
-requires the active HEAD (no alternate `--commit`/history selector), and does
-not refresh, persist live text, or invoke embeddings. Ignored, binary,
-unsupported, unreadable, and oversized files are excluded with coverage metadata.
-Staged and live matches report distinct provenance; deleted HEAD content matches
-are removed. Concurrent edits may produce a non-atomic observation, which is
-labeled in the output. With `--json`, the opt-in output is an object containing
-`results` and a `worktree` observation/coverage summary; normal JSON search keeps
-its existing array shape. `--current-worktree` remains HEAD-only.
+`--worktree` opts into best-effort inspection relative to the active indexed
+HEAD and rejects alternate or stale HEADs. In exact mode, changed tracked files
+and Git-visible untracked supported text are searched live; staged/live
+provenance is labeled, deleted HEAD content matches are removed, and no
+embeddings are generated. In semantic mode, existing indexed HEAD embeddings
+rank candidates; staged/live diffs map their references forward, and output
+labels the score as similarity to indexed HEAD text. Live text is shown only
+when mapping is unambiguous; deleted or ambiguous mappings retain the matched
+HEAD lines. Newly staged/untracked additions and excluded files are disclosed
+as coverage gaps. Neither mode refreshes or persists worktree text. Concurrent
+edits may produce a non-atomic observation, which is labeled in the output.
+With `--json`, opted-in output is an object containing `results` and a
+`worktree` observation/coverage summary; normal JSON search keeps its existing
+array shape. `--current-worktree` remains HEAD-only.
 
 Use one coarse history selector:
 

@@ -171,16 +171,8 @@ pub fn search_exact(
     if query.is_empty() {
         return Err(WorktreeError::EmptyQuery);
     }
-    let head = active_head(repository)?;
-    let Some(indexed_head) = indexed_head else {
-        return Err(WorktreeError::UnindexedHead { actual_head: head });
-    };
-    if indexed_head != head {
-        return Err(WorktreeError::StaleHead {
-            indexed_head: indexed_head.to_owned(),
-            actual_head: head,
-        });
-    }
+    let head = validate_indexed_head(repository, indexed_head)?;
+    let indexed_head = indexed_head.expect("validated indexed HEAD");
 
     let mut changed = paths_from_nul(&git(
         repository,
@@ -408,16 +400,8 @@ pub fn map_semantic_ranges(
     indexed_head: Option<&str>,
     ranges: &[IndexedRange],
 ) -> Result<SemanticMappingReport> {
-    let head = active_head(repository)?;
-    let Some(indexed_head) = indexed_head else {
-        return Err(WorktreeError::UnindexedHead { actual_head: head });
-    };
-    if indexed_head != head {
-        return Err(WorktreeError::StaleHead {
-            indexed_head: indexed_head.to_owned(),
-            actual_head: head,
-        });
-    }
+    let head = validate_indexed_head(repository, indexed_head)?;
+    let indexed_head = indexed_head.expect("validated indexed HEAD");
     let mut coverage = semantic_coverage(repository, &head)?;
     let mut mappings = Vec::with_capacity(ranges.len());
     for range in ranges {
@@ -1093,6 +1077,20 @@ fn capture(command: &mut Command, limit: usize) -> std::io::Result<CapturedOutpu
         stdout,
         oversized,
     })
+}
+
+pub fn validate_indexed_head(repository: &Path, indexed_head: Option<&str>) -> Result<String> {
+    let actual_head = active_head(repository)?;
+    let Some(indexed_head) = indexed_head else {
+        return Err(WorktreeError::UnindexedHead { actual_head });
+    };
+    if indexed_head != actual_head {
+        return Err(WorktreeError::StaleHead {
+            indexed_head: indexed_head.to_owned(),
+            actual_head,
+        });
+    }
+    Ok(actual_head)
 }
 
 fn active_head(repository: &Path) -> Result<String> {

@@ -1184,6 +1184,7 @@ pub fn search(
                         first_retrieved_at: first_retrieved_at.clone(),
                         last_retrieved_at: last_retrieved_at.clone(),
                         worktree: None,
+                        semantic_worktree: None,
                     },
                     None,
                 ));
@@ -1204,6 +1205,7 @@ pub fn search(
                     first_retrieved_at,
                     last_retrieved_at,
                     worktree: None,
+                    semantic_worktree: None,
                 },
                 None,
             ));
@@ -1291,6 +1293,7 @@ pub fn search(
                         first_retrieved_at: None,
                         last_retrieved_at: None,
                         worktree: None,
+                        semantic_worktree: None,
                     },
                     deferred_payload,
                 ));
@@ -1311,6 +1314,7 @@ pub fn search(
                     first_retrieved_at: None,
                     last_retrieved_at: None,
                     worktree: None,
+                    semantic_worktree: None,
                 },
                 None,
             ));

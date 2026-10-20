@@ -6950,6 +6950,218 @@ fn imported_git_units_reject_mixed_embedding_dimensions_atomically() {
 #[path = "semgrep_corpus/corpus_tests.rs"]
 mod semgrep_corpus;
 
+fn single_file_repository() -> tempfile::TempDir {
+    let repo = repository();
+    let root = repo.path();
+    fs::remove_file(root.join("src/main.rs")).unwrap();
+    fs::remove_dir(root.join("src")).unwrap();
+    fs::remove_file(root.join("ignored.bin")).unwrap();
+    fs::write(root.join("notes.txt"), "Original semantic passage\n").unwrap();
+    git(root, &["add", "-A"]);
+    git(root, &["commit", "-qm", "single semantic file"]);
+    repo
+}
+
+#[test]
+fn worktree_semantic_search_discloses_live_text_and_indexed_head_score() {
+    let repo = single_file_repository();
+    let root = repo.path();
+    assert!(run(root, &["init"]).0);
+    let indexed_head = git_text(root, &["rev-parse", "HEAD"]);
+    fs::write(
+        root.join("notes.txt"),
+        "// staged prefix\nOriginal semantic passage\n",
+    )
+    .unwrap();
+    git(root, &["add", "notes.txt"]);
+    fs::write(
+        root.join("notes.txt"),
+        "// staged prefix\nLive semantic passage\n",
+    )
+    .unwrap();
+    fs::write(
+        root.join("staged-new.txt"),
+        "staged addition without vectors\n",
+    )
+    .unwrap();
+    git(root, &["add", "staged-new.txt"]);
+    fs::write(
+        root.join("untracked-new.txt"),
+        "untracked addition without vectors\n",
+    )
+    .unwrap();
+
+    let (ok, output) = run(
+        root,
+        &[
+            "search",
+            "--json",
+            "--worktree",
+            "--semantic",
+            "--semantic-limit",
+            "1",
+            "--type=cmcommits",
+            "query",
+        ],
+    );
+    assert!(ok, "{output}");
+    let report: serde_json::Value = serde_json::from_str(&output).unwrap();
+    let result = &report["results"][0];
+    assert_eq!(result["text"], "Live semantic passage");
+    assert_eq!(result["line_start"], 2);
+    assert_eq!(result["commit_id"], indexed_head);
+    assert_eq!(
+        result["semantic_worktree"]["head_text"],
+        "Original semantic passage"
+    );
+    assert_eq!(result["semantic_worktree"]["head_line_start"], 1);
+    assert_eq!(result["semantic_worktree"]["staged_line_start"], 2);
+    assert_eq!(result["semantic_worktree"]["live_line_start"], 2);
+    assert_eq!(result["semantic_worktree"]["mapping_status"], "mapped");
+    assert_eq!(
+        result["semantic_worktree"]["score_provenance"],
+        "similarity_to_indexed_head_text"
+    );
+    assert_eq!(result["semantic_worktree"]["changed_live_text"], true);
+    assert!(
+        report["worktree"]["coverage"]["unembedded_addition_files"]
+            .as_u64()
+            .unwrap()
+            >= 2
+    );
+
+    let (ok, human) = run(
+        root,
+        &[
+            "search",
+            "--worktree",
+            "--semantic",
+            "--semantic-limit",
+            "1",
+            "--type=cmcommits",
+            "query",
+        ],
+    );
+    assert!(ok, "{human}");
+    assert!(human.contains("similarity_to_indexed_head_text"), "{human}");
+    assert!(human.contains("mapping=mapped"), "{human}");
+    assert!(human.contains("Original semantic passage"), "{human}");
+
+    let (ok, combined) = run(
+        root,
+        &[
+            "search",
+            "--json",
+            "--worktree",
+            "--combined",
+            "--semantic-limit",
+            "1",
+            "--type=cmcommits",
+            "Live semantic passage",
+        ],
+    );
+    assert!(ok, "{combined}");
+    let combined: serde_json::Value = serde_json::from_str(&combined).unwrap();
+    assert!(combined["worktree"]["semantic_mapping"].is_object());
+    assert!(
+        combined["results"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|result| { result["semantic_worktree"]["mapping_status"] == "mapped" })
+    );
+    assert!(
+        combined["results"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|result| { result["worktree"]["origin"] == "live_worktree" })
+    );
+}
+
+#[test]
+fn worktree_semantic_search_keeps_head_reference_for_deleted_or_ambiguous_ranges() {
+    let deleted_repo = single_file_repository();
+    let deleted_root = deleted_repo.path();
+    assert!(run(deleted_root, &["init"]).0);
+    fs::remove_file(deleted_root.join("notes.txt")).unwrap();
+    let (ok, output) = run(
+        deleted_root,
+        &[
+            "search",
+            "--json",
+            "--worktree",
+            "--semantic",
+            "--semantic-limit",
+            "1",
+            "--type=cmcommits",
+            "query",
+        ],
+    );
+    assert!(ok, "{output}");
+    let deleted: serde_json::Value = serde_json::from_str(&output).unwrap();
+    let deleted_result = &deleted["results"][0];
+    assert_eq!(
+        deleted_result["semantic_worktree"]["mapping_status"],
+        "deleted"
+    );
+    assert_eq!(
+        deleted_result["semantic_worktree"]["head_text"],
+        "Original semantic passage"
+    );
+    assert!(deleted_result["semantic_worktree"]["live_line_start"].is_null());
+
+    let ambiguous_repo = single_file_repository();
+    let ambiguous_root = ambiguous_repo.path();
+    assert!(run(ambiguous_root, &["init"]).0);
+    fs::write(
+        ambiguous_root.join("notes.txt"),
+        "First replacement line\nSecond replacement line\n",
+    )
+    .unwrap();
+    let (ok, output) = run(
+        ambiguous_root,
+        &[
+            "search",
+            "--json",
+            "--worktree",
+            "--semantic",
+            "--semantic-limit",
+            "1",
+            "--type=cmcommits",
+            "query",
+        ],
+    );
+    assert!(ok, "{output}");
+    let ambiguous: serde_json::Value = serde_json::from_str(&output).unwrap();
+    let ambiguous_result = &ambiguous["results"][0];
+    assert_eq!(
+        ambiguous_result["semantic_worktree"]["mapping_status"],
+        "ambiguous"
+    );
+    assert_eq!(ambiguous_result["text"], "Original semantic passage");
+    assert!(ambiguous_result["semantic_worktree"]["live_line_start"].is_null());
+}
+
+#[test]
+fn worktree_semantic_search_rejects_a_stale_active_head() {
+    let repo = single_file_repository();
+    let root = repo.path();
+    assert!(run(root, &["init"]).0);
+    fs::write(root.join("new.txt"), "new active commit\n").unwrap();
+    git(root, &["add", "new.txt"]);
+    git(root, &["commit", "-qm", "move active head"]);
+
+    let (ok, output) = run(
+        root,
+        &["search", "--json", "--worktree", "--semantic", "query"],
+    );
+    assert!(!ok, "stale semantic worktree search must fail: {output}");
+    let error: serde_json::Value = serde_json::from_str(&output).unwrap();
+    assert_eq!(error["error"]["code"], "stale_or_unindexed_head");
+    assert_eq!(error["error"]["refresh_guidance"], "repodb refresh");
+}
+
 #[test]
 fn worktree_search_returns_live_provenance_without_refreshing_the_index() {
     let repo = repository();
