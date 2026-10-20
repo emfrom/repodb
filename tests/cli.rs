@@ -3391,6 +3391,26 @@ fn changed_refresh_uses_the_first_parent_for_merge_commits() {
 }
 
 #[test]
+fn status_reports_missing_database_as_distinct_from_empty_coverage() {
+    let repo = tempfile::tempdir().unwrap();
+    git(repo.path(), &["init"]);
+    let (ok, output) = run(repo.path(), &["status", "--json"]);
+    assert!(
+        ok,
+        "status backend operation should report unavailable index as data: {output}"
+    );
+    let missing: serde_json::Value = serde_json::from_str(&output).unwrap();
+    assert_eq!(missing["database"]["state"], "missing");
+
+    assert!(run(repo.path(), &["init"]).0);
+    let (ok, output) = run(repo.path(), &["status", "--json"]);
+    assert!(ok, "{output}");
+    let empty: serde_json::Value = serde_json::from_str(&output).unwrap();
+    assert_eq!(empty["database"]["state"], "empty");
+    assert!(empty["capabilities"]["exact"]["ready"].as_bool().is_some());
+}
+
+#[test]
 fn init_refresh_search_and_json_are_repository_local_and_exact() {
     let repo = repository();
     let root = repo.path();

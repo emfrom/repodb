@@ -193,6 +193,104 @@ fn open_db(path: &std::path::Path) -> Result<Connection> {
     }
     Ok(c)
 }
+#[derive(Serialize)]
+struct CapabilityReadiness {
+    ready: bool,
+    reason: Option<String>,
+}
+
+fn capability(ready: bool, reason: Option<String>) -> CapabilityReadiness {
+    CapabilityReadiness { ready, reason }
+}
+
+fn status(db_path: &std::path::Path) -> Result<serde_json::Value> {
+    let database_exists = db_path.is_file();
+    let indexed_head = if database_exists {
+        let c = Connection::open(db_path)?;
+        let version: i64 = c.query_row("PRAGMA user_version", [], |r| r.get(0))?;
+        if !(0..=4).contains(&version) {
+            return Err(format!("unsupported database version {version}").into());
+        }
+        if version >= 2 {
+            c.query_row(
+                "SELECT commit_id FROM git_commits ORDER BY commit_id LIMIT 1",
+                [],
+                |r| r.get::<_, String>(0),
+            )
+            .ok()
+        } else {
+            c.query_row(
+                "SELECT commit_id FROM indexed_files ORDER BY commit_id LIMIT 1",
+                [],
+                |r| r.get::<_, String>(0),
+            )
+            .ok()
+        }
+    } else {
+        None
+    };
+    let live_head = Command::new("git")
+        .args(["rev-parse", "--verify", "--quiet", "HEAD"])
+        .output()
+        .ok()
+        .filter(|output| output.status.success())
+        .and_then(|output| String::from_utf8(output.stdout).ok())
+        .map(|head| head.trim().to_owned());
+    let dirty = !git(&["status", "--porcelain", "--untracked-files=normal"])?.is_empty();
+    let (unit_count, unsupported_count) = if database_exists {
+        let c = Connection::open(db_path)?;
+        let version: i64 = c.query_row("PRAGMA user_version", [], |r| r.get(0))?;
+        if version >= 2 {
+            let units = c
+                .query_row("SELECT count(*) FROM indexed_units", [], |r| {
+                    r.get::<_, i64>(0)
+                })
+                .unwrap_or(0);
+            let unsupported = c
+                .query_row(
+                    "SELECT count(*) FROM blob_contents WHERE status != 'text'",
+                    [],
+                    |r| r.get::<_, i64>(0),
+                )
+                .unwrap_or(0);
+            (units, unsupported)
+        } else {
+            (0, 0)
+        }
+    } else {
+        (0, 0)
+    };
+    let state = if !database_exists {
+        "missing"
+    } else if unit_count == 0 && unsupported_count > 0 {
+        "unsupported"
+    } else if unit_count == 0 {
+        "empty"
+    } else {
+        "usable"
+    };
+    let exact = database_exists && state == "usable";
+    let embedder = config::embedding_command()
+        .ok()
+        .and_then(|command| resolved_executable(&command));
+    let semantic_ready = exact && embedder.is_some();
+    let pdftotext = resolved_executable("pdftotext").is_some();
+    let readiness = serde_json::json!({
+        "exact": capability(exact, (!exact).then(|| if database_exists { "index has no searchable units".to_owned() } else { "database is missing".to_owned() })),
+        "semantic": capability(semantic_ready, (!semantic_ready).then(|| if !exact { "index has no searchable units".to_owned() } else { "embedding command is missing".to_owned() })),
+        "refresh": capability(embedder.is_some(), embedder.is_none().then(|| "embedding command is missing".to_owned())),
+        "document_import": capability(pdftotext, (!pdftotext).then(|| "pdftotext is missing".to_owned()))
+    });
+    Ok(serde_json::json!({
+        "database": { "path": db_path, "state": state },
+        "indexed_head": indexed_head,
+        "live_head": live_head,
+        "worktree": { "dirty": dirty, "staged_coverage": "not-indexed", "worktree_coverage": "not-indexed", "untracked_coverage": "not-indexed" },
+        "indexed_units": { "total": unit_count, "unsupported": unsupported_count },
+        "capabilities": readiness
+    }))
+}
+
 fn resolved_executable(command: &str) -> Option<PathBuf> {
     let path = PathBuf::from(command);
     if path.components().count() > 1 {
@@ -496,7 +594,7 @@ fn semantic(
 }
 fn execute() -> Result<()> {
     let mut a = env::args().skip(1);
-    let first = a.next().ok_or("usage: repodb [--database <path>] <init|refresh [--imports|--changed|--update COMMIT]|import|retention|reembed|search> (default database: <git-dir>/repodb.sqlite)")?;
+    let first = a.next().ok_or("usage: repodb [--database <path>] <init|refresh [--imports|--changed|--update COMMIT]|import|retention|reembed|search|status --json> (default database: <git-dir>/repodb.sqlite)")?;
     let (option, cmd) = if first == "--database" {
         let path = a.next().ok_or("--database requires a path")?;
         (Some(path), a.next().ok_or("--database requires a command")?)
@@ -505,6 +603,12 @@ fn execute() -> Result<()> {
     };
     let db_path = selected_database(option)?;
     match cmd.as_str() {
+        "status" => {
+            if a.next().as_deref() != Some("--json") || a.next().is_some() {
+                return Err("usage: repodb status --json".into());
+            }
+            println!("{}", serde_json::to_string_pretty(&status(&db_path)?)?);
+        }
         "init" | "refresh" => {
             let arguments: Vec<_> = a.collect();
             let imports_only = arguments.len() == 1 && arguments[0] == "--imports";
