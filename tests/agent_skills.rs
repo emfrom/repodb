@@ -76,7 +76,9 @@ fn enabler_checks_repo_availability_and_defers_helper_loading() {
         "../repodb-search-exact/SKILL.md",
         "../repodb-search-semantic/SKILL.md",
         "pi install git:github.com/emfrom/repodb",
-        "only the enabler is registered as a Pi skill",
+        "Only the enabler is registered as a Pi skill",
+        "usable through the enabler",
+        "read the corresponding sibling `SKILL.md`",
     ] {
         assert!(
             enabler.contains(required),

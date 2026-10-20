@@ -1,6 +1,6 @@
 ---
 name: repodb-enabler
-description: Discover RepoDB for repository code and documentation work when it may help, and route RepoDB questions to the help skill.
+description: Discover RepoDB for repository code and documentation work; use when asked whether RepoDB skills are available or how to use them.
 ---
 
 # RepoDB enabler
@@ -18,7 +18,9 @@ If the executable exists but the repository database is missing, explain that it
 
 If both are available, explain that indexed results can be stale after repository changes. Suggest `repodb refresh` when relevant, but do not refresh automatically. Availability does not establish freshness or semantic-search readiness.
 
-When RepoDB is available, make these helper skills discoverable by name and load them only when needed:
+When RepoDB is available, these helper instructions are usable in this session: read the corresponding sibling `SKILL.md` when the task calls for it. Only the enabler is registered as a Pi skill; the helpers are files it reads, not separate registered skills. When asked whether RepoDB agent skills are available, distinguish *registered in Pi* from *usable through the enabler*; do not describe the helpers as unavailable merely because they are not separately registered or the repo-local `.agents/skills/` copies are absent.
+
+Choose the helper for the task:
 
 - `repodb_help` — answer RepoDB usage and capability questions; read `../repodb-help/SKILL.md` relative to this skill file.
 - `repodb_import` — preview and import one explicitly selected local documentation file or directory; read `../repodb-import/SKILL.md` relative to this skill file.
@@ -26,7 +28,7 @@ When RepoDB is available, make these helper skills discoverable by name and load
 - `repodb_search_exact` — literal matching; read `../repodb-search-exact/SKILL.md` relative to this skill file.
 - `repodb_search_semantic` — conceptual search; read `../repodb-search-semantic/SKILL.md` relative to this skill file.
 
-For a direct question about RepoDB, read `../repodb-help/SKILL.md` relative to this skill file and answer from that guidance. For other tasks, describe the available skills and let the agent decide whether one is useful. Read helper skills only when they apply; their sibling definitions ship with this package but only the enabler is registered as a Pi skill.
+For a direct question about RepoDB, read `../repodb-help/SKILL.md` relative to this skill file and answer from that guidance. For other tasks, describe the available helpers and let the agent decide whether one is useful. Read a helper before following its guidance; the sibling files ship with this package.
 
 ## Distribution
 
