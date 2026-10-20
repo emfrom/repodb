@@ -2762,6 +2762,17 @@ pub(crate) fn search_diffs(
     limit: usize,
     child_commit_ids: &[String],
 ) -> Result<Vec<DiffSearchResult>> {
+    search_diffs_filtered(c, query, mode, limit, child_commit_ids, |_| true)
+}
+
+pub(crate) fn search_diffs_filtered(
+    c: &Connection,
+    query: &str,
+    mode: DiffSearchMode,
+    limit: usize,
+    child_commit_ids: &[String],
+    include: impl Fn(&DiffReference) -> bool,
+) -> Result<Vec<DiffSearchResult>> {
     if limit == 0 || child_commit_ids.is_empty() {
         return Ok(Vec::new());
     }
@@ -2779,6 +2790,9 @@ pub(crate) fn search_diffs(
             let mut reader = GitBlobReader::new(None)?;
             while let Some(row) = rows.next() {
                 let reference = row?;
+                if !include(&reference) {
+                    continue;
+                }
                 let text = hydrate_unit(
                     &reference.blob_id,
                     reference.byte_start,
@@ -2804,18 +2818,17 @@ pub(crate) fn search_diffs(
                 "SELECT {DIFF_REFERENCE_COLUMNS},vec_distance_cosine(e.vector,?1)
                  FROM diff_references r JOIN unit_embeddings e USING(unit_id)
                  WHERE r.child_commit_id IN (SELECT value FROM json_each(?2))
-                 ORDER BY 17,r.child_commit_id,r.parent_commit_id,r.hunk_id,r.side,r.byte_start,r.unit_id
-                 LIMIT ?3"
+                 ORDER BY 17,r.child_commit_id,r.parent_commit_id,r.hunk_id,r.side,r.byte_start,r.unit_id"
             ))?;
-            let sql_limit =
-                i64::try_from(limit).map_err(|_| "diff search limit exceeds SQLite range")?;
-            let mut rows = statement
-                .query_map(params![as_bytes(&vector), commits, sql_limit], |row| {
-                    Ok((read_diff_reference(row)?, row.get::<_, f64>(16)?))
-                })?;
+            let mut rows = statement.query_map(params![as_bytes(&vector), commits], |row| {
+                Ok((read_diff_reference(row)?, row.get::<_, f64>(16)?))
+            })?;
             let mut reader = GitBlobReader::new(None)?;
             while let Some(row) = rows.next() {
                 let (reference, distance) = row?;
+                if !include(&reference) {
+                    continue;
+                }
                 let text = hydrate_unit(
                     &reference.blob_id,
                     reference.byte_start,
@@ -2827,6 +2840,9 @@ pub(crate) fn search_diffs(
                     reference,
                     distance: Some(distance),
                 });
+                if results.len() == limit {
+                    break;
+                }
             }
             reader.finish()?;
         }

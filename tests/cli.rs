@@ -5228,6 +5228,163 @@ fn populated_v3_history_migrates_atomically_to_range_only_schema() {
 }
 
 #[test]
+fn diff_search_cli_exposes_added_and_removed_hits_with_bounded_paired_references() {
+    let repo = repository();
+    let root = repo.path();
+    let old_line = format!("removed passage marker {}\n", "o".repeat(10_000));
+    let new_line = format!("added passage marker {}\n", "n".repeat(10_000));
+    fs::write(
+        root.join("notes.txt"),
+        format!("First line\n{old_line}last line\n"),
+    )
+    .unwrap();
+    git(root, &["add", "notes.txt"]);
+    git(root, &["commit", "-qm", "original passage"]);
+    let parent = git_text(root, &["rev-parse", "HEAD"]);
+    fs::write(
+        root.join("notes.txt"),
+        format!("First line\n{new_line}last line\n"),
+    )
+    .unwrap();
+    fs::write(
+        root.join("src/main.rs"),
+        "fn main() { println!(\"changed source phrase\"); }\n",
+    )
+    .unwrap();
+    git(root, &["add", "notes.txt", "src/main.rs"]);
+    git(root, &["commit", "-qm", "replace passage"]);
+    let child = git_text(root, &["rev-parse", "HEAD"]);
+    assert!(run(root, &["init"]).0);
+    assert!(search_json(root, &["removed passage marker"]).is_empty());
+
+    for (query, side, marker) in [
+        (
+            "removed passage marker",
+            "removed",
+            "removed passage marker",
+        ),
+        ("added passage marker", "added", "added passage marker"),
+    ] {
+        let (ok, output) = run(root, &["search", query, "--diffs", "--json"]);
+        assert!(ok, "diff search failed: {output}");
+        let results: Vec<serde_json::Value> = serde_json::from_str(&output).unwrap();
+        let hit = results
+            .iter()
+            .find(|result| result["kind"] == "diff")
+            .unwrap_or_else(|| panic!("missing diff hit: {results:?}"));
+        assert_eq!(hit["side"], side);
+        assert_eq!(hit["text"].as_str().unwrap().len(), 4096);
+        assert!(hit["text"].as_str().unwrap().contains(marker));
+        assert_eq!(hit["parent_commit_id"], parent);
+        assert_eq!(hit["child_commit_id"], child);
+        assert_eq!(hit["old_path"], "notes.txt");
+        assert_eq!(hit["new_path"], "notes.txt");
+        assert_eq!(hit["old_line_start"], 2);
+        assert_eq!(hit["new_line_start"], 2);
+        assert_eq!(hit["matching_line_start"], 2);
+        assert_eq!(hit["matching_line_end"], 2);
+    }
+
+    let (ok, human) = run(root, &["search", "removed passage marker", "--diffs"]);
+    assert!(ok);
+    assert!(
+        human.contains("diff removed match=notes.txt:2-2"),
+        "{human}"
+    );
+    assert!(
+        human.contains(&format!("parent {parent} child {child}")),
+        "{human}"
+    );
+    assert!(
+        human.contains("old=notes.txt:2-2 new=notes.txt:2-2"),
+        "{human}"
+    );
+
+    let (ok, output) = run(
+        root,
+        &[
+            "search",
+            "a semantic query",
+            "--semantic",
+            "--diffs",
+            "--json",
+        ],
+    );
+    assert!(ok, "semantic diff search failed: {output}");
+    let results: Vec<serde_json::Value> = serde_json::from_str(&output).unwrap();
+    let diff_hits = results
+        .iter()
+        .filter(|result| result["kind"] == "diff")
+        .collect::<Vec<_>>();
+    assert!(diff_hits.iter().any(|hit| {
+        hit["side"] == "added"
+            && hit["text"]
+                .as_str()
+                .unwrap()
+                .contains("added passage marker")
+    }));
+    assert!(diff_hits.iter().any(|hit| {
+        hit["side"] == "removed"
+            && hit["text"]
+                .as_str()
+                .unwrap()
+                .contains("removed passage marker")
+    }));
+    assert!(diff_hits.iter().all(|hit| {
+        hit["distance"].is_number()
+            && hit["parent_commit_id"] == parent
+            && hit["child_commit_id"] == child
+            && hit["old_path"].is_string()
+            && hit["new_path"].is_string()
+    }));
+
+    let (ok, output) = run(
+        root,
+        &[
+            "search",
+            "unrelated semantic query",
+            "--semantic",
+            "--diffs",
+            "--semantic-limit",
+            "1",
+            "--scope",
+            "repo-local-source",
+            "--json",
+        ],
+    );
+    assert!(ok, "scoped semantic diff search failed: {output}");
+    let results: Vec<serde_json::Value> = serde_json::from_str(&output).unwrap();
+    let diff_hits = results
+        .iter()
+        .filter(|result| result["kind"] == "diff")
+        .collect::<Vec<_>>();
+    assert_eq!(diff_hits.len(), 1, "{diff_hits:?}");
+    assert_eq!(diff_hits[0]["new_path"], "src/main.rs");
+
+    let (ok, output) = run(
+        root,
+        &[
+            "search",
+            "removed passage marker",
+            "--diffs",
+            "--semantic-limit",
+            "0",
+            "--json",
+        ],
+    );
+    assert!(
+        ok,
+        "exact diff search with zero semantic limit failed: {output}"
+    );
+    let results: Vec<serde_json::Value> = serde_json::from_str(&output).unwrap();
+    assert!(
+        results
+            .iter()
+            .any(|result| result["kind"] == "diff" && result["side"] == "removed")
+    );
+}
+
+#[test]
 fn history_human_output_identifies_commit_blob_and_line_range() {
     let repo = repository();
     let root = repo.path();

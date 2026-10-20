@@ -94,6 +94,17 @@ impl SearchScope {
             Self::All => true,
         }
     }
+
+    fn matches_diff(self, path: &[u8]) -> bool {
+        let is_source = !matches!(segmentation::kind(path), "fallback" | "paragraph");
+        let path = String::from_utf8_lossy(path);
+        let is_doc = documentation_path(&path, false);
+        match self {
+            Self::Source | Self::RepoLocalSource => is_source,
+            Self::RepoLocalDocs | Self::AllDocs => is_doc,
+            Self::All => true,
+        }
+    }
 }
 
 fn source_code_path(path: &str) -> bool {
@@ -132,6 +143,71 @@ fn documentation_path(path: &str, is_page: bool) -> bool {
         Some("md" | "markdown" | "txt" | "pdf" | "html" | "htm" | "org")
     )
 }
+
+fn diff_path_fields(path: Option<&[u8]>) -> (Option<String>, Option<String>) {
+    let Some(path) = path else {
+        return (None, None);
+    };
+    let encoded = match String::from_utf8(path.to_vec()) {
+        Ok(path) => path,
+        Err(error) => encode_git_path(error.into_bytes()),
+    };
+    (
+        Some(readable_path(&encoded)),
+        decoded_git_path_hex(&encoded).map(str::to_owned),
+    )
+}
+
+fn diff_search_json(hit: &history::DiffSearchResult) -> serde_json::Value {
+    let reference = &hit.reference;
+    let (old_path, old_path_bytes_hex) = diff_path_fields(reference.old_path.as_deref());
+    let (new_path, new_path_bytes_hex) = diff_path_fields(reference.new_path.as_deref());
+    let side = match reference.side {
+        history::DiffSide::Added => "added",
+        history::DiffSide::Removed => "removed",
+    };
+    let mut value = serde_json::json!({
+        "kind": "diff",
+        "text": hit.text,
+        "distance": hit.distance,
+        "parent_commit_id": reference.parent_commit_id,
+        "child_commit_id": reference.child_commit_id,
+        "hunk_id": reference.hunk_id,
+        "side": side,
+        "old_path": old_path,
+        "new_path": new_path,
+        "old_line_start": reference.old_line_start,
+        "old_line_end": reference.old_line_end,
+        "new_line_start": reference.new_line_start,
+        "new_line_end": reference.new_line_end,
+        "matching_line_start": reference.line_start,
+        "matching_line_end": reference.line_end,
+        "blob_id": reference.blob_id,
+    });
+    if let Some(hex) = old_path_bytes_hex {
+        value["old_path_bytes_hex"] = serde_json::Value::String(hex);
+    }
+    if let Some(hex) = new_path_bytes_hex {
+        value["new_path_bytes_hex"] = serde_json::Value::String(hex);
+    }
+    value
+}
+
+fn diff_path_display(path: &[u8]) -> String {
+    diff_path_fields(Some(path)).0.unwrap_or_default()
+}
+
+fn diff_endpoint(path: Option<&[u8]>, start: Option<usize>, end: Option<usize>) -> String {
+    let Some(path) = path else {
+        return "<absent>".to_owned();
+    };
+    let path = diff_path_display(path).escape_debug().to_string();
+    match (start, end) {
+        (Some(start), Some(end)) => format!("{path}:{start}-{end}"),
+        _ => format!("{path}:<no lines>"),
+    }
+}
+
 fn git(args: &[&str]) -> Result<Vec<u8>> {
     let output = process::capture(
         &mut Command::new("git")
@@ -834,6 +910,7 @@ fn execute() -> Result<()> {
             let mut scope = history::Scope::default();
             let mut result_scope = SearchScope::default();
             let mut result_scope_set = false;
+            let mut include_diffs = false;
             let (mut json, mut mode, mut limit) = (false, "exact", 20usize);
             while let Some(x) = a.next() {
                 match x.as_str() {
@@ -862,6 +939,7 @@ fn execute() -> Result<()> {
                         .push(a.next().ok_or("--exclude-commit requires ID")?),
                     "--semantic" => mode = "semantic",
                     "--combined" => mode = "combined",
+                    "--diffs" => include_diffs = true,
                     "--semantic-limit" => limit = a.next().ok_or("missing limit")?.parse()?,
                     _ if x.starts_with('-') => {
                         return Err(format!("unexpected argument {x}").into());
@@ -951,11 +1029,76 @@ fn execute() -> Result<()> {
                     });
                 }
             }
+            let mut diff_results = Vec::new();
+            if include_diffs {
+                if !history::is_current(&c)? {
+                    return Err(
+                        "diff search requires a current history index; run `repodb refresh`".into(),
+                    );
+                }
+                let has_diff_index: bool = c.query_row(
+                    "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='diff_references')",
+                    [],
+                    |row| row.get(0),
+                )?;
+                if !has_diff_index {
+                    return Err("diff search is not indexed; run `repodb refresh`".into());
+                }
+                let include_diff = |reference: &history::DiffReference| {
+                    let path = match reference.side {
+                        history::DiffSide::Added => reference.new_path.as_deref(),
+                        history::DiffSide::Removed => reference.old_path.as_deref(),
+                    };
+                    path.is_some_and(|path| result_scope.matches_diff(path))
+                };
+                let search_diff_results =
+                    |search_mode, search_limit| -> Result<Vec<history::DiffSearchResult>> {
+                        if matches!(result_scope, SearchScope::All) {
+                            history::search_diffs(&c, &q, search_mode, search_limit, &commits)
+                        } else {
+                            history::search_diffs_filtered(
+                                &c,
+                                &q,
+                                search_mode,
+                                search_limit,
+                                &commits,
+                                &include_diff,
+                            )
+                        }
+                    };
+                diff_results = match mode {
+                    "exact" => search_diff_results(history::DiffSearchMode::Exact, usize::MAX)?,
+                    "semantic" => search_diff_results(history::DiffSearchMode::Semantic, limit)?,
+                    "combined" => {
+                        let semantic =
+                            search_diff_results(history::DiffSearchMode::Semantic, limit)?;
+                        let exact =
+                            search_diff_results(history::DiffSearchMode::Exact, usize::MAX)?;
+                        let mut seen = std::collections::HashSet::new();
+                        let mut hits = Vec::new();
+                        for hit in semantic.into_iter().chain(exact) {
+                            let reference = &hit.reference;
+                            let identity = (
+                                reference.parent_commit_id.clone(),
+                                reference.child_commit_id.clone(),
+                                reference.hunk_id,
+                                reference.unit_id,
+                            );
+                            if seen.insert(identity) {
+                                hits.push(hit);
+                            }
+                        }
+                        hits
+                    }
+                    _ => Vec::new(),
+                };
+            }
             if json {
                 let mut values = result
                     .iter()
                     .map(serde_json::to_value)
                     .collect::<std::result::Result<Vec<_>, _>>()?;
+                values.extend(diff_results.iter().map(diff_search_json));
                 for (value, result) in values.iter_mut().zip(&result) {
                     if result.path == "[commit message]" {
                         value["kind"] = serde_json::Value::String("commit_message".to_owned());
@@ -1004,6 +1147,48 @@ fn execute() -> Result<()> {
                             path, x.line_start, x.line_end, reference, x.text
                         );
                     }
+                }
+                for hit in diff_results {
+                    let reference = &hit.reference;
+                    let (side, matching) = match reference.side {
+                        history::DiffSide::Added => (
+                            "added",
+                            diff_endpoint(
+                                reference.new_path.as_deref(),
+                                Some(reference.line_start),
+                                Some(reference.line_end),
+                            ),
+                        ),
+                        history::DiffSide::Removed => (
+                            "removed",
+                            diff_endpoint(
+                                reference.old_path.as_deref(),
+                                Some(reference.line_start),
+                                Some(reference.line_end),
+                            ),
+                        ),
+                    };
+                    let old = diff_endpoint(
+                        reference.old_path.as_deref(),
+                        reference.old_line_start,
+                        reference.old_line_end,
+                    );
+                    let new = diff_endpoint(
+                        reference.new_path.as_deref(),
+                        reference.new_line_start,
+                        reference.new_line_end,
+                    );
+                    let distance = hit
+                        .distance
+                        .map(|distance| format!(" [embedding distance {distance}]"))
+                        .unwrap_or_default();
+                    println!(
+                        "diff {side} match={matching} [parent {} child {} hunk {}] old={old} new={new}{distance}: {}",
+                        reference.parent_commit_id,
+                        reference.child_commit_id,
+                        reference.hunk_id,
+                        hit.text,
+                    );
                 }
             }
         }
