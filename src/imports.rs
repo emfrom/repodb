@@ -65,16 +65,52 @@ fn html_text(source: &str) -> String {
     }
 
     let mut text = String::with_capacity(visible_source.len());
-    let mut inside_tag = false;
-    for character in visible_source.chars() {
-        match character {
-            '<' => inside_tag = true,
-            '>' => {
-                inside_tag = false;
+    let mut cursor = 0;
+    let mut link_target: Option<String> = None;
+    while cursor < visible_source.len() {
+        if visible_source.as_bytes()[cursor] == b'<' {
+            let end = visible_source[cursor..]
+                .find('>')
+                .map(|offset| cursor + offset + 1);
+            let Some(end) = end else {
+                break;
+            };
+            let tag = visible_source[cursor + 1..end - 1].trim();
+            let closing = tag.starts_with('/');
+            let name = tag
+                .trim_start_matches('/')
+                .split(|character: char| character.is_ascii_whitespace() || character == '/')
+                .next()
+                .unwrap_or("")
+                .to_ascii_lowercase();
+            if closing {
+                if name == "a" {
+                    if let Some(target) = link_target.take() {
+                        text.push_str("] (");
+                        text.push_str(&target);
+                        text.push(')');
+                    }
+                }
                 text.push(' ');
+                if matches!(name.as_str(), "td" | "th") {
+                    text.push_str(" | ");
+                }
+            } else {
+                if name == "a" {
+                    let attributes = &tag[name.len()..];
+                    link_target = html_attribute(attributes, "href");
+                    text.push('[');
+                } else {
+                    text.push(' ');
+                }
             }
-            _ if !inside_tag => text.push(character),
-            _ => {}
+            cursor = end;
+        } else {
+            let next = visible_source[cursor..]
+                .find('<')
+                .map_or(visible_source.len(), |offset| cursor + offset);
+            text.push_str(&visible_source[cursor..next]);
+            cursor = next;
         }
     }
     text.replace("&nbsp;", " ")
@@ -83,6 +119,20 @@ fn html_text(source: &str) -> String {
         .replace("&gt;", ">")
         .replace("&quot;", "\"")
         .replace("&#39;", "'")
+}
+
+fn html_attribute(tag: &str, name: &str) -> Option<String> {
+    let lower = tag.to_ascii_lowercase();
+    let start = lower.find(name)? + name.len();
+    let remainder = tag[start..].trim_start();
+    let remainder = remainder.strip_prefix('=')?.trim_start();
+    let quote = remainder.chars().next()?;
+    if quote == '\'' || quote == '\"' {
+        let value = &remainder[1..];
+        Some(value[..value.find(quote)?].to_owned())
+    } else {
+        Some(remainder.split_ascii_whitespace().next()?.to_owned())
+    }
 }
 
 fn pdf_representation(pages: &[String]) -> Result<String> {
