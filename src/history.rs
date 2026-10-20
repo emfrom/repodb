@@ -6,6 +6,7 @@ use crate::{
 };
 use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
 use std::{
+    collections::{HashMap, HashSet},
     io::{BufRead, BufReader},
     process::{Command, Stdio},
     sync::mpsc::{self, Receiver, SyncSender, TrySendError},
@@ -2097,6 +2098,347 @@ mod tests {
     }
 
     #[test]
+    fn selection_uses_topology_path_scope_and_heuristic_rename_links() {
+        use std::{fs, os::unix::fs::PermissionsExt, process::Command};
+
+        let _cwd_lock = CWD_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+        let original_cwd = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let repo = tempfile::tempdir().unwrap();
+        let git = |args: &[&str]| {
+            let output = Command::new("git")
+                .args(args)
+                .current_dir(repo.path())
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            String::from_utf8(output.stdout).unwrap().trim().to_owned()
+        };
+        let commit_at = |message: &str, date: &str| {
+            let output = Command::new("git")
+                .args(["commit", "-qm", message])
+                .env("GIT_AUTHOR_DATE", date)
+                .env("GIT_COMMITTER_DATE", date)
+                .current_dir(repo.path())
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        };
+        git(&["init", "-q"]);
+        git(&["config", "user.email", "test@example.com"]);
+        git(&["config", "user.name", "Test"]);
+        fs::create_dir_all(repo.path().join("src")).unwrap();
+        let rename_context = "rename-specific context ".repeat(100);
+        fs::write(
+            repo.path().join("src/old.rs"),
+            format!("old path marker\n{rename_context}\n"),
+        )
+        .unwrap();
+        fs::write(repo.path().join("unrelated.txt"), "base unrelated text\n").unwrap();
+        git(&["add", "."]);
+        commit_at("base", "2020-02-01T00:00:00Z");
+        let base = git(&["rev-parse", "HEAD"]);
+        let main_branch = git(&["branch", "--show-current"]);
+        git(&["branch", "side"]);
+
+        fs::write(
+            repo.path().join("unrelated.txt"),
+            "changed unrelated text\n",
+        )
+        .unwrap();
+        git(&["add", "unrelated.txt"]);
+        commit_at("unrelated change", "2021-02-01T00:00:00Z");
+        let unchanged = git(&["rev-parse", "HEAD"]);
+        fs::rename(
+            repo.path().join("src/old.rs"),
+            repo.path().join("src/new.rs"),
+        )
+        .unwrap();
+        fs::write(
+            repo.path().join("src/new.rs"),
+            format!("new path marker\n{rename_context}\n"),
+        )
+        .unwrap();
+        git(&["add", "-A"]);
+        commit_at("rename file", "2023-02-01T00:00:00Z");
+        let renamed = git(&["rev-parse", "HEAD"]);
+
+        git(&["checkout", "-q", "side"]);
+        fs::write(repo.path().join("side-only.txt"), "side ancestry\n").unwrap();
+        git(&["add", "side-only.txt"]);
+        commit_at("side commit with skewed timestamp", "2018-01-01T00:00:00Z");
+        let side = git(&["rev-parse", "HEAD"]);
+        git(&["checkout", "-q", &main_branch]);
+        let merge = Command::new("git")
+            .args(["merge", "--no-ff", "-m", "merge", "side"])
+            .env("GIT_AUTHOR_DATE", "2019-01-01T00:00:00Z")
+            .env("GIT_COMMITTER_DATE", "2019-01-01T00:00:00Z")
+            .current_dir(repo.path())
+            .output()
+            .unwrap();
+        assert!(
+            merge.status.success(),
+            "{}",
+            String::from_utf8_lossy(&merge.stderr)
+        );
+        let merge_commit = git(&["rev-parse", "HEAD"]);
+        let parent_ids = git(&["rev-list", "--parents", "-n", "1", &merge_commit])
+            .split_whitespace()
+            .skip(1)
+            .map(str::to_owned)
+            .collect::<Vec<_>>();
+        assert_eq!(parent_ids.len(), 2);
+
+        let embedder = repo.path().join("embedder");
+        fs::write(&embedder, "#!/bin/sh\ncat >/dev/null\nprintf '[1,0]'\n").unwrap();
+        fs::set_permissions(&embedder, fs::Permissions::from_mode(0o755)).unwrap();
+        let db = Connection::open_in_memory().unwrap();
+        db.execute_batch("CREATE TABLE embedding_config(key TEXT PRIMARY KEY,value TEXT NOT NULL); CREATE TEMP TABLE import_refresh_dimension(value INTEGER);").unwrap();
+        for (key, value) in [
+            ("command", embedder.to_str().unwrap()),
+            ("model", "test"),
+            ("dimension", "0"),
+        ] {
+            db.execute(
+                "INSERT INTO embedding_config VALUES(?1,?2)",
+                params![key, value],
+            )
+            .unwrap();
+        }
+        std::env::set_current_dir(repo.path()).unwrap();
+        prepare_refresh(&db).unwrap();
+        let tx = db.unchecked_transaction().unwrap();
+        publish_refresh(&tx).unwrap();
+        tx.commit().unwrap();
+
+        let topological = select_history(
+            &db,
+            &HistoryQuery {
+                selector: HistorySelector::Topological(3),
+                start_commit: Some(merge_commit.clone()),
+                include_commits: Vec::new(),
+                exclude_commits: Vec::new(),
+            },
+        )
+        .unwrap();
+        assert_eq!(topological[0].commit_id, merge_commit);
+        assert_eq!(topological.len(), 3);
+        assert_eq!(
+            select_history(
+                &db,
+                &HistoryQuery {
+                    selector: HistorySelector::Topological(3),
+                    start_commit: Some(merge_commit.clone()),
+                    include_commits: Vec::new(),
+                    exclude_commits: Vec::new(),
+                },
+            )
+            .unwrap(),
+            topological
+        );
+        let full_topological = select_history(
+            &db,
+            &HistoryQuery {
+                selector: HistorySelector::Topological(10),
+                start_commit: Some(merge_commit.clone()),
+                include_commits: Vec::new(),
+                exclude_commits: Vec::new(),
+            },
+        )
+        .unwrap();
+        for parent in &parent_ids {
+            assert!(
+                full_topological
+                    .iter()
+                    .position(|entry| &entry.commit_id == parent)
+                    .is_some_and(|position| position > 0)
+            );
+        }
+        let merge_timestamp: i64 = git(&["show", "-s", "--format=%ct", &merge_commit])
+            .parse()
+            .unwrap();
+        let renamed_timestamp: i64 = git(&["show", "-s", "--format=%ct", &renamed])
+            .parse()
+            .unwrap();
+        assert!(merge_timestamp < renamed_timestamp);
+        assert_ne!(base, unchanged);
+        let alternate_start = select_history(
+            &db,
+            &HistoryQuery {
+                selector: HistorySelector::Topological(1),
+                start_commit: Some(renamed.clone()),
+                include_commits: Vec::new(),
+                exclude_commits: Vec::new(),
+            },
+        )
+        .unwrap();
+        assert_eq!(alternate_start[0].commit_id, renamed);
+        let exact_commit = select_history(
+            &db,
+            &HistoryQuery {
+                selector: HistorySelector::Commit(base.clone()),
+                ..HistoryQuery::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(exact_commit.len(), 1);
+        assert_eq!(exact_commit[0].commit_id, base);
+        let all_commits = select_history(
+            &db,
+            &HistoryQuery {
+                selector: HistorySelector::All,
+                ..HistoryQuery::default()
+            },
+        )
+        .unwrap();
+        let expected_all = git(&["rev-list", "--all"])
+            .lines()
+            .map(str::to_owned)
+            .collect::<std::collections::HashSet<_>>();
+        assert_eq!(
+            all_commits
+                .iter()
+                .map(|entry| entry.commit_id.clone())
+                .collect::<std::collections::HashSet<_>>(),
+            expected_all
+        );
+        assert!(
+            select_history(
+                &db,
+                &HistoryQuery {
+                    selector: HistorySelector::Commit("main".to_owned()),
+                    ..HistoryQuery::default()
+                }
+            )
+            .is_err()
+        );
+
+        let limited_with_include = select_history(
+            &db,
+            &HistoryQuery {
+                selector: HistorySelector::Topological(1),
+                start_commit: Some(renamed.clone()),
+                include_commits: vec![side.clone()],
+                exclude_commits: vec![renamed.clone()],
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            limited_with_include
+                .iter()
+                .map(|entry| entry.commit_id.as_str())
+                .collect::<Vec<_>>(),
+            [side.as_str()]
+        );
+
+        let path_history = select_history(
+            &db,
+            &HistoryQuery {
+                selector: HistorySelector::Path(b"src/new.rs".to_vec()),
+                start_commit: Some(merge_commit.clone()),
+                include_commits: Vec::new(),
+                exclude_commits: Vec::new(),
+            },
+        )
+        .unwrap();
+        let path_by_commit = path_history
+            .iter()
+            .map(|entry| (entry.commit_id.as_str(), entry.path.as_deref().unwrap()))
+            .collect::<std::collections::HashMap<_, _>>();
+        assert_eq!(
+            path_by_commit.get(merge_commit.as_str()),
+            Some(&b"src/new.rs".as_slice())
+        );
+        assert_eq!(
+            path_by_commit.get(renamed.as_str()),
+            Some(&b"src/new.rs".as_slice())
+        );
+        assert_eq!(
+            path_by_commit.get(unchanged.as_str()),
+            Some(&b"src/old.rs".as_slice())
+        );
+        assert_eq!(
+            path_by_commit.get(base.as_str()),
+            Some(&b"src/old.rs".as_slice())
+        );
+        assert_eq!(
+            path_by_commit.get(side.as_str()),
+            Some(&b"src/old.rs".as_slice())
+        );
+        assert!(
+            path_history
+                .iter()
+                .all(|entry| entry.path.as_deref().unwrap().starts_with(b"src/"))
+        );
+        let rename_parent_entry = path_history
+            .iter()
+            .find(|entry| entry.commit_id == unchanged)
+            .unwrap();
+        assert!(rename_parent_entry.heuristic_links.iter().any(|link| {
+            link.parent_commit_id == unchanged
+                && link.child_commit_id == renamed
+                && link.old_path == b"src/old.rs"
+                && link.new_path == b"src/new.rs"
+                && link.similarity_percent.is_some_and(|score| score >= 50)
+        }));
+        let side_entry = path_history
+            .iter()
+            .find(|entry| entry.commit_id == side)
+            .unwrap();
+        assert!(side_entry.heuristic_links.iter().any(|link| {
+            link.parent_commit_id == side
+                && link.child_commit_id == merge_commit
+                && link.old_path == b"src/old.rs"
+                && link.new_path == b"src/new.rs"
+        }));
+
+        let directory_history = select_history(
+            &db,
+            &HistoryQuery {
+                selector: HistorySelector::Path(b"src/".to_vec()),
+                start_commit: Some(merge_commit.clone()),
+                include_commits: Vec::new(),
+                exclude_commits: Vec::new(),
+            },
+        )
+        .unwrap();
+        assert_eq!(directory_history, path_history);
+
+        let old_path_history = select_history(
+            &db,
+            &HistoryQuery {
+                selector: HistorySelector::Path(b"src/old.rs".to_vec()),
+                start_commit: Some(merge_commit.clone()),
+                include_commits: Vec::new(),
+                exclude_commits: Vec::new(),
+            },
+        )
+        .unwrap();
+        let merge_path_entry = old_path_history
+            .iter()
+            .find(|entry| entry.commit_id == merge_commit)
+            .unwrap();
+        assert_eq!(
+            merge_path_entry.path.as_deref(),
+            Some(b"src/new.rs".as_slice())
+        );
+        assert!(
+            merge_path_entry
+                .heuristic_links
+                .iter()
+                .any(|link| { link.old_path == b"src/old.rs" && link.new_path == b"src/new.rs" })
+        );
+        std::env::set_current_dir(original_cwd).unwrap();
+    }
+
+    #[test]
     fn commit_message_search_hydrates_exact_and_semantic_hits_from_git() {
         use std::{fs, os::unix::fs::PermissionsExt, process::Command};
 
@@ -3634,6 +3976,542 @@ pub fn search(
     Ok(results.into_iter().map(|candidate| candidate.3).collect())
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum HistorySelector {
+    Head,
+    All,
+    Commit(String),
+    /// Compatibility selector for callers that select an explicit set without a base scope.
+    ExactCommits(Vec<String>),
+    Topological(usize),
+    Path(Vec<u8>),
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct HistoryQuery {
+    pub selector: HistorySelector,
+    pub start_commit: Option<String>,
+    pub include_commits: Vec<String>,
+    pub exclude_commits: Vec<String>,
+}
+
+impl Default for HistoryQuery {
+    fn default() -> Self {
+        Self {
+            selector: HistorySelector::Head,
+            start_commit: None,
+            include_commits: Vec::new(),
+            exclude_commits: Vec::new(),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct HeuristicPathLink {
+    pub parent_commit_id: String,
+    pub child_commit_id: String,
+    pub old_path: Vec<u8>,
+    pub new_path: Vec<u8>,
+    pub similarity_percent: Option<u8>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SelectedHistoryEntry {
+    pub commit_id: String,
+    /// Present for path selectors; directory queries produce one entry per matching file.
+    pub path: Option<Vec<u8>>,
+    /// Rename links crossing into this commit. These are Git heuristics, not identity proof.
+    pub heuristic_links: Vec<HeuristicPathLink>,
+}
+
+fn resolve_known_commit(selector: &str, known: &[String]) -> Result<String> {
+    if !(4..=64).contains(&selector.len()) || !selector.bytes().all(|byte| byte.is_ascii_hexdigit())
+    {
+        return Err(format!(
+            "expected exact commit ID (at least 4 hex digits), not a ref or range: {selector}"
+        )
+        .into());
+    }
+    let prefix = selector.to_ascii_lowercase();
+    let matches: Vec<_> = known.iter().filter(|id| id.starts_with(&prefix)).collect();
+    match matches.as_slice() {
+        [id] => Ok((*id).clone()),
+        [] => Err(format!("commit {selector} is not in the index; run refresh explicitly").into()),
+        _ => Err(format!("ambiguous commit ID {selector}").into()),
+    }
+}
+
+fn known_commit_ids(c: &Connection, budget: &mut Budget) -> Result<Vec<String>> {
+    let table = if is_current(c)? {
+        "git_commits"
+    } else {
+        "indexed_files"
+    };
+    let mut statement = c.prepare(&format!(
+        "SELECT DISTINCT commit_id FROM {table} ORDER BY commit_id"
+    ))?;
+    let mut rows = statement.query([])?;
+    let mut commits = Vec::new();
+    while let Some(row) = rows.next()? {
+        let commit_id: String = row.get(0)?;
+        budget.charge(
+            commit_id.len() + std::mem::size_of::<String>(),
+            "known history commit IDs",
+        )?;
+        commits.push(commit_id);
+    }
+    Ok(commits)
+}
+
+fn start_commit_for_history(
+    query: &HistoryQuery,
+    known: &[String],
+    budget: &mut Budget,
+) -> Result<Option<String>> {
+    if let Some(start) = query.start_commit.as_deref() {
+        return Ok(Some(resolve_known_commit(start, known)?));
+    }
+    let Some(head) = head(budget)? else {
+        return Ok(None);
+    };
+    Ok(known.contains(&head).then_some(head))
+}
+
+fn topological_graph(
+    start: &str,
+    budget: &mut Budget,
+) -> Result<(Vec<String>, HashMap<String, Vec<String>>)> {
+    use std::collections::BTreeSet;
+
+    let output = git_output(
+        &["rev-list", "--parents", start],
+        budget.remaining().saturating_sub(MAX_GIT_STDERR_BYTES),
+        budget,
+    )?;
+    let mut parents_by_commit = HashMap::<String, Vec<String>>::new();
+    for record in output
+        .split(|byte| *byte == b'\n')
+        .filter(|record| !record.is_empty())
+    {
+        budget.charge(
+            record.len() + std::mem::size_of::<String>(),
+            "history commit graph",
+        )?;
+        let record = std::str::from_utf8(record)?;
+        let mut fields = record.split_whitespace();
+        let commit = fields
+            .next()
+            .ok_or("Git returned an empty commit graph record")?;
+        if commit.len() < 4 || !commit.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+            return Err("Git returned an invalid commit ID in history graph".into());
+        }
+        let parents = fields.map(str::to_owned).collect::<Vec<_>>();
+        if parents_by_commit
+            .insert(commit.to_owned(), parents)
+            .is_some()
+        {
+            return Err("Git returned a duplicate commit in history graph".into());
+        }
+    }
+    let mut remaining_children = parents_by_commit
+        .keys()
+        .map(|commit| (commit.clone(), 0usize))
+        .collect::<HashMap<_, _>>();
+    for parents in parents_by_commit.values() {
+        for parent in parents {
+            if let Some(child_count) = remaining_children.get_mut(parent) {
+                *child_count += 1;
+            }
+        }
+    }
+    let mut ready = remaining_children
+        .iter()
+        .filter_map(|(commit, child_count)| (*child_count == 0).then_some(commit.clone()))
+        .collect::<BTreeSet<_>>();
+    let mut order = Vec::with_capacity(parents_by_commit.len());
+    while let Some(commit) = ready.pop_first() {
+        order.push(commit.clone());
+        if let Some(parents) = parents_by_commit.get(&commit) {
+            for parent in parents {
+                if let Some(child_count) = remaining_children.get_mut(parent) {
+                    *child_count -= 1;
+                    if *child_count == 0 {
+                        ready.insert(parent.clone());
+                    }
+                }
+            }
+        }
+    }
+    if order.len() != parents_by_commit.len() {
+        return Err("Git commit graph is not a directed acyclic graph".into());
+    }
+    Ok((order, parents_by_commit))
+}
+
+fn normalized_history_path(path: &[u8]) -> Vec<u8> {
+    let mut path = path.to_vec();
+    while path.last() == Some(&b'/') {
+        path.pop();
+    }
+    if path == b"." {
+        path.clear();
+    }
+    path
+}
+
+fn initial_history_paths(
+    start: &str,
+    requested_path: &[u8],
+    budget: &mut Budget,
+) -> Result<Vec<Vec<u8>>> {
+    let path = normalized_history_path(requested_path);
+    if path.starts_with(b"/") || path.split(|byte| *byte == b'/').any(|part| part == b"..") {
+        return Err("history path must be repository-relative and cannot contain '..'".into());
+    }
+    let root_query = path.is_empty();
+    let mut directory_prefix = path.clone();
+    if !root_query {
+        directory_prefix.push(b'/');
+    }
+    let mut exact = false;
+    let mut descendant = root_query;
+    let mut matches = Vec::new();
+    for_each_tree_record(start, budget, |record, budget| {
+        let tab = record
+            .iter()
+            .position(|byte| *byte == b'\t')
+            .ok_or("invalid Git tree record")?;
+        let metadata = std::str::from_utf8(&record[..tab])?;
+        let mut fields = metadata.split_whitespace();
+        let _mode = fields.next().ok_or("invalid Git tree metadata")?;
+        let object_type = fields.next().ok_or("invalid Git tree metadata")?;
+        let _object_id = fields.next().ok_or("invalid Git tree metadata")?;
+        if fields.next().is_some() || object_type != "blob" {
+            return Ok(());
+        }
+        let candidate = &record[tab + 1..];
+        if candidate == path {
+            exact = true;
+        }
+        if root_query || candidate.starts_with(&directory_prefix) {
+            descendant = true;
+            budget.charge(
+                candidate.len() + std::mem::size_of::<Vec<u8>>(),
+                "history path matches",
+            )?;
+            matches.push(candidate.to_vec());
+        }
+        Ok(())
+    })?;
+    if descendant {
+        matches.sort();
+        matches.dedup();
+        Ok(matches)
+    } else if exact {
+        Ok(vec![path])
+    } else {
+        Ok(Vec::new())
+    }
+}
+
+fn add_selected_path(
+    selected_paths: &mut HashMap<String, HashMap<Vec<u8>, Vec<HeuristicPathLink>>>,
+    commit_id: &str,
+    path: Vec<u8>,
+    links: Vec<HeuristicPathLink>,
+    budget: &mut Budget,
+) -> Result<()> {
+    let paths = selected_paths.entry(commit_id.to_owned()).or_default();
+    if !paths.contains_key(&path) {
+        budget.charge(path.len() + 64, "history path selection")?;
+        paths.insert(path.clone(), Vec::new());
+    }
+    let stored_links = paths.get_mut(&path).unwrap();
+    for link in links {
+        if !stored_links.contains(&link) {
+            budget.charge(
+                link.old_path.len() + link.new_path.len() + 96,
+                "heuristic history path link",
+            )?;
+            stored_links.push(link);
+        }
+    }
+    Ok(())
+}
+
+fn select_path_history(
+    c: &Connection,
+    start: &str,
+    requested_path: &[u8],
+    known: &[String],
+    budget: &mut Budget,
+) -> Result<Vec<SelectedHistoryEntry>> {
+    let version: i64 = c.query_row("PRAGMA user_version", [], |row| row.get(0))?;
+    if version < 5 {
+        return Err("path history requires a full refresh with schema version 5".into());
+    }
+    let start_paths = initial_history_paths(start, requested_path, budget)?;
+    let known = known.iter().cloned().collect::<HashSet<_>>();
+    let (order, parents_by_commit) = topological_graph(start, budget)?;
+    let mut selected_paths = HashMap::<String, HashMap<Vec<u8>, Vec<HeuristicPathLink>>>::new();
+    for path in start_paths {
+        add_selected_path(&mut selected_paths, start, path, Vec::new(), budget)?;
+    }
+    if selected_paths.is_empty() {
+        let requested = normalized_history_path(requested_path);
+        let mut prefix = requested.clone();
+        if !prefix.is_empty() {
+            prefix.push(b'/');
+        }
+        for parent in parents_by_commit
+            .get(start)
+            .into_iter()
+            .flatten()
+            .filter(|parent| known.contains(*parent))
+        {
+            let metadata = diff_metadata(c, Some(parent), Some(start))?;
+            for change in metadata.changes {
+                let Some(old_path) = change.old_path.as_deref() else {
+                    continue;
+                };
+                if change.kind != DiffChangeKind::HeuristicRename
+                    || (old_path != requested.as_slice() && !old_path.starts_with(&prefix))
+                {
+                    continue;
+                }
+                let Some(new_path) = change.new_path else {
+                    continue;
+                };
+                let link = HeuristicPathLink {
+                    parent_commit_id: parent.clone(),
+                    child_commit_id: start.to_owned(),
+                    old_path: old_path.to_vec(),
+                    new_path: new_path.clone(),
+                    similarity_percent: change.similarity_percent,
+                };
+                add_selected_path(&mut selected_paths, start, new_path, vec![link], budget)?;
+            }
+        }
+    }
+    if selected_paths.is_empty() {
+        return Ok(Vec::new());
+    }
+    for child in &order {
+        if !known.contains(child) {
+            continue;
+        }
+        let child_paths = selected_paths
+            .get(child)
+            .map(|paths| paths.keys().cloned().collect::<Vec<_>>())
+            .unwrap_or_default();
+        for path in &child_paths {
+            budget.charge(path.len(), "history child path traversal")?;
+        }
+        if child_paths.is_empty() {
+            continue;
+        }
+        let Some(parents) = parents_by_commit.get(child) else {
+            continue;
+        };
+        for parent in parents.iter().filter(|parent| known.contains(*parent)) {
+            let metadata = diff_metadata(c, Some(parent), Some(child))?;
+            let metadata_bytes = metadata.changes.iter().try_fold(0usize, |total, change| {
+                total
+                    .checked_add(std::mem::size_of::<DiffFileChange>())
+                    .and_then(|total| total.checked_add(change.parent_commit_id.len()))
+                    .and_then(|total| total.checked_add(change.child_commit_id.len()))
+                    .and_then(|total| {
+                        total.checked_add(change.old_path.as_ref().map_or(0, Vec::len))
+                    })
+                    .and_then(|total| {
+                        total.checked_add(change.new_path.as_ref().map_or(0, Vec::len))
+                    })
+                    .ok_or("history diff metadata accounting overflow")
+            })?;
+            budget.charge(metadata_bytes, "history diff metadata")?;
+            let changes_by_new_path = metadata
+                .changes
+                .iter()
+                .filter_map(|change| change.new_path.as_deref().map(|path| (path, change)))
+                .collect::<HashMap<_, _>>();
+            for child_path in &child_paths {
+                let change = changes_by_new_path.get(child_path.as_slice()).copied();
+                match change {
+                    Some(change) if change.kind == DiffChangeKind::Added => {}
+                    Some(change) if change.kind == DiffChangeKind::HeuristicCopy => {}
+                    Some(change) if change.kind == DiffChangeKind::HeuristicRename => {
+                        if let Some(old_path) = change.old_path.clone() {
+                            let link = HeuristicPathLink {
+                                parent_commit_id: parent.clone(),
+                                child_commit_id: child.clone(),
+                                old_path: old_path.clone(),
+                                new_path: child_path.clone(),
+                                similarity_percent: change.similarity_percent,
+                            };
+                            add_selected_path(
+                                &mut selected_paths,
+                                parent,
+                                old_path,
+                                vec![link],
+                                budget,
+                            )?;
+                        }
+                    }
+                    Some(change) => {
+                        if let Some(old_path) = change.old_path.clone() {
+                            add_selected_path(
+                                &mut selected_paths,
+                                parent,
+                                old_path,
+                                Vec::new(),
+                                budget,
+                            )?;
+                        }
+                    }
+                    None => add_selected_path(
+                        &mut selected_paths,
+                        parent,
+                        child_path.clone(),
+                        Vec::new(),
+                        budget,
+                    )?,
+                }
+            }
+            budget.release(metadata_bytes);
+        }
+    }
+    let mut entries = Vec::new();
+    for commit_id in order.into_iter().filter(|commit| known.contains(commit)) {
+        let Some(paths) = selected_paths.remove(&commit_id) else {
+            continue;
+        };
+        let mut paths = paths.into_iter().collect::<Vec<_>>();
+        paths.sort_by(|left, right| left.0.cmp(&right.0));
+        for (path, mut heuristic_links) in paths {
+            heuristic_links.sort_by(|left, right| {
+                left.child_commit_id
+                    .cmp(&right.child_commit_id)
+                    .then(left.old_path.cmp(&right.old_path))
+                    .then(left.new_path.cmp(&right.new_path))
+            });
+            entries.push(SelectedHistoryEntry {
+                commit_id: commit_id.clone(),
+                path: Some(path),
+                heuristic_links,
+            });
+        }
+    }
+    Ok(entries)
+}
+
+/// Select indexed commits in stable commit-ID order, or by parent-before-child-safe
+/// topological traversal from a start commit. Path selectors return one entry per
+/// matching file path and follow only Git-detected heuristic renames. Include IDs
+/// are additive; exclusions are applied last. Branch labels and timestamp ordering
+/// are never used as ancestry.
+pub fn select_history(c: &Connection, query: &HistoryQuery) -> Result<Vec<SelectedHistoryEntry>> {
+    let mut budget = Budget::new(MAX_REFRESH_ACCOUNTING_BYTES, "history selection accounting");
+    if query.start_commit.is_some()
+        && matches!(
+            query.selector,
+            HistorySelector::All | HistorySelector::Commit(_) | HistorySelector::ExactCommits(_)
+        )
+    {
+        return Err("starting commit is only valid with HEAD, topological or path history".into());
+    }
+    let known = known_commit_ids(c, &mut budget)?;
+    let mut entries = match &query.selector {
+        HistorySelector::All => known
+            .iter()
+            .cloned()
+            .map(|commit_id| SelectedHistoryEntry {
+                commit_id,
+                path: None,
+                heuristic_links: Vec::new(),
+            })
+            .collect(),
+        HistorySelector::Commit(commit) => vec![SelectedHistoryEntry {
+            commit_id: resolve_known_commit(commit, &known)?,
+            path: None,
+            heuristic_links: Vec::new(),
+        }],
+        HistorySelector::ExactCommits(commits) => commits
+            .iter()
+            .map(|commit| {
+                Ok(SelectedHistoryEntry {
+                    commit_id: resolve_known_commit(commit, &known)?,
+                    path: None,
+                    heuristic_links: Vec::new(),
+                })
+            })
+            .collect::<Result<Vec<_>>>()?,
+        HistorySelector::Head => match start_commit_for_history(query, &known, &mut budget)? {
+            Some(commit_id) => vec![SelectedHistoryEntry {
+                commit_id,
+                path: None,
+                heuristic_links: Vec::new(),
+            }],
+            None => Vec::new(),
+        },
+        HistorySelector::Topological(limit) => {
+            if *limit == 0 {
+                return Err("topological history limit must be greater than zero".into());
+            }
+            if let Some(start) = start_commit_for_history(query, &known, &mut budget)? {
+                topological_graph(&start, &mut budget)?
+                    .0
+                    .into_iter()
+                    .filter(|commit| known.contains(commit))
+                    .take(*limit)
+                    .map(|commit_id| SelectedHistoryEntry {
+                        commit_id,
+                        path: None,
+                        heuristic_links: Vec::new(),
+                    })
+                    .collect()
+            } else {
+                Vec::new()
+            }
+        }
+        HistorySelector::Path(path) => {
+            if let Some(start) = start_commit_for_history(query, &known, &mut budget)? {
+                select_path_history(c, &start, path, &known, &mut budget)?
+            } else {
+                Vec::new()
+            }
+        }
+    };
+    for selector in &query.include_commits {
+        let commit_id = resolve_known_commit(selector, &known)?;
+        if entries.iter().any(|entry| entry.commit_id == commit_id) {
+            continue;
+        }
+        if let HistorySelector::Path(path) = &query.selector {
+            let path_entries = select_path_history(c, &commit_id, path, &known, &mut budget)?;
+            entries.extend(
+                path_entries
+                    .into_iter()
+                    .filter(|entry| entry.commit_id == commit_id),
+            );
+        } else {
+            entries.push(SelectedHistoryEntry {
+                commit_id,
+                path: None,
+                heuristic_links: Vec::new(),
+            });
+        }
+    }
+    let excluded = query
+        .exclude_commits
+        .iter()
+        .map(|selector| resolve_known_commit(selector, &known))
+        .collect::<Result<HashSet<_>>>()?;
+    entries.retain(|entry| !excluded.contains(&entry.commit_id));
+    let mut seen = HashSet::new();
+    entries.retain(|entry| seen.insert((entry.commit_id.clone(), entry.path.clone())));
+    Ok(entries)
+}
+
 #[derive(Default)]
 pub struct Scope {
     pub all_history: bool,
@@ -3652,55 +4530,27 @@ impl Scope {
         if selectors > 1 {
             return Err("choose only one of --current-worktree, --all-history, --commit or --include-commit".into());
         }
-        let mut s = c.prepare(if is_current(c)? {
-            "SELECT commit_id FROM git_commits"
-        } else {
-            "SELECT DISTINCT commit_id FROM indexed_files"
-        })?;
-        let known = s
-            .query_map([], |r| r.get::<_, String>(0))?
-            .collect::<std::result::Result<Vec<_>, _>>()?;
-        let resolve = |selector: &str| -> Result<String> {
-            if !(4..=64).contains(&selector.len())
-                || !selector.bytes().all(|b| b.is_ascii_hexdigit())
-            {
-                return Err(format!("expected exact commit ID (at least 4 hex digits), not a ref or range: {selector}").into());
-            }
-            let prefix = selector.to_ascii_lowercase();
-            let matches: Vec<_> = known.iter().filter(|id| id.starts_with(&prefix)).collect();
-            match matches.as_slice() {
-                [id] => Ok((*id).clone()),
-                [] => Err(
-                    format!("commit {selector} is not in the index; run refresh explicitly").into(),
-                ),
-                _ => Err(format!("ambiguous commit ID {selector}").into()),
-            }
-        };
-        let mut eligible = if self.all_history {
-            known.clone()
+        let selector = if self.all_history {
+            HistorySelector::All
         } else if let Some(commit) = &self.commit {
-            vec![resolve(commit)?]
+            HistorySelector::Commit(commit.clone())
         } else if !self.include.is_empty() {
-            self.include
-                .iter()
-                .map(|id| resolve(id))
-                .collect::<Result<Vec<_>>>()?
+            HistorySelector::ExactCommits(self.include.clone())
         } else {
-            {
-                let mut budget =
-                    Budget::new(MAX_REFRESH_ACCOUNTING_BYTES, "history query accounting");
-                head(&mut budget)?
-            }
-            .into_iter()
-            .filter(|id| known.contains(id))
-            .collect()
+            HistorySelector::Head
         };
-        for excluded in &self.exclude {
-            let id = resolve(excluded)?;
-            eligible.retain(|candidate| candidate != &id);
-        }
-        eligible.sort();
-        eligible.dedup();
-        Ok(eligible)
+        let query = HistoryQuery {
+            selector,
+            start_commit: None,
+            include_commits: Vec::new(),
+            exclude_commits: self.exclude.clone(),
+        };
+        let mut commits = select_history(c, &query)?
+            .into_iter()
+            .map(|entry| entry.commit_id)
+            .collect::<Vec<_>>();
+        commits.sort();
+        commits.dedup();
+        Ok(commits)
     }
 }
