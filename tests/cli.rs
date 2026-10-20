@@ -4731,7 +4731,7 @@ fn assert_refresh_batches_are_bounded_and_keep_vector_associations(refresh_args:
         "oversized embedding batches: {batch_sizes:?}"
     );
     let expected_units = if refresh_args.len() == 1 {
-        prior_unit_count + 601
+        prior_unit_count + 601 + 600 // new content units plus their added-side diff units
     } else {
         600
     };
@@ -5112,7 +5112,7 @@ fn populated_v3_history_migrates_atomically_to_range_only_schema() {
     // Exercise the supported v3 layout with real references, searchable text, and vectors.
     let database = rusqlite::Connection::open(root.join(".git/repodb.sqlite")).unwrap();
     database.execute_batch(
-        "DROP TABLE unit_embeddings; DROP TABLE commit_message_units; DROP TABLE git_blob_units; DROP TABLE indexed_units; \
+        "DROP TABLE IF EXISTS diff_references; DROP TABLE unit_embeddings; DROP TABLE commit_message_units; DROP TABLE git_blob_units; DROP TABLE indexed_units; \
          DROP TABLE git_occurrences; DROP TABLE blob_contents; DROP TABLE git_commits; \
          CREATE TABLE git_commits(commit_id TEXT PRIMARY KEY NOT NULL, timestamp INTEGER NOT NULL); \
          CREATE TABLE blob_contents(blob_id TEXT PRIMARY KEY NOT NULL, content TEXT, status TEXT NOT NULL); \

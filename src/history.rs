@@ -37,7 +37,10 @@ pub(crate) struct DiffReference {
     pub old_line_end: Option<usize>,
     pub new_line_start: Option<usize>,
     pub new_line_end: Option<usize>,
+    pub line_start: usize,
+    pub line_end: usize,
     pub blob_id: String,
+    pub unit_id: i64,
     pub byte_start: usize,
     pub byte_end: usize,
 }
@@ -83,6 +86,311 @@ fn git_output(
     drop(output.stderr);
     preparation_bytes.release(stderr_capacity);
     Ok(output.stdout)
+}
+
+fn git_diff_output(
+    parent: &str,
+    child: &str,
+    path: &[u8],
+    preparation_bytes: &mut Budget,
+) -> Result<Vec<u8>> {
+    use std::os::unix::ffi::OsStrExt;
+
+    let (stdout_limit, stderr_limit) = git_capture_limits(
+        preparation_bytes
+            .remaining()
+            .saturating_sub(MAX_GIT_STDERR_BYTES),
+        preparation_bytes.used(),
+    )?;
+    let mut child_process = Command::new("git")
+        .args([
+            "diff",
+            "--no-ext-diff",
+            "--no-color",
+            "--unified=0",
+            parent,
+            child,
+            "--",
+        ])
+        .arg(std::ffi::OsStr::from_bytes(path))
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()?;
+    let output = process::capture(&mut child_process, stdout_limit, stderr_limit)?;
+    if output.exceeded {
+        return Err(memory_limit());
+    }
+    let stdout_capacity = output.stdout.capacity();
+    let stderr_capacity = output.stderr.capacity();
+    preparation_bytes.charge(stdout_capacity, "Git diff output capacity")?;
+    preparation_bytes.charge(stderr_capacity, "Git diff stderr capacity")?;
+    if !output.status.success() {
+        let error = format!(
+            "git diff failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        drop(output);
+        preparation_bytes.release(stdout_capacity + stderr_capacity);
+        return Err(error.into());
+    }
+    drop(output.stderr);
+    preparation_bytes.release(stderr_capacity);
+    Ok(output.stdout)
+}
+
+#[derive(Clone, Copy)]
+struct ChangedLines {
+    side: DiffSide,
+    hunk_id: i64,
+    first: usize,
+    last: usize,
+    old_anchor: Option<(usize, usize)>,
+    new_anchor: Option<(usize, usize)>,
+}
+
+fn parse_diff_line_range(value: &str) -> Result<(usize, usize)> {
+    let value = value.get(1..).ok_or("invalid Git hunk range")?;
+    let (start, count) = value.split_once(',').map_or((value, "1"), |parts| parts);
+    let start: usize = start.parse()?;
+    let count: usize = count.parse()?;
+    Ok((start, count))
+}
+
+fn changed_lines(
+    patch: &[u8],
+    first_hunk_id: i64,
+    old_line_count: usize,
+    new_line_count: usize,
+) -> Result<Vec<ChangedLines>> {
+    let mut result = Vec::new();
+    let mut old_line = 0usize;
+    let mut new_line = 0usize;
+    let mut old_changed = Vec::new();
+    let mut new_changed = Vec::new();
+    let mut old_anchor: Option<(usize, usize)> = None;
+    let mut new_anchor: Option<(usize, usize)> = None;
+    let mut hunk_id = first_hunk_id;
+    let mut seen_hunk = false;
+    let mut in_hunk = false;
+    let flush = |result: &mut Vec<ChangedLines>,
+                 old_changed: &mut Vec<usize>,
+                 new_changed: &mut Vec<usize>,
+                 hunk_id: i64,
+                 old_anchor: Option<(usize, usize)>,
+                 new_anchor: Option<(usize, usize)>| {
+        if let Some((first, last)) = old_changed
+            .first()
+            .copied()
+            .zip(old_changed.last().copied())
+        {
+            result.push(ChangedLines {
+                side: DiffSide::Removed,
+                hunk_id,
+                first,
+                last,
+                old_anchor,
+                new_anchor,
+            });
+        }
+        if let Some((first, last)) = new_changed
+            .first()
+            .copied()
+            .zip(new_changed.last().copied())
+        {
+            result.push(ChangedLines {
+                side: DiffSide::Added,
+                hunk_id,
+                first,
+                last,
+                old_anchor,
+                new_anchor,
+            });
+        }
+        old_changed.clear();
+        new_changed.clear();
+    };
+    for line in patch.split_inclusive(|byte| *byte == b'\n') {
+        if line.starts_with(b"@@ ") {
+            if seen_hunk {
+                flush(
+                    &mut result,
+                    &mut old_changed,
+                    &mut new_changed,
+                    hunk_id,
+                    old_anchor,
+                    new_anchor,
+                );
+                hunk_id += 1;
+            }
+            seen_hunk = true;
+            in_hunk = true;
+            let header = std::str::from_utf8(line)?;
+            let mut parts = header.split_whitespace();
+            if parts.next() != Some("@@") {
+                return Err("invalid Git hunk header".into());
+            }
+            let (old_start, old_count) =
+                parse_diff_line_range(parts.next().ok_or("missing old Git hunk range")?)?;
+            let (new_start, new_count) =
+                parse_diff_line_range(parts.next().ok_or("missing new Git hunk range")?)?;
+            old_anchor = if old_count == 0 {
+                (old_line_count > 0).then_some((old_start.max(1), old_start.max(1)))
+            } else {
+                Some((old_start, old_start + old_count - 1))
+            };
+            new_anchor = if new_count == 0 {
+                (new_line_count > 0).then_some((new_start.max(1), new_start.max(1)))
+            } else {
+                Some((new_start, new_start + new_count - 1))
+            };
+            old_line = old_start;
+            new_line = new_start;
+            continue;
+        }
+        if !in_hunk {
+            continue;
+        }
+        match line.first().copied() {
+            Some(b'-') => {
+                old_changed.push(old_line);
+                old_line += 1;
+            }
+            Some(b'+') => {
+                new_changed.push(new_line);
+                new_line += 1;
+            }
+            Some(b'\\') => {}
+            Some(b' ') => {
+                old_line += 1;
+                new_line += 1;
+            }
+            _ => {}
+        }
+    }
+    flush(
+        &mut result,
+        &mut old_changed,
+        &mut new_changed,
+        hunk_id,
+        old_anchor,
+        new_anchor,
+    );
+    Ok(result)
+}
+
+fn line_byte_range(text: &str, first: usize, last: usize) -> Result<(usize, usize)> {
+    if first == 0 || last < first {
+        return Err("invalid changed line range".into());
+    }
+    let mut start = None;
+    let mut end = None;
+    let mut line_number = 1usize;
+    let mut offset = 0usize;
+    for line in text.split_inclusive('\n') {
+        if line_number == first {
+            start = Some(offset);
+        }
+        offset += line.len();
+        if line_number == last {
+            end = Some(offset);
+            break;
+        }
+        line_number += 1;
+    }
+    let start = start.ok_or("changed line is outside Git blob")?;
+    let mut end = end.ok_or("changed line is outside Git blob")?;
+    let slice = &text[start..end];
+    if slice.ends_with("\r\n") {
+        end -= 2;
+    } else if slice.ends_with('\n') {
+        end -= 1;
+    }
+    Ok((start, end))
+}
+
+fn stage_diff_range(
+    c: &Connection,
+    parent: &str,
+    child: &str,
+    side: DiffSide,
+    hunk_id: i64,
+    path: &[u8],
+    blob_id: &str,
+    blob_text: &str,
+    first: usize,
+    last: usize,
+    old_anchor: Option<(usize, usize)>,
+    new_anchor: Option<(usize, usize)>,
+    next_unit_id: &mut i64,
+    batch: &mut Vec<(i64, String)>,
+    pipeline: &mut EmbeddingPipeline,
+    embedding_dimension: &mut Option<usize>,
+    embedding_statement: &mut rusqlite::Statement<'_>,
+    budget: &mut Budget,
+) -> Result<()> {
+    let (range_start, range_end) = line_byte_range(blob_text, first, last)?;
+    let changed_text = &blob_text[range_start..range_end];
+    let mut unit_statement =
+        c.prepare("INSERT INTO temp.refresh_units VALUES(?1,?2,'diff',?3,?4,?5,?6,?7)")?;
+    let mut reference_statement = c.prepare("INSERT INTO temp.refresh_diff_references(parent_commit_id,child_commit_id,hunk_id,side,old_path,new_path,old_line_start,old_line_end,new_line_start,new_line_end,blob_id,unit_id) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12)")?;
+    let mut unit_error = None;
+    segmentation::visit("fallback", changed_text, |unit| {
+        let result = (|| -> Result<()> {
+            budget.charge(unit.text.len(), "diff embedding batch text")?;
+            *next_unit_id += 1;
+            let byte_start = range_start + unit.byte_start;
+            let byte_end = range_start + unit.byte_end;
+            let line_start = first + unit.line_start - 1;
+            let line_end = first + unit.line_end - 1;
+            unit_statement.execute(params![
+                *next_unit_id,
+                blob_id,
+                unit.text,
+                byte_start,
+                byte_end,
+                line_start,
+                line_end
+            ])?;
+            reference_statement.execute(params![
+                parent,
+                child,
+                hunk_id,
+                if side == DiffSide::Added {
+                    "added"
+                } else {
+                    "removed"
+                },
+                path,
+                path,
+                old_anchor.map(|anchor| anchor.0),
+                old_anchor.map(|anchor| anchor.1),
+                new_anchor.map(|anchor| anchor.0),
+                new_anchor.map(|anchor| anchor.1),
+                blob_id,
+                *next_unit_id
+            ])?;
+            batch.push((*next_unit_id, unit.text.to_owned()));
+            if batch.len() >= HISTORY_EMBEDDING_BATCH_SIZE {
+                flush_embedding_batch(
+                    batch,
+                    pipeline,
+                    embedding_dimension,
+                    embedding_statement,
+                    budget,
+                )?;
+            }
+            Ok(())
+        })();
+        if let Err(error) = result {
+            unit_error = Some(error);
+            return false;
+        }
+        true
+    })?;
+    if let Some(error) = unit_error {
+        return Err(error);
+    }
+    Ok(())
 }
 
 fn stage_diff_pair(
@@ -145,6 +453,76 @@ fn stage_diff_pair(
             .ok_or("missing Git diff status")?;
         let path = records.get(i).ok_or("missing Git diff path")?.to_vec();
         i += 1;
+        if fields[0].trim_start_matches(':') == "160000" || fields[1] == "160000" {
+            // Gitlinks reference commits, not blobs; the tracked tree walker skips them too.
+            continue;
+        }
+        if status == b'M' {
+            let Some(parent) = parent else {
+                return Err("root diff cannot contain a modified path".into());
+            };
+            let old_blob_id = fields[2];
+            let new_blob_id = fields[3];
+            let old_bytes = git_output(
+                &["cat-file", "blob", old_blob_id],
+                budget.remaining().saturating_sub(MAX_GIT_STDERR_BYTES),
+                budget,
+            )?;
+            let new_bytes = git_output(
+                &["cat-file", "blob", new_blob_id],
+                budget.remaining().saturating_sub(MAX_GIT_STDERR_BYTES),
+                budget,
+            )?;
+            let (Ok(old_text), Ok(new_text)) = (
+                std::str::from_utf8(&old_bytes),
+                std::str::from_utf8(&new_bytes),
+            ) else {
+                continue;
+            };
+            if old_text.contains('\0') || new_text.contains('\0') {
+                continue;
+            }
+            let patch = git_diff_output(parent, child, &path, budget)?;
+            let changes = changed_lines(
+                &patch,
+                hunk_id,
+                old_text.lines().count(),
+                new_text.lines().count(),
+            )?;
+            let next_hunk_id = changes
+                .iter()
+                .map(|change| change.hunk_id)
+                .max()
+                .map_or(hunk_id, |last| last + 1);
+            for change in changes {
+                let (blob_id, text) = match change.side {
+                    DiffSide::Added => (new_blob_id, new_text),
+                    DiffSide::Removed => (old_blob_id, old_text),
+                };
+                stage_diff_range(
+                    c,
+                    parent,
+                    child,
+                    change.side,
+                    change.hunk_id,
+                    &path,
+                    blob_id,
+                    text,
+                    change.first,
+                    change.last,
+                    change.old_anchor,
+                    change.new_anchor,
+                    next_unit_id,
+                    batch,
+                    pipeline,
+                    embedding_dimension,
+                    embedding_statement,
+                    budget,
+                )?;
+            }
+            hunk_id = next_hunk_id;
+            continue;
+        }
         if status != b'A' && status != b'D' {
             continue;
         }
@@ -932,6 +1310,269 @@ mod tests {
                 sqlite_vec::sqlite3_vec_init as *const ()
             )))
         };
+    }
+
+    #[test]
+    fn full_refresh_indexes_only_modified_hunk_sides_with_blob_relative_ranges() {
+        use std::{fs, os::unix::fs::PermissionsExt, process::Command};
+
+        let _cwd_lock = CWD_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+        let original_cwd = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let repo = tempfile::tempdir().unwrap();
+        let git = |args: &[&str]| {
+            let output = Command::new("git")
+                .args(args)
+                .current_dir(repo.path())
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            String::from_utf8(output.stdout).unwrap().trim().to_owned()
+        };
+        git(&["init", "-q"]);
+        git(&["config", "user.email", "test@example.com"]);
+        git(&["config", "user.name", "Test"]);
+        let old_text =
+            "unchanged-before\nold value\nunchanged-middle\nold value two\nunchanged-after\n";
+        let new_text =
+            "unchanged-before\nnew value\nunchanged-middle\nnew value two\nunchanged-after\n";
+        fs::write(repo.path().join("change.txt"), old_text).unwrap();
+        fs::write(repo.path().join("empty.txt"), "").unwrap();
+        fs::write(repo.path().join("cleared.txt"), "was present\n").unwrap();
+        fs::write(repo.path().join("insertion.txt"), "first\nlast\n").unwrap();
+        fs::write(
+            repo.path().join("deletion.txt"),
+            "first\nremove this line\nlast\n",
+        )
+        .unwrap();
+        git(&["add", "."]);
+        git(&["commit", "-qm", "before"]);
+        let parent = git(&["rev-parse", "HEAD"]);
+        fs::write(repo.path().join("change.txt"), new_text).unwrap();
+        fs::write(repo.path().join("empty.txt"), "now present\n").unwrap();
+        fs::write(repo.path().join("cleared.txt"), "").unwrap();
+        fs::write(
+            repo.path().join("insertion.txt"),
+            "first\ninserted line\nlast\n",
+        )
+        .unwrap();
+        fs::write(repo.path().join("deletion.txt"), "first\nlast\n").unwrap();
+        git(&["add", "."]);
+        git(&["commit", "-qm", "after"]);
+        let child = git(&["rev-parse", "HEAD"]);
+        let old_blob = git(&["rev-parse", &format!("{parent}:change.txt")]);
+        let new_blob = git(&["rev-parse", &format!("{child}:change.txt")]);
+
+        let embedder = repo.path().join("embedder");
+        fs::write(&embedder, "#!/bin/sh\ncat >/dev/null\nprintf '[1,0]'\n").unwrap();
+        fs::set_permissions(&embedder, fs::Permissions::from_mode(0o755)).unwrap();
+        let db = Connection::open_in_memory().unwrap();
+        db.execute_batch("CREATE TABLE embedding_config(key TEXT PRIMARY KEY,value TEXT NOT NULL); CREATE TEMP TABLE import_refresh_dimension(value INTEGER);").unwrap();
+        for (key, value) in [
+            ("command", embedder.to_str().unwrap()),
+            ("model", "test"),
+            ("dimension", "0"),
+        ] {
+            db.execute(
+                "INSERT INTO embedding_config VALUES(?1,?2)",
+                params![key, value],
+            )
+            .unwrap();
+        }
+        std::env::set_current_dir(repo.path()).unwrap();
+        prepare_refresh(&db).unwrap();
+        let tx = db.unchecked_transaction().unwrap();
+        publish_refresh(&tx).unwrap();
+        tx.commit().unwrap();
+
+        let references = diff_references(&db, Some(&parent), Some(&child)).unwrap();
+        assert_eq!(references.len(), 8);
+        let change_references: Vec<_> = references
+            .iter()
+            .filter(|reference| reference.old_path.as_deref() == Some(b"change.txt".as_slice()))
+            .collect();
+        let removed: Vec<_> = change_references
+            .iter()
+            .filter(|reference| reference.side == DiffSide::Removed)
+            .copied()
+            .collect();
+        let added: Vec<_> = change_references
+            .iter()
+            .filter(|reference| reference.side == DiffSide::Added)
+            .copied()
+            .collect();
+        assert_eq!(removed.len(), 2);
+        assert_eq!(added.len(), 2);
+        for pair in 0..2 {
+            assert_eq!(removed[pair].hunk_id, added[pair].hunk_id);
+            assert_eq!(
+                removed[pair].old_path.as_deref(),
+                Some(b"change.txt".as_slice())
+            );
+            assert_eq!(
+                removed[pair].new_path.as_deref(),
+                Some(b"change.txt".as_slice())
+            );
+            assert_eq!(
+                added[pair].old_path.as_deref(),
+                Some(b"change.txt".as_slice())
+            );
+            assert_eq!(
+                added[pair].new_path.as_deref(),
+                Some(b"change.txt".as_slice())
+            );
+            assert_eq!(removed[pair].blob_id, old_blob);
+            assert_eq!(added[pair].blob_id, new_blob);
+        }
+        assert_ne!(removed[0].hunk_id, removed[1].hunk_id);
+        assert_eq!(removed[0].old_line_start, Some(2));
+        assert_eq!(removed[0].old_line_end, Some(2));
+        assert_eq!(added[0].new_line_start, Some(2));
+        assert_eq!(added[0].new_line_end, Some(2));
+        assert_eq!((removed[0].line_start, removed[0].line_end), (2, 2));
+        assert_eq!((added[0].line_start, added[0].line_end), (2, 2));
+        assert_eq!(removed[1].old_line_start, Some(4));
+        assert_eq!(removed[1].old_line_end, Some(4));
+        assert_eq!(added[1].new_line_start, Some(4));
+        assert_eq!(added[1].new_line_end, Some(4));
+        assert_eq!((removed[1].line_start, removed[1].line_end), (4, 4));
+        assert_eq!((added[1].line_start, added[1].line_end), (4, 4));
+        assert_ne!(removed[0].unit_id, added[0].unit_id);
+        assert_eq!(
+            (removed[0].byte_start, removed[0].byte_end),
+            (
+                "unchanged-before\n".len(),
+                "unchanged-before\nold value".len()
+            )
+        );
+        assert_eq!(
+            (added[0].byte_start, added[0].byte_end),
+            (
+                "unchanged-before\n".len(),
+                "unchanged-before\nnew value".len()
+            )
+        );
+        let old_second_start = "unchanged-before\nold value\nunchanged-middle\n".len();
+        let new_second_start = "unchanged-before\nnew value\nunchanged-middle\n".len();
+        assert_eq!(
+            (removed[1].byte_start, removed[1].byte_end),
+            (old_second_start, old_second_start + "old value two".len())
+        );
+        assert_eq!(
+            (added[1].byte_start, added[1].byte_end),
+            (new_second_start, new_second_start + "new value two".len())
+        );
+        let added_to_empty = references
+            .iter()
+            .find(|reference| {
+                reference.side == DiffSide::Added
+                    && reference.new_path.as_deref() == Some(b"empty.txt".as_slice())
+            })
+            .unwrap();
+        assert_eq!(added_to_empty.old_line_start, None);
+        assert_eq!(added_to_empty.old_line_end, None);
+        assert_eq!(added_to_empty.new_line_start, Some(1));
+        let removed_from_cleared = references
+            .iter()
+            .find(|reference| {
+                reference.side == DiffSide::Removed
+                    && reference.old_path.as_deref() == Some(b"cleared.txt".as_slice())
+            })
+            .unwrap();
+        assert_eq!(removed_from_cleared.new_line_start, None);
+        assert_eq!(removed_from_cleared.new_line_end, None);
+        assert_eq!(removed_from_cleared.old_line_start, Some(1));
+        let inserted = references
+            .iter()
+            .find(|reference| {
+                reference.side == DiffSide::Added
+                    && reference.new_path.as_deref() == Some(b"insertion.txt".as_slice())
+            })
+            .unwrap();
+        assert_eq!(inserted.old_line_start, Some(1));
+        assert_eq!(inserted.new_line_start, Some(2));
+        let deleted = references
+            .iter()
+            .find(|reference| {
+                reference.side == DiffSide::Removed
+                    && reference.old_path.as_deref() == Some(b"deletion.txt".as_slice())
+            })
+            .unwrap();
+        assert_eq!(deleted.old_line_start, Some(2));
+        assert_eq!(deleted.new_line_start, Some(1));
+        std::env::set_current_dir(original_cwd).unwrap();
+    }
+
+    #[test]
+    fn full_refresh_skips_gitlink_diff_entries_without_aborting() {
+        use std::{fs, os::unix::fs::PermissionsExt, process::Command};
+
+        let _cwd_lock = CWD_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+        let original_cwd = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let repo = tempfile::tempdir().unwrap();
+        let git = |args: &[&str]| {
+            let output = Command::new("git")
+                .args(args)
+                .current_dir(repo.path())
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            String::from_utf8(output.stdout).unwrap().trim().to_owned()
+        };
+        git(&["init", "-q"]);
+        git(&["config", "user.email", "test@example.com"]);
+        git(&["config", "user.name", "Test"]);
+        fs::write(repo.path().join("base.txt"), "base\n").unwrap();
+        git(&["add", "."]);
+        git(&["commit", "-qm", "base"]);
+        let base = git(&["rev-parse", "HEAD"]);
+        git(&["checkout", "-qb", "gitlink-object"]);
+        fs::write(repo.path().join("inner.txt"), "inner\n").unwrap();
+        git(&["add", "inner.txt"]);
+        git(&["commit", "-qm", "inner"]);
+        let target = git(&["rev-parse", "HEAD"]);
+        git(&["checkout", "-qb", "gitlink-parent", &base]);
+        let cacheinfo = format!("160000,{target},module");
+        git(&["update-index", "--add", "--cacheinfo", &cacheinfo]);
+        git(&["commit", "-qm", "add gitlink"]);
+        let child = git(&["rev-parse", "HEAD"]);
+
+        let embedder = repo.path().join("embedder");
+        fs::write(&embedder, "#!/bin/sh\ncat >/dev/null\nprintf '[1,0]'\n").unwrap();
+        fs::set_permissions(&embedder, fs::Permissions::from_mode(0o755)).unwrap();
+        let db = Connection::open_in_memory().unwrap();
+        db.execute_batch("CREATE TABLE embedding_config(key TEXT PRIMARY KEY,value TEXT NOT NULL); CREATE TEMP TABLE import_refresh_dimension(value INTEGER);").unwrap();
+        for (key, value) in [
+            ("command", embedder.to_str().unwrap()),
+            ("model", "test"),
+            ("dimension", "0"),
+        ] {
+            db.execute(
+                "INSERT INTO embedding_config VALUES(?1,?2)",
+                params![key, value],
+            )
+            .unwrap();
+        }
+
+        std::env::set_current_dir(repo.path()).unwrap();
+        let refresh = prepare_refresh(&db);
+        std::env::set_current_dir(original_cwd).unwrap();
+        refresh.unwrap();
+        let tx = db.unchecked_transaction().unwrap();
+        publish_refresh(&tx).unwrap();
+        tx.commit().unwrap();
+        assert!(
+            diff_references(&db, Some(&base), Some(&child))
+                .unwrap()
+                .is_empty()
+        );
     }
 
     #[test]
@@ -1976,7 +2617,7 @@ pub(crate) fn diff_references(
     parent_commit_id: Option<&str>,
     child_commit_id: Option<&str>,
 ) -> Result<Vec<DiffReference>> {
-    let mut statement = c.prepare("SELECT parent_commit_id,child_commit_id,hunk_id,side,old_path,new_path,old_line_start,old_line_end,new_line_start,new_line_end,blob_id,byte_start,byte_end FROM diff_references WHERE (?1 IS NULL OR parent_commit_id=?1) AND (?2 IS NULL OR child_commit_id=?2) ORDER BY child_commit_id,parent_commit_id,hunk_id,side,byte_start")?;
+    let mut statement = c.prepare("SELECT parent_commit_id,child_commit_id,hunk_id,side,old_path,new_path,old_line_start,old_line_end,new_line_start,new_line_end,blob_id,unit_id,byte_start,byte_end,line_start,line_end FROM diff_references WHERE (?1 IS NULL OR parent_commit_id=?1) AND (?2 IS NULL OR child_commit_id=?2) ORDER BY child_commit_id,parent_commit_id,hunk_id,side,byte_start")?;
     let rows = statement.query_map(params![parent_commit_id, child_commit_id], |row| {
         let side: String = row.get(3)?;
         let maybe_usize = |index| -> rusqlite::Result<Option<usize>> {
@@ -2003,10 +2644,13 @@ pub(crate) fn diff_references(
             new_line_start: maybe_usize(8)?,
             new_line_end: maybe_usize(9)?,
             blob_id: row.get(10)?,
-            byte_start: usize::try_from(row.get::<_, i64>(11)?)
+            unit_id: row.get(11)?,
+            byte_start: usize::try_from(row.get::<_, i64>(12)?)
                 .map_err(|_| rusqlite::Error::InvalidQuery)?,
-            byte_end: usize::try_from(row.get::<_, i64>(12)?)
+            byte_end: usize::try_from(row.get::<_, i64>(13)?)
                 .map_err(|_| rusqlite::Error::InvalidQuery)?,
+            line_start: maybe_usize(14)?.ok_or(rusqlite::Error::InvalidQuery)?,
+            line_end: maybe_usize(15)?.ok_or(rusqlite::Error::InvalidQuery)?,
         })
     })?;
     Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
