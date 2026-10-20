@@ -1,5 +1,9 @@
 # Changelog
 
+## v0.2.3
+
+- Document the proposed 0.3.0 search and import specification and supporting research; no 0.3.0 features are implemented in this release.
+
 ## v0.2.1
 
 - Store Git history text as blob-backed byte and line ranges, hydrating results from Git objects at search time.
