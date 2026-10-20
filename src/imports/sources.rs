@@ -1,17 +1,19 @@
 use super::cache::checksum;
-use crate::Result;
+use crate::{Result, budget::Budget};
 use rusqlite::{Connection, params};
 use serde::Serialize;
 use std::{
     fs,
     path::{Path, PathBuf},
-    process::Command,
+    process::{Command, Stdio},
 };
 
 const LARGE_SOURCE_WARNING_THRESHOLD_BYTES: u64 = 50_000_000;
 
 #[derive(Serialize)]
 pub(crate) struct Preview {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    selected_url: Option<String>,
     selected_supported_local_files: Vec<String>,
     unsupported_regular_files: Vec<UnsupportedFile>,
     total_selected_source_bytes: u64,
@@ -25,6 +27,16 @@ pub(crate) struct Preview {
 struct UnsupportedFile {
     path: String,
     reason: String,
+}
+
+fn preview_size_fields(total: u64, database: &Path) -> (Option<u64>, u64, bool) {
+    let current_db_bytes = fs::metadata(database)
+        .ok()
+        .filter(|metadata| metadata.is_file())
+        .map(|metadata| metadata.len());
+    let warn_large = total >= LARGE_SOURCE_WARNING_THRESHOLD_BYTES
+        || current_db_bytes.is_some_and(|size| total > size.saturating_mul(2));
+    (current_db_bytes, total, warn_large)
 }
 
 pub(crate) fn preview(path: &Path, database: &Path) -> Result<Preview> {
@@ -63,19 +75,49 @@ pub(crate) fn preview(path: &Path, database: &Path) -> Result<Preview> {
             });
         }
     }
-    let current_db_bytes = fs::metadata(database)
-        .ok()
-        .filter(|metadata| metadata.is_file())
-        .map(|metadata| metadata.len());
-    let warn_large = total >= LARGE_SOURCE_WARNING_THRESHOLD_BYTES
-        || current_db_bytes.is_some_and(|size| total > size.saturating_mul(2));
+    let (current_db_bytes, warning_basis_bytes, warn_large) = preview_size_fields(total, database);
     Ok(Preview {
+        selected_url: None,
         selected_supported_local_files: supported,
         unsupported_regular_files: unsupported,
         total_selected_source_bytes: total,
         current_db_bytes,
         estimated_net_db_growth_bytes: None,
-        warning_basis_bytes: total,
+        warning_basis_bytes,
+        warn_large,
+    })
+}
+
+pub(crate) fn preview_url(url: &str, database: &Path) -> Result<Preview> {
+    let mut command = super::configured_url_curl();
+    let mut child = command
+        .args(["--output", "/dev/null", "--write-out", "%{size_download}"])
+        .arg(url)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()?;
+    let mut budget = Budget::new(
+        64 + super::MAX_COMMAND_STDERR_BYTES,
+        "URL preview subprocess output",
+    );
+    let (status, output, stderr) = super::bounded_command_output(&mut child, 64, &mut budget)?;
+    if !status.success() {
+        return Err(format!(
+            "URL preview fetch failed for {url}: {}",
+            String::from_utf8_lossy(&stderr)
+        )
+        .into());
+    }
+    let total = String::from_utf8(output)?.trim().parse::<u64>()?;
+    let (current_db_bytes, warning_basis_bytes, warn_large) = preview_size_fields(total, database);
+    Ok(Preview {
+        selected_url: Some(url.to_owned()),
+        selected_supported_local_files: Vec::new(),
+        unsupported_regular_files: Vec::new(),
+        total_selected_source_bytes: total,
+        current_db_bytes,
+        estimated_net_db_growth_bytes: None,
+        warning_basis_bytes,
         warn_large,
     })
 }

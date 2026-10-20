@@ -73,6 +73,50 @@ fn run_with_env(repo: &Path, args: &[&str], vars: &[(&str, &str)]) -> (bool, Str
     )
 }
 
+fn http_server(
+    body: Vec<u8>,
+    request_count: usize,
+) -> (String, std::thread::JoinHandle<Vec<String>>) {
+    use std::{
+        io::{Read, Write},
+        net::TcpListener,
+        time::{Duration, Instant},
+    };
+
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let server = std::thread::spawn(move || {
+        let mut requests = Vec::with_capacity(request_count);
+        for _ in 0..request_count {
+            let deadline = Instant::now() + Duration::from_secs(5);
+            let (mut stream, _) = loop {
+                match listener.accept() {
+                    Ok(connection) => break connection,
+                    Err(error)
+                        if error.kind() == std::io::ErrorKind::WouldBlock
+                            && Instant::now() < deadline =>
+                    {
+                        std::thread::sleep(Duration::from_millis(10));
+                    }
+                    Err(error) => panic!("HTTP preview request was not received: {error}"),
+                }
+            };
+            let mut request = [0; 2048];
+            let bytes_read = stream.read(&mut request).unwrap();
+            let headers = format!(
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                body.len()
+            );
+            stream.write_all(headers.as_bytes()).unwrap();
+            stream.write_all(&body).unwrap();
+            requests.push(String::from_utf8_lossy(&request[..bytes_read]).into_owned());
+        }
+        requests
+    });
+    (format!("http://{address}"), server)
+}
+
 fn repository() -> tempfile::TempDir {
     let dir = tempfile::tempdir().unwrap();
     git(dir.path(), &["init", "-q"]);
@@ -300,6 +344,97 @@ fn import_preview_warns_when_source_exceeds_twice_existing_database_size() {
     assert_eq!(greater_preview["total_selected_source_bytes"], 100);
     assert_eq!(greater_preview["current_db_bytes"], 49);
     assert_eq!(greater_preview["warn_large"], true);
+}
+
+#[test]
+fn url_import_preview_reports_body_size_without_import_side_effects() {
+    let repo = repository();
+    let root = repo.path();
+    assert!(run(root, &["init"]).0);
+    let database_path = root.join(".git/repodb.sqlite");
+    let body = b"<a href='http://127.0.0.1:1/other'>link</a> preview text".to_vec();
+    let body_size = body.len() as u64;
+    let (origin, server) = http_server(body, 2);
+    let url = format!("{origin}/preview.html");
+    assert!(run(root, &["import", &url]).0);
+    assert!(run(root, &["refresh", "--imports"]).0);
+    let before = search_json(root, &["preview text"])
+        .into_iter()
+        .find(|result| result["path"] == url)
+        .unwrap();
+    assert!(before["first_retrieved_at"].is_string());
+    assert!(before["last_retrieved_at"].is_string());
+    let database_size = fs::metadata(&database_path).unwrap().len();
+    std::thread::sleep(std::time::Duration::from_millis(1100));
+
+    let (ok, output) = run(root, &["import", "--preview", &url]);
+    assert!(ok, "{output}");
+    let requests = server.join().unwrap();
+    assert_eq!(requests.len(), 2);
+    assert!(
+        requests
+            .iter()
+            .all(|request| { request.starts_with("GET /preview.html HTTP/1.1") }),
+        "{requests:?}"
+    );
+    let preview: serde_json::Value = serde_json::from_str(&output).unwrap();
+    assert_eq!(preview["selected_url"], url);
+    assert_eq!(preview["total_selected_source_bytes"], body_size);
+    assert_eq!(preview["current_db_bytes"], database_size);
+    assert_eq!(
+        preview["estimated_net_db_growth_bytes"],
+        serde_json::Value::Null
+    );
+    assert_eq!(preview["warning_basis_bytes"], body_size);
+    assert_eq!(preview["warn_large"], false);
+    assert_eq!(fs::metadata(&database_path).unwrap().len(), database_size);
+    let after = search_json(root, &["preview text"])
+        .into_iter()
+        .find(|result| result["path"] == url)
+        .unwrap();
+    assert_eq!(
+        after, before,
+        "preview must not alter indexed content or provenance"
+    );
+
+    let database = rusqlite::Connection::open(database_path).unwrap();
+    let sources: i64 = database
+        .query_row("SELECT count(*) FROM imported_sources", [], |row| {
+            row.get(0)
+        })
+        .unwrap();
+    let versions: i64 = database
+        .query_row("SELECT count(*) FROM imported_versions", [], |row| {
+            row.get(0)
+        })
+        .unwrap();
+    assert_eq!((sources, versions), (1, 1));
+}
+
+#[test]
+fn url_import_preview_warns_using_source_bytes_when_growth_is_unknown() {
+    let repo = repository();
+    let root = repo.path();
+    let database_path = root.join(".git/repodb.sqlite");
+    fs::write(&database_path, b"x").unwrap();
+    let body = b"abc".to_vec();
+    let body_size = body.len() as u64;
+    let (origin, server) = http_server(body, 1);
+    let url = format!("{origin}/small.txt");
+
+    let (ok, output) = run(root, &["import", "--preview", &url]);
+    assert!(ok, "{output}");
+    server.join().unwrap();
+    let preview: serde_json::Value = serde_json::from_str(&output).unwrap();
+    assert_eq!(preview["selected_url"], url);
+    assert_eq!(preview["total_selected_source_bytes"], body_size);
+    assert_eq!(preview["current_db_bytes"], 1);
+    assert_eq!(
+        preview["estimated_net_db_growth_bytes"],
+        serde_json::Value::Null
+    );
+    assert_eq!(preview["warning_basis_bytes"], body_size);
+    assert_eq!(preview["warn_large"], true);
 }
 
 #[test]

@@ -551,13 +551,23 @@ fn execute() -> Result<()> {
                 .next()
                 .ok_or("import requires one local file, URL, or Git repository")?;
             if first == "--preview" {
-                let path = a
-                    .next()
-                    .ok_or("import --preview requires a local file or directory")?;
+                let path = a.next().ok_or(
+                    "import --preview requires a local file, directory, or HTTP(S) page URL",
+                )?;
                 if a.next().is_some() {
-                    return Err("import --preview accepts one local file or directory".into());
+                    return Err(
+                        "import --preview accepts one local file, directory, or HTTP(S) page URL"
+                            .into(),
+                    );
                 }
-                let preview = imports::preview(std::path::Path::new(&path), &db_path)?;
+                let preview = if path.starts_with("http://") || path.starts_with("https://") {
+                    if path.ends_with(".git") {
+                        return Err("import --preview does not preview Git repositories".into());
+                    }
+                    imports::preview_url(&path, &db_path)?
+                } else {
+                    imports::preview(std::path::Path::new(&path), &db_path)?
+                };
                 println!("{}", serde_json::to_string(&preview)?);
             } else {
                 let (revision, locator) = if first == "--revision" {

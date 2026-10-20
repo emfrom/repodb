@@ -70,7 +70,7 @@ The import skill supports one explicitly selected source per invocation: a websi
 - Local documentation import accepts an explicitly selected file or directory; directory recursion is explicit and the selected content/scope is shown before import. Required documentation formats are Markdown (`.md`, `.markdown`), plain text (`.txt`), PDF, HTML, and Org mode (`.org`). If a source cannot be imported, report the reason and a supported alternative; do not silently skip it or perform surprising conversion.
 - Repository import defaults to HEAD. The selected revision must be pinned/resolved to a commit identifier; users/agents may explicitly choose a branch, tag, or commit. Do not import full Git history by default.
 - Website snapshot policy (resolved in #52/#54): each explicit full or import-only refresh fetches a registered URL; search never fetches. SHA-256 of response-body bytes is the version identity and JSON `blob_id`; unchanged bodies deduplicate and update `last_retrieved_at`, while changed bodies create versions. UTC RFC3339 retrieval timestamps are exposed in search JSON; migration leaves legacy timestamps null without fetching, and later refreshes update `last_retrieved_at` while preserving a null unknown `first_retrieved_at`. `latest` remains the default and keeps the latest successfully published version; `all` preserves distinct hashes. When `latest` prunes a hash, its first timestamp cannot be reconstructed if that hash later returns, so the new retained row starts a new `first_retrieved_at` lifetime. Explicit bounded crawling remains separately scoped to #55.
-- Imports of any size remain possible. Warn when estimated net database growth is at least 50 MB or exceeds twice the existing database size. Show source size and estimated net growth; if growth cannot be estimated, use source size for the warning. The agent decides whether to proceed and whether user approval is required by policy.
+- Imports of any size remain possible. Warn when estimated net database growth is at least 50 MB or exceeds twice the existing database size. Show source size and estimated net growth; if growth cannot be estimated, use source size for the warning. The agent decides whether to proceed and whether user approval is required by policy. For an explicitly selected HTTP(S) page, `repodb import --preview URL` makes one GET without registering or indexing the page, reports response-body bytes and current database size, and uses source bytes when growth is unknown; the subsequent import fetches again and may observe different content.
 
 ## Testing Decisions
 
@@ -88,7 +88,6 @@ The import skill supports one explicitly selected source per invocation: a websi
 - Importing full Git history by default.
 - Batch imports; agents can make multiple single-source import requests.
 - Automatically crawling websites, crossing the explicitly supplied site's boundary, or crawling without explicit bounds.
-- Deciding retention/update behavior for non-Git-tracked external information; this remains open.
 - Automatically fetching or reconstructing missing source objects during search.
 - Silently substituting exact search when semantic search is unavailable.
 - Implementing scoped searches in this work; see follow-up issue #39.
@@ -98,4 +97,4 @@ The import skill supports one explicitly selected source per invocation: a websi
 
 - The scope decision was developed from ticket #37; scoped-search implementation is tracked separately in #39.
 - RepoDB's current CLI supports one file, URL, or Git repository per import request and rejects ordinary directories. The spec intentionally describes the agreed target interface, including website crawling, selected local directories, HTML/Org-mode documents, and explicit repository revision selection.
-- Exact updating/retention semantics for websites and other non-Git-tracked external information were explicitly left undecided.
+- Website snapshot update/retention semantics were resolved by #52/#54 and are recorded above. URL preview/size warnings are implemented by #43; bounded crawling remains separately scoped to #55.

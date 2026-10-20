@@ -17,7 +17,7 @@ mod cache;
 mod sources;
 use cache::{checksum, visit_cache_pages, write_cache};
 use sources::{column_exists, init};
-pub(crate) use sources::{preview, register, set_retention};
+pub(crate) use sources::{preview, preview_url, register, set_retention};
 const MAX_COMMAND_STDERR_BYTES: usize = 64 * 1024;
 
 fn html_text(source: &str) -> String {
@@ -106,6 +106,21 @@ fn read_all(reader: impl Read) -> Result<Vec<u8>> {
     let mut reader = reader;
     reader.read_to_end(&mut bytes)?;
     Ok(bytes)
+}
+
+fn configured_url_curl() -> Command {
+    let mut command = Command::new("curl");
+    command.args([
+        "--fail",
+        "--location",
+        "--silent",
+        "--show-error",
+        "--max-time",
+        "30",
+        "--proto-redir",
+        "=http,https",
+    ]);
+    command
 }
 
 fn bounded_command_output(
@@ -568,18 +583,9 @@ pub fn refresh(c: &Connection) -> Result<()> {
         let source_bytes = if kind == "file" {
             read_all(fs::File::open(&locator)?)?
         } else {
-            let mut child = Command::new("curl")
-                .args([
-                    "--fail",
-                    "--location",
-                    "--silent",
-                    "--show-error",
-                    "--max-time",
-                    "30",
-                    "--proto-redir",
-                    "=http,https",
-                    &locator,
-                ])
+            let mut command = configured_url_curl();
+            let mut child = command
+                .arg(&locator)
                 .stdout(Stdio::piped())
                 .stderr(Stdio::piped())
                 .spawn()?;
