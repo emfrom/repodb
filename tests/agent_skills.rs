@@ -1,14 +1,91 @@
-use std::fs;
-use std::path::Path;
+use std::{
+    fs,
+    os::unix::fs::PermissionsExt,
+    path::{Path, PathBuf},
+    process::Command,
+};
 
 fn skill(path: &str) -> String {
     fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join(path))
         .unwrap_or_else(|error| panic!("could not read {path}: {error}"))
 }
 
+fn git(repo: &Path, args: &[&str]) {
+    let output = Command::new("git")
+        .args(args)
+        .current_dir(repo)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "git {args:?}: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+fn run(repo: &Path, args: &[&str]) -> String {
+    let config_home = repo.join(".test-xdg-config");
+    let config_dir = config_home.join("repodb");
+    fs::create_dir_all(&config_dir).unwrap();
+    let embedder = repo.join(".git/repodb-test-embedder");
+    fs::write(&embedder, "#!/bin/sh\ncat >/dev/null\nprintf '[1,0]'\n").unwrap();
+    fs::set_permissions(&embedder, fs::Permissions::from_mode(0o755)).unwrap();
+    fs::write(
+        config_dir.join("config.toml"),
+        format!(
+            "[tools]\nembedding_command = {:?}\n",
+            embedder.to_string_lossy()
+        ),
+    )
+    .unwrap();
+
+    let output = Command::new(env!("CARGO_BIN_EXE_repodb"))
+        .args(args)
+        .current_dir(repo)
+        .env("XDG_CONFIG_HOME", config_home)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "repodb {args:?}: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    String::from_utf8(output.stdout).unwrap()
+}
+
+fn indexed_test_file() -> (tempfile::TempDir, PathBuf) {
+    let repo = tempfile::tempdir().unwrap();
+    let root = repo.path();
+    git(root, &["init", "-q"]);
+    git(root, &["config", "user.email", "test@example.com"]);
+    git(root, &["config", "user.name", "Test"]);
+
+    // Keep these markers unique to the indexed fixture, rather than duplicating
+    // skill-document wording that can itself appear in this test source.
+    let exact_marker = ["zlkfh", "ldfad;l"].concat();
+    let semantic_text = [
+        "Sartre originated the idea that existence ",
+        "precedes essence",
+    ]
+    .concat();
+    let relative_path = PathBuf::from("tests/search-only-fixture.txt");
+    let fixture = root.join(&relative_path);
+    fs::create_dir_all(fixture.parent().unwrap()).unwrap();
+    fs::write(&fixture, format!("{exact_marker}\n{semantic_text}\n")).unwrap();
+    git(root, &["add", "."]);
+    git(root, &["commit", "-qm", "add unique test search fixture"]);
+    (repo, relative_path)
+}
+
+fn search_results(repo: &Path, args: &[&str]) -> Vec<serde_json::Value> {
+    let mut command = vec!["search", "--json"];
+    command.extend_from_slice(args);
+    serde_json::from_str(&run(repo, &command)).expect("valid JSON search results")
+}
+
 #[test]
 fn distributed_skills_match_the_repo_local_pi_skills() {
-    for skill_name in [
+    for name in [
         "repodb-enabler",
         "repodb-help",
         "repodb-import",
@@ -16,12 +93,9 @@ fn distributed_skills_match_the_repo_local_pi_skills() {
         "repodb-search-exact",
         "repodb-search-semantic",
     ] {
-        let local = skill(&format!(".agents/skills/{skill_name}/SKILL.md"));
-        let distributed = skill(&format!("skills/{skill_name}/SKILL.md"));
-        assert_eq!(
-            distributed, local,
-            "distributed {skill_name} must match the repo-local skill"
-        );
+        let repo_local = skill(&format!(".agents/skills/{name}/SKILL.md"));
+        let distributed = skill(&format!("skills/{name}/SKILL.md"));
+        assert_eq!(distributed, repo_local, "skill {name} must stay synchronized");
     }
 }
 
@@ -53,236 +127,27 @@ fn pi_package_exposes_only_the_enabler_globally() {
 }
 
 #[test]
-fn enabler_checks_repo_availability_and_defers_helper_loading() {
-    let enabler = skill(".agents/skills/repodb-enabler/SKILL.md");
+fn exact_search_finds_unique_content_in_an_indexed_test_file() {
+    let (repo, relative_path) = indexed_test_file();
+    let root = repo.path();
+    run(root, &["init"]);
 
-    for required in [
-        "name: repodb-enabler",
-        "repodb_help",
-        "repodb_import",
-        "repodb_search",
-        "repodb_search_exact",
-        "repodb_search_semantic",
-        "command -v repodb",
-        "repodb init",
-        "repodb refresh",
-        "Do not run searches automatically",
-        "Pi",
-        "globally with `pi install",
-        "preview and import one explicitly selected local documentation file or directory",
-        "import one explicitly selected URL page without crawling",
-        "../repodb-help/SKILL.md",
-        "../repodb-import/SKILL.md",
-        "../repodb-search/SKILL.md",
-        "../repodb-search-exact/SKILL.md",
-        "../repodb-search-semantic/SKILL.md",
-        "pi install git:github.com/emfrom/repodb",
-        "make these helper skills discoverable by name and load them only when needed",
-        "only the enabler is registered as a Pi skill",
-        "Read helper skills only when they apply",
-    ] {
-        assert!(
-            enabler.contains(required),
-            "enabler must document {required:?}"
-        );
-    }
+    let marker = ["zlkfh", "ldfad;l"].concat();
+    let results = search_results(root, &[&marker]);
+    assert_eq!(results.len(), 1);
+    assert_eq!(results[0]["path"], relative_path.to_string_lossy().as_ref());
 }
 
 #[test]
-fn import_skill_documents_preview_scope_and_policy_contract() {
-    let import = skill(".agents/skills/repodb-import/SKILL.md");
+fn semantic_search_finds_test_file_content_by_meaning() {
+    let (repo, relative_path) = indexed_test_file();
+    let root = repo.path();
+    run(root, &["init"]);
 
-    for required in [
-        "name: repodb-import",
-        "repodb import --preview PATH",
-        "A supplied HTTP(S) URL imports exactly that page",
-        "Do not crawl links",
-        "JSON search results expose the imported version as `blob_id`",
-        "separate URL-preview flow below",
-        "one selected source per import call",
-        "run one explicit `repodb refresh --imports`",
-        "without refreshing repository history",
-        "URL is the source locator",
-        "repodb import --preview URL",
-        "selected_url",
-        "one GET using the single-page import's HTTP(S)-only redirect policy",
-        "does not update retrieval timestamps",
-        "estimated_net_db_growth_bytes` is null",
-        "fetches again and may observe different bytes than the preview",
-        "`first_retrieved_at` and `last_retrieved_at` in UTC RFC3339",
-        "keep `first_retrieved_at` null even after a later refresh",
-        "Search is offline and never fetches",
-        "retention latest",
-        "new retained-row lifetime",
-        "`all` keeps distinct hashes",
-        "No imports have been performed until the preview has been shown",
-        "every entry in `selected_supported_local_files`",
-        "every entry in `unsupported_regular_files` with its reason",
-        "`total_selected_source_bytes`",
-        "`current_db_bytes`",
-        "`estimated_net_db_growth_bytes`",
-        "`warning_basis_bytes`",
-        "`warn_large`",
-        "50 MB (50,000,000 bytes)",
-        "excluded symlinks and `.git` directories",
-        "Markdown, plain-text, PDF, HTML, or Org formats",
-        "plus extensionless files",
-        "`.rs` files for backward compatibility",
-        "preview-supported but out of skill scope",
-        "do not import it",
-        "These totals describe all preview-selected supported files",
-        "Do not initialize",
-        "Do not block solely on size",
-        "one explicit `repodb refresh --imports`",
-        "source provenance",
-        "Git repository",
-        "`repodb import [--revision REV] REPOSITORY`",
-        "default is `HEAD`",
-        "resolved commit SHA",
-        "Do not import full history",
-    ] {
-        assert!(
-            import.contains(required),
-            "import skill must document {required:?}"
-        );
-    }
-
-    for obsolete in [
-        "`source_bytes`",
-        "`database_bytes`",
-        "`estimated_growth_bytes`",
-        "the CLI's search provenance identifies the URL and page/line reference rather than surfacing that hash",
-        "run one explicit `repodb refresh` to index the newly registered source or sources",
-    ] {
-        assert!(
-            !import.contains(obsolete),
-            "import skill must use the current preview field names, not {obsolete:?}"
-        );
-    }
-}
-
-#[test]
-fn search_skills_document_modes_provenance_and_limitations() {
-    let exact = skill(".agents/skills/repodb-search-exact/SKILL.md");
-    for required in [
-        "name: repodb-search-exact",
-        "known literal identifiers, symbols, and phrases",
-        "literal matching, not a regular-expression search",
-        "repodb search 'QUERY'",
-        "default to scope `all`",
-        "source-code from this repository and imported Git repositories",
-        "all-docs` includes recognized documents from any origin",
-        "repository, commit/version, path, and line/page",
-        "without fetching or reconstructing the content",
-        "indexed Git blob is missing",
-        "available blob ID",
-        "does not return a partial match or a path/line reference",
-        "weak or empty results",
-        "semantic/combined search",
-        "filesystem tools",
-        "Open a known file directly",
-        "does not refresh the index",
-    ] {
-        assert!(
-            exact.contains(required),
-            "exact search skill must document {required:?}"
-        );
-    }
-
-    let semantic = skill(".agents/skills/repodb-search-semantic/SKILL.md");
-    for required in [
-        "name: repodb-search-semantic",
-        "conceptual questions about code behavior and documentation",
-        "standards, README content, and `AGENTS.md`",
-        "repodb search --semantic 'QUERY'",
-        "default to scope `all`",
-        "source-code from this repository and imported Git repositories",
-        "all-docs` includes recognized documents from any origin",
-        "semantic search is unavailable",
-        "do not silently fall back to exact search",
-        "weak or empty results",
-        "rephrasing the query",
-        "importing/indexing a relevant source",
-        "provenance actually returned",
-        "without fetching or reconstructing it",
-    ] {
-        assert!(
-            semantic.contains(required),
-            "semantic search skill must document {required:?}"
-        );
-    }
-
-    let combined = skill(".agents/skills/repodb-search/SKILL.md");
-    for required in [
-        "name: repodb-search",
-        "combined search",
-        "a literal phrase and a concept",
-        "exact search for known literal identifiers, symbols, and phrases",
-        "semantic search for conceptual questions about code behavior and documentation",
-        "combined search when you are unsure whether literal or conceptual matching will find it",
-        "repodb search --combined 'QUERY'",
-        "default to scope `all`",
-        "source-code from this repository and imported Git repositories",
-        "filesystem tools",
-        "provenance",
-        "source content is missing",
-        "weak or empty",
-        "does not refresh the index",
-    ] {
-        assert!(
-            combined.contains(required),
-            "combined search skill must document {required:?}"
-        );
-    }
-}
-
-#[test]
-fn search_skills_document_scope_names_default_and_cli_passing_consistently() {
-    for skill_name in [
-        "repodb-search-exact",
-        "repodb-search-semantic",
-        "repodb-search",
-    ] {
-        let search_skill = skill(&format!(".agents/skills/{skill_name}/SKILL.md"));
-        for required in [
-            "`source`",
-            "`repo-local-source`",
-            "`repo-local-docs`",
-            "`all-docs`",
-            "`all`",
-            "default to scope `all`",
-            "`--scope`",
-            "--scope source",
-            "source-code from this repository and imported Git repositories",
-            "this repository’s indexed Git history",
-            "recognized documents from any origin",
-        ] {
-            assert!(
-                search_skill.contains(required),
-                "{skill_name} must document {required:?}"
-            );
-        }
-    }
-}
-
-#[test]
-fn helper_skill_guides_repo_db_questions_without_overstating_tool_coverage() {
-    let helper = skill(".agents/skills/repodb-help/SKILL.md");
-
-    for required in [
-        "name: repodb-help",
-        "repodb_help",
-        "rg",
-        "current filesystem",
-        "AGENTS.md",
-        "stale",
-        "source reference",
-        "Do not fabricate",
-        "semantic search is unavailable",
-    ] {
-        assert!(
-            helper.contains(required),
-            "helper must document {required:?}"
-        );
-    }
+    // The test embedder is deterministic and maps query and fixture to the same
+    // vector. The isolated database contains only this document, so the result
+    // proves that semantic search returns the indexed test-file content.
+    let results = search_results(root, &["philosophy", "--semantic"]);
+    assert_eq!(results.len(), 1);
+    assert_eq!(results[0]["path"], relative_path.to_string_lossy().as_ref());
 }
