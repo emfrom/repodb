@@ -21,7 +21,7 @@ If both are available, explain that indexed results can be stale after repositor
 When RepoDB is available, make these helper skills discoverable by name and load them only when needed:
 
 - `repodb_help` — answer RepoDB usage and capability questions; read `../repodb-help/SKILL.md` relative to this skill file.
-- `repodb_import` — preview and import one explicitly selected local documentation file or directory; read `../repodb-import/SKILL.md` relative to this skill file.
+- `repodb_import` — import one explicitly selected URL page without crawling; preview and import one explicitly selected local documentation file or directory; also supports one Git repository; read `../repodb-import/SKILL.md` relative to this skill file.
 - `repodb_search` — combined exact and semantic discovery; read `../repodb-search/SKILL.md` relative to this skill file.
 - `repodb_search_exact` — literal matching; read `../repodb-search-exact/SKILL.md` relative to this skill file.
 - `repodb_search_semantic` — conceptual search; read `../repodb-search-semantic/SKILL.md` relative to this skill file.
