@@ -961,30 +961,33 @@ fn refresh_scoped(c: &mut Connection, target: Option<&str>) -> Result<()> {
     let parent = if target.is_some() {
         None
     } else {
-        let parent_record = String::from_utf8(git_output(
-            &["rev-list", "--parents", "-n", "1", &target_commit_id],
-            256,
-            &mut budget,
-        )?)?;
-        let mut parents = parent_record.split_whitespace();
-        if parents.next() != Some(target_commit_id.as_str()) {
-            return Err("Git returned an invalid HEAD record".into());
-        }
-        let parent = parents.next().map(str::to_owned);
-        if let Some(parent) = parent.as_deref() {
+        let mut cursor = target_commit_id.clone();
+        let mut indexed_ancestor = None;
+        loop {
+            let parent_record = String::from_utf8(git_output(
+                &["rev-list", "--parents", "-n", "1", &cursor],
+                256,
+                &mut budget,
+            )?)?;
+            let mut parents = parent_record.split_whitespace();
+            if parents.next() != Some(cursor.as_str()) {
+                return Err("Git returned an invalid first-parent record".into());
+            }
+            let Some(first_parent) = parents.next().map(str::to_owned) else {
+                break;
+            };
             let parent_indexed: bool = c.query_row(
                 "SELECT EXISTS(SELECT 1 FROM git_commits WHERE commit_id=?1)",
-                [parent],
+                [&first_parent],
                 |row| row.get(0),
             )?;
-            if !parent_indexed {
-                return Err(format!(
-                    "first parent {parent} is not indexed; run repodb refresh before scoped refresh"
-                )
-                .into());
+            if parent_indexed {
+                indexed_ancestor = Some(first_parent);
+                break;
             }
+            cursor = first_parent;
         }
-        parent
+        indexed_ancestor
     };
     let timestamp: i64 = String::from_utf8(git_output(
         &["show", "-s", "--format=%ct", &target_commit_id],

@@ -3314,38 +3314,45 @@ fn changed_refresh_indexes_the_initial_branch_commit() {
 }
 
 #[test]
-fn changed_refresh_requires_an_indexed_first_parent_and_keeps_the_snapshot() {
+fn changed_refresh_indexes_all_changes_since_the_last_indexed_commit() {
     let repo = repository();
     let root = repo.path();
     let baseline = git_text(root, &["rev-parse", "HEAD"]);
     assert!(run(root, &["init"]).0);
 
-    fs::write(root.join("middle.txt"), "unindexed parent marker\n").unwrap();
+    fs::write(root.join("middle.txt"), "unindexed intermediate marker\n").unwrap();
     git(root, &["add", "middle.txt"]);
-    git(root, &["commit", "-qm", "unindexed parent"]);
-    fs::write(root.join("latest.txt"), "unindexed head marker\n").unwrap();
+    git(root, &["commit", "-qm", "intermediate change"]);
+    fs::write(root.join("latest.txt"), "unindexed latest marker\n").unwrap();
     git(root, &["add", "latest.txt"]);
-    git(root, &["commit", "-qm", "unindexed head"]);
+    git(root, &["commit", "-qm", "latest change"]);
+    let current = git_text(root, &["rev-parse", "HEAD"]);
 
-    let output = Command::new(env!("CARGO_BIN_EXE_repodb"))
-        .args(["refresh", "--changed"])
-        .current_dir(root)
-        .env("XDG_CONFIG_HOME", root.join(".test-xdg-config"))
-        .env(
-            "REPODB_SEMGREP_CORE",
-            semgrep_corpus::required_semgrep_core(),
-        )
-        .output()
-        .unwrap();
-    assert!(!output.status.success());
-    let diagnostic = String::from_utf8(output.stderr).unwrap();
-    assert!(diagnostic.contains("first parent"), "{diagnostic}");
-    assert!(diagnostic.contains("run repodb refresh"), "{diagnostic}");
+    let (success, output) = run(root, &["refresh", "--changed"]);
+    assert!(success, "{output}");
+
+    for (query, path) in [
+        ("unindexed intermediate marker", "middle.txt"),
+        ("unindexed latest marker", "latest.txt"),
+    ] {
+        let results = search_json(root, &[query]);
+        assert_eq!(results.len(), 1, "{query}: {results:?}");
+        assert_eq!(results[0]["path"], path);
+        assert_eq!(results[0]["commit_id"], current);
+    }
     assert_eq!(
         search_json(root, &["TARGET", "--commit", &baseline]).len(),
-        1
+        1,
+        "the previous indexed commit remains searchable"
     );
-    assert!(search_json(root, &["unindexed head marker", "--all-history"]).is_empty());
+
+    let (success, output) = run(root, &["refresh", "--changed"]);
+    assert!(success, "refreshing an already indexed HEAD: {output}");
+    assert_eq!(
+        search_json(root, &["unindexed intermediate marker", "--all-history"]).len(),
+        1,
+        "an already indexed HEAD is not duplicated"
+    );
 }
 
 #[test]
