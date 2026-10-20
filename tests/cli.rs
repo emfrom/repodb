@@ -1972,7 +1972,7 @@ fn local_file_larger_than_previous_limit_refreshes() {
         format!("larger file marker\\n{}", "x".repeat(10 * 1024 * 1024)),
     )
     .unwrap();
-    let (success, _) = run(root, &["refresh"]);
+    let (success, _) = run(root, &["refresh", "--size-limit=ignore"]);
     assert!(
         success,
         "valid files above the former ceiling should refresh"
@@ -2950,7 +2950,7 @@ fn imported_url_fetch_accepts_data_above_old_limit_and_restricts_redirect_protoc
     assert!(
         run_with_env(
             root,
-            &["refresh"],
+            &["refresh", "--size-limit=ignore"],
             &[("PATH", &path), ("CAPTURE", capture.to_str().unwrap())]
         )
         .0
