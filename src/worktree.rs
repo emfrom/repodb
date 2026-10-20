@@ -58,8 +58,49 @@ pub struct Coverage {
     pub unreadable_files: usize,
     pub oversized_files_excluded: usize,
     pub git_layer_failures: usize,
+    pub unembedded_addition_files: usize,
     pub match_limit_reached_files: usize,
     pub total_match_limit_reached: bool,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MappingStatus {
+    Mapped,
+    Deleted,
+    Ambiguous,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct IndexedRange {
+    pub path: Vec<u8>,
+    pub line_start: usize,
+    pub line_end: usize,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct SemanticLiveMatch {
+    pub path: Vec<u8>,
+    pub head_line_start: usize,
+    pub head_line_end: usize,
+    pub head_text: String,
+    pub staged_line_start: Option<usize>,
+    pub staged_line_end: Option<usize>,
+    pub live_line_start: Option<usize>,
+    pub live_line_end: Option<usize>,
+    pub live_text: Option<String>,
+    pub mapping_status: MappingStatus,
+    pub changed_live_text: Option<bool>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct SemanticMappingReport {
+    pub indexed_head: String,
+    pub observed_head: Option<String>,
+    pub head_changed_during_scan: Option<bool>,
+    pub observed_at_unix_ms: u128,
+    pub mappings: Vec<SemanticLiveMatch>,
+    pub coverage: Coverage,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -356,6 +397,475 @@ fn layer_to_live_changed(staged: &LayerContent, live: &[u8]) -> Option<bool> {
         LayerContent::Missing => Some(true),
         LayerContent::Failed | LayerContent::Oversized => None,
     }
+}
+
+/// Map semantic references whose vectors were computed from indexed HEAD text
+/// through HEAD→index and index→live Git patches. The operation never embeds
+/// staged, live, or untracked text; ambiguous/deleted mappings retain only the
+/// original HEAD reference and its matched lines.
+pub fn map_semantic_ranges(
+    repository: &Path,
+    indexed_head: Option<&str>,
+    ranges: &[IndexedRange],
+) -> Result<SemanticMappingReport> {
+    let head = active_head(repository)?;
+    let Some(indexed_head) = indexed_head else {
+        return Err(WorktreeError::UnindexedHead { actual_head: head });
+    };
+    if indexed_head != head {
+        return Err(WorktreeError::StaleHead {
+            indexed_head: indexed_head.to_owned(),
+            actual_head: head,
+        });
+    }
+    let mut coverage = semantic_coverage(repository, &head)?;
+    let mut mappings = Vec::with_capacity(ranges.len());
+    for range in ranges {
+        if range.line_start == 0 || range.line_end < range.line_start {
+            return Err(WorktreeError::Git(
+                "invalid indexed semantic line range".to_owned(),
+            ));
+        }
+        let head_text = match show_path(repository, &head, &range.path) {
+            LayerContent::Found(bytes) => text_content(bytes).map_err(|_| {
+                WorktreeError::Git("indexed HEAD reference is not bounded UTF-8 text".to_owned())
+            })?,
+            LayerContent::Oversized => {
+                return Err(WorktreeError::Git(
+                    "indexed HEAD reference exceeds the live mapping limit".to_owned(),
+                ));
+            }
+            LayerContent::Missing | LayerContent::Failed => {
+                return Err(WorktreeError::Git(
+                    "indexed HEAD object is unavailable for semantic mapping".to_owned(),
+                ));
+            }
+        };
+        let head_lines = source_lines(&head_text);
+        let Some(head_text) = line_text(&head_lines, range.line_start, range.line_end) else {
+            return Err(WorktreeError::Git(
+                "indexed semantic range is outside its HEAD file".to_owned(),
+            ));
+        };
+        let mut mapped = SemanticLiveMatch {
+            path: range.path.clone(),
+            head_line_start: range.line_start,
+            head_line_end: range.line_end,
+            head_text: head_text.to_owned(),
+            staged_line_start: None,
+            staged_line_end: None,
+            live_line_start: None,
+            live_line_end: None,
+            live_text: None,
+            mapping_status: MappingStatus::Ambiguous,
+            changed_live_text: None,
+        };
+
+        let staged = match load_layer_text(repository, ":", &range.path, &mut coverage) {
+            LayerTextStatus::Text(text) => text,
+            LayerTextStatus::Missing => {
+                mapped.mapping_status = live_missing_status(repository, &range.path, &mut coverage);
+                mappings.push(mapped);
+                continue;
+            }
+            LayerTextStatus::Unavailable => {
+                mapped.mapping_status = MappingStatus::Ambiguous;
+                mappings.push(mapped);
+                continue;
+            }
+        };
+        let head_to_staged = git_diff_hunks(repository, Some(&head), true, &range.path)?;
+        let staged_range = match map_line_range(range.line_start, range.line_end, &head_to_staged) {
+            StepMapping::Mapped { start, end } => (start, end),
+            StepMapping::Deleted => {
+                mapped.mapping_status = live_missing_status(repository, &range.path, &mut coverage);
+                mappings.push(mapped);
+                continue;
+            }
+            StepMapping::Ambiguous => {
+                mapped.mapping_status = MappingStatus::Ambiguous;
+                mappings.push(mapped);
+                continue;
+            }
+        };
+        let staged_lines = source_lines(&staged);
+        if line_text(&staged_lines, staged_range.0, staged_range.1).is_none() {
+            mapped.mapping_status = MappingStatus::Ambiguous;
+            mappings.push(mapped);
+            continue;
+        }
+        mapped.staged_line_start = Some(staged_range.0);
+        mapped.staged_line_end = Some(staged_range.1);
+
+        let live_path = match safe_live_path(repository, &range.path) {
+            Ok(Some(path)) => path,
+            Ok(None) => {
+                coverage.removed_files += 1;
+                mapped.mapping_status = MappingStatus::Deleted;
+                mappings.push(mapped);
+                continue;
+            }
+            Err(LivePathError::Unsupported) => {
+                coverage.unsupported_files_excluded += 1;
+                mapped.mapping_status = MappingStatus::Ambiguous;
+                mappings.push(mapped);
+                continue;
+            }
+            Err(LivePathError::Unreadable) => {
+                coverage.unreadable_files += 1;
+                mapped.mapping_status = MappingStatus::Ambiguous;
+                mappings.push(mapped);
+                continue;
+            }
+        };
+        let live = match read_live(&live_path) {
+            Ok(text) => text,
+            Err(LiveReadError::Removed) => {
+                coverage.removed_files += 1;
+                mapped.mapping_status = MappingStatus::Deleted;
+                mappings.push(mapped);
+                continue;
+            }
+            Err(LiveReadError::Binary) => {
+                coverage.binary_files_excluded += 1;
+                mapped.mapping_status = MappingStatus::Ambiguous;
+                mappings.push(mapped);
+                continue;
+            }
+            Err(LiveReadError::Oversized) => {
+                coverage.oversized_files_excluded += 1;
+                mapped.mapping_status = MappingStatus::Ambiguous;
+                mappings.push(mapped);
+                continue;
+            }
+            Err(LiveReadError::Unsupported) => {
+                coverage.unsupported_files_excluded += 1;
+                mapped.mapping_status = MappingStatus::Ambiguous;
+                mappings.push(mapped);
+                continue;
+            }
+            Err(LiveReadError::Unreadable) => {
+                coverage.unreadable_files += 1;
+                mapped.mapping_status = MappingStatus::Ambiguous;
+                mappings.push(mapped);
+                continue;
+            }
+        };
+        let staged_to_live = git_diff_hunks(repository, None, false, &range.path)?;
+        let live_range = match map_line_range(staged_range.0, staged_range.1, &staged_to_live) {
+            StepMapping::Mapped { start, end } => (start, end),
+            StepMapping::Deleted => {
+                mapped.mapping_status = MappingStatus::Deleted;
+                mappings.push(mapped);
+                continue;
+            }
+            StepMapping::Ambiguous => {
+                mapped.mapping_status = MappingStatus::Ambiguous;
+                mappings.push(mapped);
+                continue;
+            }
+        };
+        let live_lines = source_lines(&live);
+        let Some(live_text) = line_text(&live_lines, live_range.0, live_range.1) else {
+            mapped.mapping_status = MappingStatus::Ambiguous;
+            mappings.push(mapped);
+            continue;
+        };
+        mapped.live_line_start = Some(live_range.0);
+        mapped.live_line_end = Some(live_range.1);
+        mapped.live_text = Some(live_text.to_owned());
+        mapped.changed_live_text = Some(live_text != head_text);
+        mapped.mapping_status = MappingStatus::Mapped;
+        mappings.push(mapped);
+    }
+
+    let observed_head = active_head(repository).ok();
+    let head_changed_during_scan = observed_head
+        .as_deref()
+        .map(|observed| observed != indexed_head);
+    Ok(SemanticMappingReport {
+        indexed_head: head,
+        observed_head,
+        head_changed_during_scan,
+        observed_at_unix_ms: SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis(),
+        mappings,
+        coverage,
+    })
+}
+
+#[derive(Clone, Copy)]
+struct DiffHunk {
+    old_start: usize,
+    old_len: usize,
+    new_start: usize,
+    new_len: usize,
+}
+
+enum StepMapping {
+    Mapped { start: usize, end: usize },
+    Deleted,
+    Ambiguous,
+}
+
+fn map_line_range(start: usize, end: usize, hunks: &[DiffHunk]) -> StepMapping {
+    let mut mapped = Vec::new();
+    let mut deleted = false;
+    for line in start..=end {
+        match map_line(line, hunks) {
+            StepMapping::Mapped { start, .. } => mapped.push(start),
+            StepMapping::Deleted => deleted = true,
+            StepMapping::Ambiguous => return StepMapping::Ambiguous,
+        }
+    }
+    if mapped.is_empty() {
+        StepMapping::Deleted
+    } else if deleted || mapped.windows(2).any(|pair| pair[0] >= pair[1]) {
+        StepMapping::Ambiguous
+    } else {
+        StepMapping::Mapped {
+            start: mapped[0],
+            end: *mapped.last().unwrap(),
+        }
+    }
+}
+
+fn map_line(line: usize, hunks: &[DiffHunk]) -> StepMapping {
+    let mut offset: isize = 0;
+    for hunk in hunks {
+        if hunk.old_len == 0 {
+            if line > hunk.old_start {
+                offset += hunk.new_len as isize;
+            }
+            continue;
+        }
+        let old_end = hunk
+            .old_start
+            .saturating_add(hunk.old_len)
+            .saturating_sub(1);
+        if line < hunk.old_start {
+            break;
+        }
+        if line <= old_end {
+            if hunk.old_len == 1 && hunk.new_len == 1 {
+                return StepMapping::Mapped {
+                    start: hunk.new_start,
+                    end: hunk.new_start,
+                };
+            }
+            return if hunk.new_len == 0 {
+                StepMapping::Deleted
+            } else {
+                StepMapping::Ambiguous
+            };
+        }
+        offset += hunk.new_len as isize - hunk.old_len as isize;
+    }
+    let mapped = line as isize + offset;
+    if mapped > 0 {
+        StepMapping::Mapped {
+            start: mapped as usize,
+            end: mapped as usize,
+        }
+    } else {
+        StepMapping::Ambiguous
+    }
+}
+
+fn parse_diff_hunks(output: &[u8]) -> Vec<DiffHunk> {
+    output
+        .split(|byte| *byte == b'\n')
+        .filter_map(|line| {
+            let body = line.strip_prefix(b"@@ -")?;
+            let separator = body.iter().position(|byte| *byte == b' ')?;
+            let old = parse_diff_range(&body[..separator])?;
+            let new_body = body[separator + 1..].strip_prefix(b"+")?;
+            let end = new_body.windows(3).position(|window| window == b" @@")?;
+            let new = parse_diff_range(&new_body[..end])?;
+            Some(DiffHunk {
+                old_start: old.0,
+                old_len: old.1,
+                new_start: new.0,
+                new_len: new.1,
+            })
+        })
+        .collect()
+}
+
+fn parse_diff_range(value: &[u8]) -> Option<(usize, usize)> {
+    let mut fields = value.splitn(2, |byte| *byte == b',');
+    let start = std::str::from_utf8(fields.next()?).ok()?.parse().ok()?;
+    let len = match fields.next() {
+        Some(field) => std::str::from_utf8(field).ok()?.parse().ok()?,
+        None => 1,
+    };
+    Some((start, len))
+}
+
+fn git_diff_hunks(
+    repository: &Path,
+    head: Option<&str>,
+    staged: bool,
+    path: &[u8],
+) -> Result<Vec<DiffHunk>> {
+    let mut command = Command::new("git");
+    command.arg("-C").arg(repository).args([
+        "diff",
+        "--no-ext-diff",
+        "--no-textconv",
+        "--no-renames",
+        "--unified=0",
+    ]);
+    if staged {
+        command.arg("--cached");
+    }
+    if let Some(head) = head {
+        command.arg(head);
+    }
+    let mut pathspec = b":(literal)".to_vec();
+    pathspec.extend_from_slice(path);
+    command.arg("--").arg(os_string(pathspec));
+    let output = capture(&mut command, MAX_GIT_OUTPUT_BYTES)
+        .map_err(|error| WorktreeError::Git(format!("cannot run Git diff: {error}")))?;
+    if output.oversized || !output.status.success() {
+        return Err(WorktreeError::Git(
+            "Git diff for semantic range mapping failed or exceeded its capture limit".to_owned(),
+        ));
+    }
+    Ok(parse_diff_hunks(&output.stdout))
+}
+
+fn live_missing_status(repository: &Path, path: &[u8], coverage: &mut Coverage) -> MappingStatus {
+    match safe_live_path(repository, path) {
+        Ok(Some(_)) => MappingStatus::Ambiguous,
+        Ok(None) => {
+            coverage.removed_files += 1;
+            MappingStatus::Deleted
+        }
+        Err(LivePathError::Unsupported) => {
+            coverage.unsupported_files_excluded += 1;
+            MappingStatus::Ambiguous
+        }
+        Err(LivePathError::Unreadable) => {
+            coverage.unreadable_files += 1;
+            MappingStatus::Ambiguous
+        }
+    }
+}
+
+enum LayerTextStatus {
+    Text(String),
+    Missing,
+    Unavailable,
+}
+
+fn load_layer_text(
+    repository: &Path,
+    revision: &str,
+    path: &[u8],
+    coverage: &mut Coverage,
+) -> LayerTextStatus {
+    match show_path(repository, revision, path) {
+        LayerContent::Found(bytes) => match text_content(bytes) {
+            Ok(text) => LayerTextStatus::Text(text),
+            Err(LayerTextError::Binary) => {
+                coverage.binary_files_excluded += 1;
+                LayerTextStatus::Unavailable
+            }
+            Err(LayerTextError::Oversized) => {
+                coverage.oversized_files_excluded += 1;
+                LayerTextStatus::Unavailable
+            }
+        },
+        LayerContent::Oversized => {
+            coverage.oversized_files_excluded += 1;
+            LayerTextStatus::Unavailable
+        }
+        LayerContent::Missing => match git(
+            repository,
+            &[b"ls-files", b"--unmerged", b"-z", b"--", path],
+        ) {
+            Ok(output) if output.is_empty() => LayerTextStatus::Missing,
+            Ok(_) | Err(_) => {
+                coverage.git_layer_failures += 1;
+                LayerTextStatus::Unavailable
+            }
+        },
+        LayerContent::Failed => {
+            coverage.git_layer_failures += 1;
+            LayerTextStatus::Unavailable
+        }
+    }
+}
+
+fn source_lines(text: &str) -> Vec<&str> {
+    if text.is_empty() {
+        return Vec::new();
+    }
+    let mut lines = text.split('\n').collect::<Vec<_>>();
+    if text.ends_with('\n') {
+        lines.pop();
+    }
+    lines
+}
+
+fn line_text(lines: &[&str], start: usize, end: usize) -> Option<String> {
+    if start == 0 || end < start || end > lines.len() {
+        return None;
+    }
+    Some(lines[start - 1..end].join("\n"))
+}
+
+fn semantic_coverage(repository: &Path, head: &str) -> Result<Coverage> {
+    let changed = paths_from_nul(&git(
+        repository,
+        &[
+            b"diff",
+            b"--no-renames",
+            b"--name-only",
+            b"-z",
+            head.as_bytes(),
+            b"--",
+        ],
+    )?);
+    let untracked = paths_from_nul(&git(
+        repository,
+        &[b"ls-files", b"--others", b"--exclude-standard", b"-z"],
+    )?);
+    let ignored = paths_from_nul(&git(
+        repository,
+        &[
+            b"ls-files",
+            b"--others",
+            b"--ignored",
+            b"--exclude-standard",
+            b"-z",
+        ],
+    )?);
+    let staged_additions = paths_from_nul(&git(
+        repository,
+        &[
+            b"diff",
+            b"--cached",
+            b"--no-renames",
+            b"--diff-filter=A",
+            b"--name-only",
+            b"-z",
+            head.as_bytes(),
+            b"--",
+        ],
+    )?);
+    let mut additions = staged_additions;
+    additions.extend(untracked.iter().cloned());
+    Ok(Coverage {
+        changed_tracked_files: changed.len(),
+        untracked_files: untracked.len(),
+        ignored_files_excluded: ignored.len(),
+        unembedded_addition_files: additions.len(),
+        ..Coverage::default()
+    })
 }
 
 fn provenance(head: &[LineRange], staged: &[LineRange]) -> Vec<Layer> {

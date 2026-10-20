@@ -142,6 +142,134 @@ fn exact_worktree_search_rejects_unindexed_and_stale_heads() {
 }
 
 #[test]
+fn semantic_ranges_map_across_staged_and_live_line_shifts_without_new_embeddings() {
+    let (root, _head) = repository();
+    fs::write(
+        root.path().join("sample.rs"),
+        "fn before() {}\nfn target() {}\nfn middle() {}\n",
+    )
+    .unwrap();
+    git_ok(root.path(), &["add", "sample.rs"]);
+    git_ok(root.path(), &["commit", "-qm", "semantic fixture"]);
+    let head = git_ok(root.path(), &["rev-parse", "HEAD"]);
+    fs::write(
+        root.path().join("sample.rs"),
+        "fn before() {}\n// staged prefix\nfn target() {}\nfn middle() {}\n",
+    )
+    .unwrap();
+    git_ok(root.path(), &["add", "sample.rs"]);
+    fs::write(
+        root.path().join("sample.rs"),
+        "fn before() {}\n// staged prefix\nfn live_change() {}\nfn middle() {}\n",
+    )
+    .unwrap();
+    fs::write(root.path().join("staged-new.rs"), "staged addition\n").unwrap();
+    git_ok(root.path(), &["add", "staged-new.rs"]);
+    fs::write(root.path().join("untracked-new.rs"), "untracked addition\n").unwrap();
+
+    let report = repodb::worktree::map_semantic_ranges(
+        root.path(),
+        Some(&head),
+        &[repodb::worktree::IndexedRange {
+            path: b"sample.rs".to_vec(),
+            line_start: 2,
+            line_end: 2,
+        }],
+    )
+    .unwrap();
+
+    let mapped = &report.mappings[0];
+    assert_eq!(
+        mapped.mapping_status,
+        repodb::worktree::MappingStatus::Mapped
+    );
+    assert_eq!(mapped.head_text, "fn target() {}");
+    assert_eq!(mapped.staged_line_start, Some(3));
+    assert_eq!(mapped.live_line_start, Some(3));
+    assert_eq!(mapped.live_text.as_deref(), Some("fn live_change() {}"));
+    assert_eq!(mapped.changed_live_text, Some(true));
+    assert_eq!(report.coverage.unembedded_addition_files, 2);
+}
+
+#[test]
+fn semantic_ranges_report_deleted_and_ambiguous_without_guessing() {
+    let (root, _) = repository();
+    fs::write(
+        root.path().join("sample.rs"),
+        "fn target() {}\nfn other() {}\n",
+    )
+    .unwrap();
+    git_ok(root.path(), &["add", "sample.rs"]);
+    git_ok(root.path(), &["commit", "-qm", "semantic fixture"]);
+    let head = git_ok(root.path(), &["rev-parse", "HEAD"]);
+    fs::write(root.path().join("sample.rs"), "fn other() {}\n").unwrap();
+    let deleted = repodb::worktree::map_semantic_ranges(
+        root.path(),
+        Some(&head),
+        &[repodb::worktree::IndexedRange {
+            path: b"sample.rs".to_vec(),
+            line_start: 1,
+            line_end: 1,
+        }],
+    )
+    .unwrap();
+    assert_eq!(
+        deleted.mappings[0].mapping_status,
+        repodb::worktree::MappingStatus::Deleted
+    );
+    assert_eq!(deleted.mappings[0].head_text, "fn target() {}");
+    assert!(deleted.mappings[0].live_text.is_none());
+
+    fs::write(
+        root.path().join("sample.rs"),
+        "fn target_part_one() {}\nfn target_part_two() {}\nfn other() {}\n",
+    )
+    .unwrap();
+    let ambiguous = repodb::worktree::map_semantic_ranges(
+        root.path(),
+        Some(&head),
+        &[repodb::worktree::IndexedRange {
+            path: b"sample.rs".to_vec(),
+            line_start: 1,
+            line_end: 1,
+        }],
+    )
+    .unwrap();
+    assert_eq!(
+        ambiguous.mappings[0].mapping_status,
+        repodb::worktree::MappingStatus::Ambiguous
+    );
+    assert!(ambiguous.mappings[0].live_text.is_none());
+}
+
+#[test]
+fn semantic_range_restored_after_staged_deletion_is_ambiguous() {
+    let (root, _) = repository();
+    fs::write(root.path().join("sample.rs"), "fn target() {}\n").unwrap();
+    git_ok(root.path(), &["add", "sample.rs"]);
+    git_ok(root.path(), &["commit", "-qm", "semantic fixture"]);
+    let head = git_ok(root.path(), &["rev-parse", "HEAD"]);
+    git_ok(root.path(), &["rm", "sample.rs"]);
+    fs::write(root.path().join("sample.rs"), "fn target() {}\n").unwrap();
+
+    let report = repodb::worktree::map_semantic_ranges(
+        root.path(),
+        Some(&head),
+        &[repodb::worktree::IndexedRange {
+            path: b"sample.rs".to_vec(),
+            line_start: 1,
+            line_end: 1,
+        }],
+    )
+    .unwrap();
+    assert_eq!(
+        report.mappings[0].mapping_status,
+        repodb::worktree::MappingStatus::Ambiguous
+    );
+    assert!(report.mappings[0].live_text.is_none());
+}
+
+#[test]
 fn worktree_exact_results_have_a_reported_per_file_limit() {
     let (root, head) = repository();
     let changed = (0..1_100).map(|_| "marker\n").collect::<String>();
