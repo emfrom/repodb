@@ -284,7 +284,7 @@ fn status(db_path: &std::path::Path) -> Result<serde_json::Value> {
     let indexed_head = if database_exists {
         let c = Connection::open(db_path)?;
         let version: i64 = c.query_row("PRAGMA user_version", [], |r| r.get(0))?;
-        if !(0..=4).contains(&version) {
+        if !(0..=5).contains(&version) {
             return Err(format!("unsupported database version {version}").into());
         }
         if version >= 2 {

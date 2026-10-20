@@ -5112,7 +5112,7 @@ fn populated_v3_history_migrates_atomically_to_range_only_schema() {
     // Exercise the supported v3 layout with real references, searchable text, and vectors.
     let database = rusqlite::Connection::open(root.join(".git/repodb.sqlite")).unwrap();
     database.execute_batch(
-        "DROP TABLE IF EXISTS diff_references; DROP TABLE unit_embeddings; DROP TABLE commit_message_units; DROP TABLE git_blob_units; DROP TABLE indexed_units; \
+        "DROP TABLE IF EXISTS diff_references; DROP TABLE IF EXISTS diff_file_changes; DROP TABLE IF EXISTS diff_detection_settings; DROP TABLE unit_embeddings; DROP TABLE commit_message_units; DROP TABLE git_blob_units; DROP TABLE indexed_units; \
          DROP TABLE git_occurrences; DROP TABLE blob_contents; DROP TABLE git_commits; \
          CREATE TABLE git_commits(commit_id TEXT PRIMARY KEY NOT NULL, timestamp INTEGER NOT NULL); \
          CREATE TABLE blob_contents(blob_id TEXT PRIMARY KEY NOT NULL, content TEXT, status TEXT NOT NULL); \
@@ -5207,7 +5207,7 @@ fn populated_v3_history_migrates_atomically_to_range_only_schema() {
     let version: i64 = database
         .query_row("PRAGMA user_version", [], |row| row.get(0))
         .unwrap();
-    assert_eq!(version, 4);
+    assert_eq!(version, 5);
     for (table, forbidden) in [("blob_contents", "content"), ("indexed_units", "text")] {
         let columns = database
             .prepare(&format!("PRAGMA table_info({table})"))

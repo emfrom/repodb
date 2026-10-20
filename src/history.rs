@@ -18,11 +18,56 @@ fn memory_limit() -> Box<dyn std::error::Error> {
 }
 
 const MAX_GIT_STDERR_BYTES: usize = 64 * 1024;
+const RENAME_THRESHOLD_PERCENT: u8 = 50;
+const COPY_THRESHOLD_PERCENT: u8 = 50;
+const FIND_COPIES_HARDER: bool = true;
+const DIFF_ALGORITHM: &str = "myers";
+const FIND_RENAMES_ARG: &str = "--find-renames=50%";
+const FIND_COPIES_ARG: &str = "--find-copies=50%";
+const FIND_COPIES_HARDER_ARG: &str = "--find-copies-harder";
+const DIFF_ALGORITHM_ARG: &str = "--diff-algorithm=myers";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum DiffSide {
     Added,
     Removed,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum DiffChangeKind {
+    Added,
+    Removed,
+    Modified,
+    Renamed,
+    Copied,
+    TypeChanged,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct DiffFileChange {
+    pub parent_commit_id: String,
+    pub child_commit_id: String,
+    pub change_index: i64,
+    pub kind: DiffChangeKind,
+    pub old_path: Option<Vec<u8>>,
+    pub new_path: Option<Vec<u8>>,
+    /// Git's heuristic similarity estimate (0–100), not a calibrated probability.
+    pub similarity_percent: Option<u8>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct DiffDetectionSettings {
+    pub rename_threshold_percent: u8,
+    pub copy_threshold_percent: u8,
+    pub find_copies_harder: bool,
+    pub git_version: String,
+    pub diff_algorithm: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct DiffMetadata {
+    pub settings: DiffDetectionSettings,
+    pub changes: Vec<DiffFileChange>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -104,7 +149,8 @@ fn git_output(
 fn git_diff_output(
     parent: &str,
     child: &str,
-    path: &[u8],
+    old_path: &[u8],
+    new_path: &[u8],
     preparation_bytes: &mut Budget,
 ) -> Result<Vec<u8>> {
     use std::os::unix::ffi::OsStrExt;
@@ -115,17 +161,27 @@ fn git_diff_output(
             .saturating_sub(MAX_GIT_STDERR_BYTES),
         preparation_bytes.used(),
     )?;
-    let mut child_process = Command::new("git")
+    let mut command = Command::new("git");
+    command
+        .env("GIT_LITERAL_PATHSPECS", "1")
         .args([
             "diff",
             "--no-ext-diff",
             "--no-color",
             "--unified=0",
+            FIND_RENAMES_ARG,
+            FIND_COPIES_ARG,
+            FIND_COPIES_HARDER_ARG,
+            DIFF_ALGORITHM_ARG,
             parent,
             child,
             "--",
         ])
-        .arg(std::ffi::OsStr::from_bytes(path))
+        .arg(std::ffi::OsStr::from_bytes(old_path));
+    if old_path != new_path {
+        command.arg(std::ffi::OsStr::from_bytes(new_path));
+    }
+    let mut child_process = command
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()?;
@@ -327,7 +383,8 @@ fn stage_diff_range(
     child: &str,
     side: DiffSide,
     hunk_id: i64,
-    path: &[u8],
+    old_path: &[u8],
+    new_path: &[u8],
     blob_id: &str,
     blob_text: &str,
     first: usize,
@@ -373,8 +430,8 @@ fn stage_diff_range(
                 } else {
                     "removed"
                 },
-                path,
-                path,
+                old_path,
+                new_path,
                 old_anchor.map(|anchor| anchor.0),
                 old_anchor.map(|anchor| anchor.1),
                 new_anchor.map(|anchor| anchor.0),
@@ -423,7 +480,10 @@ fn stage_diff_pair(
             "diff-tree",
             "--no-commit-id",
             "--raw",
-            "--no-renames",
+            FIND_RENAMES_ARG,
+            FIND_COPIES_ARG,
+            FIND_COPIES_HARDER_ARG,
+            DIFF_ALGORITHM_ARG,
             "-r",
             "-z",
             parent,
@@ -435,7 +495,10 @@ fn stage_diff_pair(
             "--root",
             "--no-commit-id",
             "--raw",
-            "--no-renames",
+            FIND_RENAMES_ARG,
+            FIND_COPIES_ARG,
+            FIND_COPIES_HARDER_ARG,
+            DIFF_ALGORITHM_ARG,
             "-r",
             "-z",
             child,
@@ -452,6 +515,9 @@ fn stage_diff_pair(
         .collect();
     let mut i = 0;
     let mut hunk_id = 0i64;
+    let mut change_index = 0i64;
+    let mut file_change_statement =
+        c.prepare("INSERT INTO temp.refresh_diff_file_changes VALUES(?1,?2,?3,?4,?5,?6,?7)")?;
     while i < records.len() {
         let metadata = std::str::from_utf8(records[i])?;
         i += 1;
@@ -459,20 +525,56 @@ fn stage_diff_pair(
         if fields.len() != 5 || !fields[0].starts_with(':') {
             return Err("invalid raw Git diff record".into());
         }
-        let status = fields[4]
-            .as_bytes()
+        let status_token = fields[4].as_bytes();
+        let status = status_token
             .first()
             .copied()
             .ok_or("missing Git diff status")?;
-        let path = records.get(i).ok_or("missing Git diff path")?.to_vec();
+        let first_path = *records.get(i).ok_or("missing Git diff path")?;
         i += 1;
+        let (kind, old_path, new_path) = match status {
+            b'A' => ("added", None, Some(first_path)),
+            b'D' => ("removed", Some(first_path), None),
+            b'M' => ("modified", Some(first_path), Some(first_path)),
+            b'T' => ("type_changed", Some(first_path), Some(first_path)),
+            b'R' | b'C' => {
+                let second_path = *records.get(i).ok_or("missing Git destination path")?;
+                i += 1;
+                let kind = if status == b'R' { "renamed" } else { "copied" };
+                (kind, Some(first_path), Some(second_path))
+            }
+            _ => continue,
+        };
         if fields[0].trim_start_matches(':') == "160000" || fields[1] == "160000" {
             // Gitlinks reference commits, not blobs; the tracked tree walker skips them too.
             continue;
         }
-        if status == b'M' {
+        let similarity_percent = if status == b'R' || status == b'C' {
+            let score = std::str::from_utf8(&status_token[1..])?.parse::<u8>()?;
+            if score > 100 {
+                return Err("invalid Git similarity score".into());
+            }
+            Some(score)
+        } else {
+            None
+        };
+        change_index += 1;
+        file_change_statement.execute(params![
+            parent.unwrap_or(EMPTY_TREE),
+            child,
+            change_index,
+            kind,
+            old_path,
+            new_path,
+            similarity_percent.map(i64::from),
+        ])?;
+
+        if matches!(status, b'M' | b'R' | b'C') {
             let Some(parent) = parent else {
-                return Err("root diff cannot contain a modified path".into());
+                return Err("root diff cannot contain a modified, renamed or copied path".into());
+            };
+            let (Some(old_path), Some(new_path)) = (old_path, new_path) else {
+                return Err("modified Git diff record is missing a path endpoint".into());
             };
             let old_blob_id = fields[2];
             let new_blob_id = fields[3];
@@ -495,7 +597,7 @@ fn stage_diff_pair(
             if old_text.contains('\0') || new_text.contains('\0') {
                 continue;
             }
-            let patch = git_diff_output(parent, child, &path, budget)?;
+            let patch = git_diff_output(parent, child, old_path, new_path, budget)?;
             let changes = changed_lines(
                 &patch,
                 hunk_id,
@@ -518,7 +620,8 @@ fn stage_diff_pair(
                     child,
                     change.side,
                     change.hunk_id,
-                    &path,
+                    old_path,
+                    new_path,
                     blob_id,
                     text,
                     change.first,
@@ -536,13 +639,14 @@ fn stage_diff_pair(
             hunk_id = next_hunk_id;
             continue;
         }
-        if status != b'A' && status != b'D' {
+        if status == b'T' {
             continue;
         }
-        let (side, blob_id, old_path, new_path) = if status == b'A' {
-            (DiffSide::Added, fields[3], None, Some(path))
+
+        let (side, blob_id) = if status == b'A' {
+            (DiffSide::Added, fields[3])
         } else {
-            (DiffSide::Removed, fields[2], Some(path), None)
+            (DiffSide::Removed, fields[2])
         };
         let bytes = git_output(
             &["cat-file", "blob", blob_id],
@@ -730,7 +834,7 @@ pub fn is_current(c: &Connection) -> Result<bool> {
     let version: i64 = c.query_row("PRAGMA user_version", [], |r| r.get(0))?;
     match version {
         0 => Ok(false),
-        2..=4 => Ok(true),
+        2..=5 => Ok(true),
         _ => Err(format!("unsupported database version {version}").into()),
     }
 }
@@ -1748,6 +1852,247 @@ mod tests {
     }
 
     #[test]
+    fn full_refresh_records_heuristic_rename_copy_and_merge_parent_metadata() {
+        use std::{fs, os::unix::fs::PermissionsExt, process::Command};
+
+        let _cwd_lock = CWD_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+        let original_cwd = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let repo = tempfile::tempdir().unwrap();
+        let git = |args: &[&str]| {
+            let output = Command::new("git")
+                .args(args)
+                .current_dir(repo.path())
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            String::from_utf8(output.stdout).unwrap().trim().to_owned()
+        };
+        let commit_at = |message: &str, date: &str| {
+            let output = Command::new("git")
+                .args(["commit", "-qm", message])
+                .env("GIT_AUTHOR_DATE", date)
+                .env("GIT_COMMITTER_DATE", date)
+                .current_dir(repo.path())
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        };
+        git(&["init", "-q"]);
+        git(&["config", "user.email", "test@example.com"]);
+        git(&["config", "user.name", "Test"]);
+        let shared_context = format!("{}\n", "shared context ".repeat(100));
+        fs::write(
+            repo.path().join("old-name.txt"),
+            format!("alpha\noriginal passage\n{shared_context}omega\n"),
+        )
+        .unwrap();
+        fs::write(
+            repo.path().join("copy-source.txt"),
+            format!("first\nsource passage\n{shared_context}last\n"),
+        )
+        .unwrap();
+        fs::write(
+            repo.path().join("pure-old.txt"),
+            "unchanged rename source\n",
+        )
+        .unwrap();
+        git(&["add", "."]);
+        commit_at("base", "2020-02-01T00:00:00Z");
+        let base = git(&["rev-parse", "HEAD"]);
+        let main_branch = git(&["branch", "--show-current"]);
+        git(&["branch", "side"]);
+
+        fs::rename(
+            repo.path().join("old-name.txt"),
+            repo.path().join("new-name.txt"),
+        )
+        .unwrap();
+        fs::rename(
+            repo.path().join("pure-old.txt"),
+            repo.path().join("pure-new.txt"),
+        )
+        .unwrap();
+        fs::write(
+            repo.path().join("new-name.txt"),
+            format!("alpha\nupdated passage\n{shared_context}omega\n"),
+        )
+        .unwrap();
+        git(&["add", "-A"]);
+        commit_at("rename passage", "2020-03-01T00:00:00Z");
+        let rename_commit = git(&["rev-parse", "HEAD"]);
+
+        git(&["checkout", "-q", "side"]);
+        fs::copy(
+            repo.path().join("copy-source.txt"),
+            repo.path().join("copied.txt"),
+        )
+        .unwrap();
+        fs::write(
+            repo.path().join("copied.txt"),
+            format!("first\ncopied passage\n{shared_context}last\n"),
+        )
+        .unwrap();
+        git(&["add", "copied.txt"]);
+        commit_at("copy passage", "2020-01-01T00:00:00Z");
+        let copy_commit = git(&["rev-parse", "HEAD"]);
+
+        let merge = Command::new("git")
+            .args(["merge", "--no-ff", "-m", "merge", main_branch.as_str()])
+            .env("GIT_AUTHOR_DATE", "2019-01-01T00:00:00Z")
+            .env("GIT_COMMITTER_DATE", "2019-01-01T00:00:00Z")
+            .current_dir(repo.path())
+            .output()
+            .unwrap();
+        assert!(
+            merge.status.success(),
+            "{}",
+            String::from_utf8_lossy(&merge.stderr)
+        );
+        let merge_commit = git(&["rev-parse", "HEAD"]);
+        let merge_parents = git(&["rev-list", "--parents", "-n", "1", &merge_commit])
+            .split_whitespace()
+            .skip(1)
+            .map(str::to_owned)
+            .collect::<Vec<_>>();
+        assert_eq!(merge_parents.len(), 2);
+        let base_timestamp = git(&["show", "-s", "--format=%ct", &base])
+            .parse::<i64>()
+            .unwrap();
+        let copy_timestamp = git(&["show", "-s", "--format=%ct", &copy_commit])
+            .parse::<i64>()
+            .unwrap();
+        let rename_timestamp = git(&["show", "-s", "--format=%ct", &rename_commit])
+            .parse::<i64>()
+            .unwrap();
+        assert!(copy_timestamp < base_timestamp && base_timestamp < rename_timestamp);
+
+        let embedder = repo.path().join("embedder");
+        fs::write(&embedder, "#!/bin/sh\ncat >/dev/null\nprintf '[1,0]'\n").unwrap();
+        fs::set_permissions(&embedder, fs::Permissions::from_mode(0o755)).unwrap();
+        let db = Connection::open_in_memory().unwrap();
+        db.execute_batch("CREATE TABLE embedding_config(key TEXT PRIMARY KEY,value TEXT NOT NULL); CREATE TEMP TABLE import_refresh_dimension(value INTEGER);").unwrap();
+        for (key, value) in [
+            ("command", embedder.to_str().unwrap()),
+            ("model", "test"),
+            ("dimension", "0"),
+        ] {
+            db.execute(
+                "INSERT INTO embedding_config VALUES(?1,?2)",
+                params![key, value],
+            )
+            .unwrap();
+        }
+        std::env::set_current_dir(repo.path()).unwrap();
+        prepare_refresh(&db).unwrap();
+        let tx = db.unchecked_transaction().unwrap();
+        publish_refresh(&tx).unwrap();
+        tx.commit().unwrap();
+
+        let root_metadata = diff_metadata(
+            &db,
+            Some("4b825dc642cb6eb9a060e54bf8d69288fbee4904"),
+            Some(&base),
+        )
+        .unwrap();
+        assert!(root_metadata.changes.iter().any(|change| {
+            change.kind == DiffChangeKind::Added
+                && change.old_path.is_none()
+                && change.new_path.as_deref() == Some(b"old-name.txt".as_slice())
+        }));
+        assert_eq!(root_metadata.settings.rename_threshold_percent, 50);
+        assert_eq!(root_metadata.settings.copy_threshold_percent, 50);
+        assert!(root_metadata.settings.find_copies_harder);
+        assert_eq!(root_metadata.settings.diff_algorithm, "myers");
+        assert!(
+            root_metadata
+                .settings
+                .git_version
+                .starts_with("git version ")
+        );
+
+        let rename = diff_metadata(&db, Some(&base), Some(&rename_commit)).unwrap();
+        let rename_change = rename
+            .changes
+            .iter()
+            .find(|change| change.kind == DiffChangeKind::Renamed)
+            .unwrap();
+        assert_eq!(
+            rename_change.old_path.as_deref(),
+            Some(b"old-name.txt".as_slice())
+        );
+        assert_eq!(
+            rename_change.new_path.as_deref(),
+            Some(b"new-name.txt".as_slice())
+        );
+        assert!(
+            rename_change
+                .similarity_percent
+                .is_some_and(|score| (50..=100).contains(&score))
+        );
+        let pure_rename = rename
+            .changes
+            .iter()
+            .find(|change| change.old_path.as_deref() == Some(b"pure-old.txt".as_slice()))
+            .unwrap();
+        assert_eq!(pure_rename.kind, DiffChangeKind::Renamed);
+        assert_eq!(
+            pure_rename.new_path.as_deref(),
+            Some(b"pure-new.txt".as_slice())
+        );
+        assert_eq!(pure_rename.similarity_percent, Some(100));
+        let rename_refs = diff_references(&db, Some(&base), Some(&rename_commit)).unwrap();
+        assert!(rename_refs.iter().any(|reference| {
+            reference.old_path.as_deref() == Some(b"old-name.txt".as_slice())
+                && reference.new_path.as_deref() == Some(b"new-name.txt".as_slice())
+        }));
+
+        let copy = diff_metadata(&db, Some(&base), Some(&copy_commit)).unwrap();
+        let copy_change = copy
+            .changes
+            .iter()
+            .find(|change| change.kind == DiffChangeKind::Copied)
+            .unwrap();
+        assert_eq!(
+            copy_change.old_path.as_deref(),
+            Some(b"copy-source.txt".as_slice())
+        );
+        assert_eq!(
+            copy_change.new_path.as_deref(),
+            Some(b"copied.txt".as_slice())
+        );
+        assert!(
+            copy_change
+                .similarity_percent
+                .is_some_and(|score| (50..=100).contains(&score))
+        );
+        let copy_refs = diff_references(&db, Some(&base), Some(&copy_commit)).unwrap();
+        assert!(copy_refs.iter().any(|reference| {
+            reference.old_path.as_deref() == Some(b"copy-source.txt".as_slice())
+                && reference.new_path.as_deref() == Some(b"copied.txt".as_slice())
+        }));
+
+        for parent in &merge_parents {
+            let metadata = diff_metadata(&db, Some(parent), Some(&merge_commit)).unwrap();
+            assert!(
+                !metadata.changes.is_empty(),
+                "missing merge-parent pair {parent}"
+            );
+            assert!(metadata.changes.iter().all(|change| {
+                change.parent_commit_id == *parent && change.child_commit_id == merge_commit
+            }));
+        }
+        std::env::set_current_dir(original_cwd).unwrap();
+    }
+
+    #[test]
     fn commit_message_search_hydrates_exact_and_semantic_hits_from_git() {
         use std::{fs, os::unix::fs::PermissionsExt, process::Command};
 
@@ -2090,6 +2435,8 @@ pub fn prepare_refresh(c: &Connection) -> Result<()> {
         DROP TABLE IF EXISTS temp.refresh_occurrences; DROP TABLE IF EXISTS temp.refresh_variants;
         DROP TABLE IF EXISTS temp.refresh_units; DROP TABLE IF EXISTS temp.refresh_embeddings;
         DROP TABLE IF EXISTS temp.refresh_commit_message_units;
+        DROP TABLE IF EXISTS temp.refresh_diff_file_changes;
+        DROP TABLE IF EXISTS temp.refresh_diff_detection_settings;
         CREATE TEMP TABLE refresh_commits(commit_id TEXT PRIMARY KEY, timestamp INTEGER NOT NULL);
         CREATE TEMP TABLE refresh_blobs(blob_id TEXT PRIMARY KEY, content TEXT, status TEXT NOT NULL);
         CREATE TEMP TABLE refresh_occurrences(commit_id TEXT NOT NULL, blob_id TEXT NOT NULL, path BLOB NOT NULL, segmentation_kind TEXT NOT NULL, PRIMARY KEY(commit_id,path));
@@ -2097,9 +2444,24 @@ pub fn prepare_refresh(c: &Connection) -> Result<()> {
         CREATE TEMP TABLE refresh_units(unit_id INTEGER PRIMARY KEY, blob_id TEXT NOT NULL, segmentation_kind TEXT NOT NULL, text TEXT NOT NULL, byte_start INTEGER NOT NULL, byte_end INTEGER NOT NULL, line_start INTEGER NOT NULL, line_end INTEGER NOT NULL);
         CREATE TEMP TABLE refresh_commit_message_units(commit_id TEXT NOT NULL, unit_id INTEGER NOT NULL, byte_start INTEGER NOT NULL, byte_end INTEGER NOT NULL, line_start INTEGER NOT NULL, line_end INTEGER NOT NULL);
         CREATE TEMP TABLE refresh_diff_references(parent_commit_id TEXT NOT NULL,child_commit_id TEXT NOT NULL,hunk_id INTEGER NOT NULL,side TEXT NOT NULL,old_path BLOB,new_path BLOB,old_line_start INTEGER,old_line_end INTEGER,new_line_start INTEGER,new_line_end INTEGER,blob_id TEXT NOT NULL,unit_id INTEGER NOT NULL);
+        CREATE TEMP TABLE refresh_diff_file_changes(parent_commit_id TEXT NOT NULL,child_commit_id TEXT NOT NULL,change_index INTEGER NOT NULL,change_kind TEXT NOT NULL,old_path BLOB,new_path BLOB,similarity_percent INTEGER);
+        CREATE TEMP TABLE refresh_diff_detection_settings(id INTEGER PRIMARY KEY CHECK(id=1),rename_threshold_percent INTEGER NOT NULL,copy_threshold_percent INTEGER NOT NULL,find_copies_harder INTEGER NOT NULL,git_version TEXT NOT NULL,diff_algorithm TEXT NOT NULL);
         CREATE TEMP TABLE refresh_embeddings(unit_id INTEGER PRIMARY KEY, vector BLOB NOT NULL);
         DROP TABLE IF EXISTS temp.refresh_dimension; CREATE TEMP TABLE refresh_dimension(value INTEGER);
         DROP TABLE IF EXISTS temp.refresh_config; CREATE TEMP TABLE refresh_config(key TEXT PRIMARY KEY,value TEXT NOT NULL);")?;
+    let git_version = String::from_utf8(git_output(&["--version"], 128, &mut preparation_bytes)?)?
+        .trim()
+        .to_owned();
+    c.execute(
+        "INSERT INTO temp.refresh_diff_detection_settings VALUES(1,?1,?2,?3,?4,?5)",
+        params![
+            RENAME_THRESHOLD_PERCENT,
+            COPY_THRESHOLD_PERCENT,
+            FIND_COPIES_HARDER,
+            git_version,
+            DIFF_ALGORITHM,
+        ],
+    )?;
     let (command, model, configured_dimension) = configuration(c)?;
     let mut embedding_dimension = None;
     let mut pipeline =
@@ -2347,8 +2709,11 @@ pub fn refresh_update(c: &mut Connection, commit_id: &str) -> Result<()> {
 fn refresh_scoped(c: &mut Connection, target: Option<&str>) -> Result<()> {
     let version = snapshot_version(c)?;
     let schema: i64 = c.query_row("PRAGMA user_version", [], |row| row.get(0))?;
-    if schema != 4 {
-        return Err("scoped refresh requires a version-4 index; run repodb refresh first".into());
+    if !matches!(schema, 4 | 5) {
+        return Err(
+            "scoped refresh requires a version-4 or version-5 index; run repodb refresh first"
+                .into(),
+        );
     }
 
     let mut budget = Budget::new(
@@ -2646,7 +3011,7 @@ fn refresh_scoped(c: &mut Connection, target: Option<&str>) -> Result<()> {
 }
 
 pub fn publish_refresh(tx: &Transaction<'_>) -> Result<()> {
-    tx.execute_batch("DROP TABLE IF EXISTS diff_references; DROP TABLE IF EXISTS unit_embeddings; DROP TABLE IF EXISTS commit_message_units; DROP TABLE IF EXISTS git_blob_units; DROP TABLE IF EXISTS indexed_units; DROP TABLE IF EXISTS git_occurrences; DROP TABLE IF EXISTS blob_contents; DROP TABLE IF EXISTS git_commits;
+    tx.execute_batch("DROP TABLE IF EXISTS diff_references; DROP TABLE IF EXISTS diff_file_changes; DROP TABLE IF EXISTS diff_detection_settings; DROP TABLE IF EXISTS unit_embeddings; DROP TABLE IF EXISTS commit_message_units; DROP TABLE IF EXISTS git_blob_units; DROP TABLE IF EXISTS indexed_units; DROP TABLE IF EXISTS git_occurrences; DROP TABLE IF EXISTS blob_contents; DROP TABLE IF EXISTS git_commits;
         CREATE TABLE git_commits(commit_id TEXT PRIMARY KEY NOT NULL, timestamp INTEGER NOT NULL);
         CREATE TABLE blob_contents(blob_id TEXT PRIMARY KEY NOT NULL, status TEXT NOT NULL);
         CREATE TABLE git_occurrences(commit_id TEXT NOT NULL REFERENCES git_commits, blob_id TEXT NOT NULL REFERENCES blob_contents, path BLOB NOT NULL, segmentation_kind TEXT NOT NULL, PRIMARY KEY(commit_id,path));
@@ -2654,6 +3019,8 @@ pub fn publish_refresh(tx: &Transaction<'_>) -> Result<()> {
         CREATE TABLE git_blob_units(blob_id TEXT NOT NULL REFERENCES blob_contents, unit_id INTEGER NOT NULL REFERENCES indexed_units, segmentation_kind TEXT NOT NULL, PRIMARY KEY(blob_id,segmentation_kind,unit_id));
         CREATE TABLE commit_message_units(commit_id TEXT NOT NULL REFERENCES git_commits, unit_id INTEGER NOT NULL REFERENCES indexed_units, byte_start INTEGER NOT NULL, byte_end INTEGER NOT NULL, line_start INTEGER NOT NULL, line_end INTEGER NOT NULL, PRIMARY KEY(commit_id,unit_id));
         CREATE TABLE diff_references(parent_commit_id TEXT NOT NULL,child_commit_id TEXT NOT NULL REFERENCES git_commits,hunk_id INTEGER NOT NULL,side TEXT NOT NULL,old_path BLOB,new_path BLOB,old_line_start INTEGER,old_line_end INTEGER,new_line_start INTEGER,new_line_end INTEGER,blob_id TEXT NOT NULL,unit_id INTEGER NOT NULL REFERENCES indexed_units,byte_start INTEGER NOT NULL,byte_end INTEGER NOT NULL,line_start INTEGER NOT NULL,line_end INTEGER NOT NULL,PRIMARY KEY(parent_commit_id,child_commit_id,hunk_id,side,unit_id));
+        CREATE TABLE diff_file_changes(parent_commit_id TEXT NOT NULL,child_commit_id TEXT NOT NULL REFERENCES git_commits,change_index INTEGER NOT NULL,change_kind TEXT NOT NULL CHECK(change_kind IN ('added','removed','modified','renamed','copied','type_changed')),old_path BLOB,new_path BLOB,similarity_percent INTEGER CHECK(similarity_percent IS NULL OR similarity_percent BETWEEN 0 AND 100),PRIMARY KEY(parent_commit_id,child_commit_id,change_index));
+        CREATE TABLE diff_detection_settings(id INTEGER PRIMARY KEY CHECK(id=1),rename_threshold_percent INTEGER NOT NULL,copy_threshold_percent INTEGER NOT NULL,find_copies_harder INTEGER NOT NULL,git_version TEXT NOT NULL,diff_algorithm TEXT NOT NULL);
         CREATE TABLE unit_embeddings(unit_id INTEGER PRIMARY KEY REFERENCES indexed_units, vector BLOB NOT NULL);")?;
     tx.execute(
         "INSERT INTO git_commits SELECT * FROM temp.refresh_commits",
@@ -2678,6 +3045,14 @@ pub fn publish_refresh(tx: &Transaction<'_>) -> Result<()> {
     )?;
     tx.execute("INSERT INTO diff_references SELECT r.parent_commit_id,r.child_commit_id,r.hunk_id,r.side,r.old_path,r.new_path,r.old_line_start,r.old_line_end,r.new_line_start,r.new_line_end,r.blob_id,r.unit_id,u.byte_start,u.byte_end,u.line_start,u.line_end FROM temp.refresh_diff_references r JOIN temp.refresh_units u USING(unit_id)", [])?;
     tx.execute(
+        "INSERT INTO diff_file_changes SELECT * FROM temp.refresh_diff_file_changes",
+        [],
+    )?;
+    tx.execute(
+        "INSERT INTO diff_detection_settings SELECT * FROM temp.refresh_diff_detection_settings",
+        [],
+    )?;
+    tx.execute(
         "INSERT INTO unit_embeddings SELECT * FROM temp.refresh_embeddings",
         [],
     )?;
@@ -2695,7 +3070,7 @@ pub fn publish_refresh(tx: &Transaction<'_>) -> Result<()> {
             params![key, value],
         )?;
     }
-    tx.execute_batch("DROP TABLE IF EXISTS indexed_files; DROP TABLE IF EXISTS embeddings; PRAGMA user_version=4;")?;
+    tx.execute_batch("DROP TABLE IF EXISTS indexed_files; DROP TABLE IF EXISTS embeddings; PRAGMA user_version=5;")?;
     Ok(())
 }
 
@@ -2753,6 +3128,71 @@ pub(crate) fn diff_references(
         read_diff_reference,
     )?;
     Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
+}
+
+fn parse_diff_change_kind(value: &str) -> rusqlite::Result<DiffChangeKind> {
+    match value {
+        "added" => Ok(DiffChangeKind::Added),
+        "removed" => Ok(DiffChangeKind::Removed),
+        "modified" => Ok(DiffChangeKind::Modified),
+        "renamed" => Ok(DiffChangeKind::Renamed),
+        "copied" => Ok(DiffChangeKind::Copied),
+        "type_changed" => Ok(DiffChangeKind::TypeChanged),
+        _ => Err(rusqlite::Error::InvalidQuery),
+    }
+}
+
+pub(crate) fn diff_metadata(
+    c: &Connection,
+    parent_commit_id: Option<&str>,
+    child_commit_id: Option<&str>,
+) -> Result<DiffMetadata> {
+    let version: i64 = c.query_row("PRAGMA user_version", [], |row| row.get(0))?;
+    if version < 5 {
+        return Err("diff metadata requires a full refresh with schema version 5".into());
+    }
+    let settings = c.query_row(
+        "SELECT rename_threshold_percent,copy_threshold_percent,find_copies_harder,git_version,diff_algorithm FROM diff_detection_settings WHERE id=1",
+        [],
+        |row| {
+            let threshold = |index| -> rusqlite::Result<u8> {
+                u8::try_from(row.get::<_, i64>(index)?)
+                    .map_err(|_| rusqlite::Error::InvalidQuery)
+            };
+            Ok(DiffDetectionSettings {
+                rename_threshold_percent: threshold(0)?,
+                copy_threshold_percent: threshold(1)?,
+                find_copies_harder: row.get(2)?,
+                git_version: row.get(3)?,
+                diff_algorithm: row.get(4)?,
+            })
+        },
+    )?;
+    let mut statement = c.prepare(
+        "SELECT parent_commit_id,child_commit_id,change_index,change_kind,old_path,new_path,similarity_percent
+         FROM diff_file_changes
+         WHERE (?1 IS NULL OR parent_commit_id=?1) AND (?2 IS NULL OR child_commit_id=?2)
+         ORDER BY child_commit_id,parent_commit_id,change_index",
+    )?;
+    let rows = statement.query_map(params![parent_commit_id, child_commit_id], |row| {
+        let similarity_percent = row
+            .get::<_, Option<i64>>(6)?
+            .map(|score| u8::try_from(score).map_err(|_| rusqlite::Error::InvalidQuery))
+            .transpose()?;
+        Ok(DiffFileChange {
+            parent_commit_id: row.get(0)?,
+            child_commit_id: row.get(1)?,
+            change_index: row.get(2)?,
+            kind: parse_diff_change_kind(&row.get::<_, String>(3)?)?,
+            old_path: row.get(4)?,
+            new_path: row.get(5)?,
+            similarity_percent,
+        })
+    })?;
+    Ok(DiffMetadata {
+        settings,
+        changes: rows.collect::<std::result::Result<Vec<_>, _>>()?,
+    })
 }
 
 pub(crate) fn search_diffs(
