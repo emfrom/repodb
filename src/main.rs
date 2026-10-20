@@ -13,6 +13,7 @@ mod git_objects;
 mod git_ranges;
 mod history;
 mod imports;
+mod pagination;
 mod process;
 mod segmentation;
 mod semgrep_languages;
@@ -569,6 +570,21 @@ fn exact(c: &Connection, q: &str, commits: &[String]) -> Result<Vec<SearchResult
     }
     Ok(out)
 }
+fn exact_page(
+    c: &Connection,
+    query: &str,
+    commits: &[String],
+    count_budget: usize,
+    byte_budget: usize,
+    cursor: Option<&str>,
+) -> Result<pagination::SearchPage> {
+    let results = exact(c, query, commits)?
+        .iter()
+        .map(serde_json::to_value)
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+    pagination::page_results(&results, count_budget, byte_budget, cursor).map_err(Into::into)
+}
+
 fn query_vector(c: &Connection, q: &str) -> Result<Vec<f32>> {
     let command: String = c
         .query_row(
@@ -977,6 +993,43 @@ fn execute() -> Result<()> {
     }
     Ok(())
 }
+#[cfg(test)]
+mod backend_page_tests {
+    use super::*;
+
+    #[test]
+    fn callable_exact_backend_returns_bounded_pages() {
+        let connection = Connection::open_in_memory().unwrap();
+        connection
+            .execute(
+                "CREATE TABLE indexed_files(path TEXT,content TEXT,commit_id TEXT)",
+                [],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO indexed_files VALUES('a','needle one\nneedle two','commit-a')",
+                [],
+            )
+            .unwrap();
+        let commits = vec!["commit-a".to_owned()];
+        let first = exact_page(&connection, "needle", &commits, 1, 1024, None).unwrap();
+        assert_eq!(first.results.len(), 1);
+        assert!(first.truncated);
+        let second = exact_page(
+            &connection,
+            "needle",
+            &commits,
+            1,
+            1024,
+            first.cursor.as_deref(),
+        )
+        .unwrap();
+        assert_eq!(second.results[0]["text"], "needle two");
+        assert_eq!(first.snapshot_id, second.snapshot_id);
+    }
+}
+
 fn main() {
     if let Err(e) = execute() {
         eprintln!("repodb: {e}");
