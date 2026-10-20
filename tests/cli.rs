@@ -438,6 +438,124 @@ fn url_import_preview_warns_using_source_bytes_when_growth_is_unknown() {
 }
 
 #[test]
+fn refresh_size_limit_modes_report_fallback_and_control_local_imports() {
+    fn large_local_import(size_limit: Option<&str>, imports_only: bool) -> (bool, String, i64) {
+        let repo = repository();
+        let root = repo.path();
+        let source = root.join("large-import.txt");
+        fs::write(&source, "seed").unwrap();
+        assert!(run(root, &["init"]).0);
+        assert!(run(root, &["import", source.to_str().unwrap()]).0);
+        let database_size = fs::metadata(root.join(".git/repodb.sqlite")).unwrap().len();
+        let source_size = database_size.saturating_mul(2).saturating_add(1);
+        fs::write(&source, vec![b'x'; source_size as usize]).unwrap();
+
+        let mut args = vec!["refresh"];
+        if imports_only {
+            args.push("--imports");
+        }
+        if let Some(size_limit) = size_limit {
+            args.push(size_limit);
+        }
+        let (ok, output) = run(root, &args);
+        let database = rusqlite::Connection::open(root.join(".git/repodb.sqlite")).unwrap();
+        let published_versions: i64 = database
+            .query_row("SELECT count(*) FROM imported_versions", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        (ok, output, published_versions)
+    }
+
+    let (default_ok, _, default_versions) = large_local_import(None, false);
+    assert!(
+        !default_ok,
+        "the default size limit must reject large imports"
+    );
+    assert_eq!(
+        default_versions, 0,
+        "error must not publish imported versions"
+    );
+
+    let (warn_ok, warning, warn_versions) = large_local_import(Some("--size-limit=warn"), false);
+    assert!(warn_ok, "warn must continue import: {warning}");
+    assert_eq!(warn_versions, 1);
+    assert!(warning.contains("source bytes="), "{warning}");
+    assert!(
+        warning.contains("estimated net database growth="),
+        "{warning}"
+    );
+    assert!(warning.contains("source_bytes_fallback"), "{warning}");
+
+    let (ignore_ok, ignored, ignore_versions) =
+        large_local_import(Some("--size-limit=ignore"), true);
+    assert!(ignore_ok, "ignore must continue import: {ignored}");
+    assert_eq!(ignore_versions, 1);
+    assert!(
+        !ignored.contains("warning"),
+        "ignore must be silent: {ignored}"
+    );
+}
+
+#[test]
+fn url_refresh_size_limit_warn_continues_with_source_byte_fallback() {
+    let repo = repository();
+    let root = repo.path();
+    assert!(run(root, &["init"]).0);
+    let database_size = fs::metadata(root.join(".git/repodb.sqlite")).unwrap().len();
+    let body = vec![b'x'; database_size.saturating_mul(2).saturating_add(1) as usize];
+    let (origin, server) = http_server(body.clone(), 1);
+    let url = format!("{origin}/large.txt");
+    assert!(run(root, &["import", &url]).0);
+
+    let (ok, output) = run(root, &["refresh", "--size-limit=warn", "--imports"]);
+    assert!(ok, "warn must continue URL import: {output}");
+    assert_eq!(server.join().unwrap().len(), 1);
+    assert!(
+        output.contains(&format!("source bytes={}", body.len())),
+        "{output}"
+    );
+    assert!(
+        output.contains("estimated net database growth=unknown"),
+        "{output}"
+    );
+    assert!(output.contains("source_bytes_fallback"), "{output}");
+}
+
+#[test]
+fn git_repository_refresh_is_not_restricted_by_size_limit() {
+    let repo = repository();
+    let root = repo.path();
+    assert!(run(root, &["init"]).0);
+    let database_size = fs::metadata(root.join(".git/repodb.sqlite")).unwrap().len();
+    let external = tempfile::tempdir().unwrap();
+    git(external.path(), &["init", "-q"]);
+    git(
+        external.path(),
+        &["config", "user.email", "test@example.com"],
+    );
+    git(external.path(), &["config", "user.name", "Test"]);
+    fs::write(
+        external.path().join("large.txt"),
+        vec![b'x'; database_size.saturating_mul(2).saturating_add(1) as usize],
+    )
+    .unwrap();
+    git(external.path(), &["add", "."]);
+    git(external.path(), &["commit", "-qm", "large Git content"]);
+
+    assert!(run(root, &["import", external.path().to_str().unwrap()]).0);
+    let (ok, output) = run(root, &["refresh", "--imports", "--size-limit=error"]);
+    assert!(
+        ok,
+        "Git registration and refresh remain unrestricted: {output}"
+    );
+    assert!(
+        !output.contains("warning"),
+        "Git content must not be gated: {output}"
+    );
+}
+
+#[test]
 fn search_scope_filters_repo_and_document_sources_for_all_modes() {
     let repo = repository();
     let root = repo.path();

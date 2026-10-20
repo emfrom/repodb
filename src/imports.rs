@@ -365,10 +365,6 @@ fn utc_rfc3339_now() -> String {
     )
 }
 
-pub fn refresh(c: &Connection) -> Result<()> {
-    refresh_with_size_limit(c, SizeLimit::Ignore).map(|_| ())
-}
-
 pub fn refresh_with_size_limit(
     c: &Connection,
     size_limit: SizeLimit,
