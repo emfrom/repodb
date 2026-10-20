@@ -365,15 +365,6 @@ pub fn refresh(c: &Connection) -> Result<()> {
                     if !status.success() {
                         return Err(format!("git clone failed for {locator}").into());
                     }
-                } else {
-                    let status = Command::new("git")
-                        .arg("--git-dir")
-                        .arg(&mirror)
-                        .args(["fetch", "--prune", "origin"])
-                        .status()?;
-                    if !status.success() {
-                        return Err(format!("git fetch failed for {locator}").into());
-                    }
                 }
                 mirror.to_string_lossy().into_owned()
             };
@@ -381,14 +372,33 @@ pub fn refresh(c: &Connection) -> Result<()> {
                 "UPDATE temp.import_stage_sources SET object_store=?1 WHERE id=?2",
                 params![repository, id],
             )?;
-            let commits_bytes = git_output(
-                &repository,
-                &["rev-list", "--all", "--date-order"],
-                refresh_memory_bytes
-                    .remaining()
-                    .saturating_sub(MAX_COMMAND_STDERR_BYTES),
-                &mut refresh_memory_bytes,
-            )?;
+            let (requested_revision, pinned_commit): (Option<String>, Option<String>) = c
+                .query_row(
+                    "SELECT requested_revision,pinned_commit FROM imported_sources WHERE id=?1",
+                    [&id],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )?;
+            let revision = requested_revision.unwrap_or_else(|| "HEAD".to_owned());
+            let commit = match pinned_commit {
+                Some(commit) => commit,
+                None => {
+                    let spec = format!("{revision}^{{commit}}");
+                    let resolved = String::from_utf8(git_output(
+                        &repository,
+                        &["rev-parse", "--verify", &spec],
+                        128,
+                        &mut refresh_memory_bytes,
+                    )?)?
+                    .trim()
+                    .to_owned();
+                    c.execute(
+                        "UPDATE imported_sources SET requested_revision=?1,pinned_commit=?2 WHERE id=?3",
+                        params![revision, resolved, id],
+                    )?;
+                    resolved
+                }
+            };
+            let commits_bytes = commit.into_bytes();
             let commits = String::from_utf8(commits_bytes)?;
             let mut commit_ids = Vec::new();
             for line in commits.lines() {

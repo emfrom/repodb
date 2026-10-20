@@ -1,3 +1,4 @@
+use super::cache::checksum;
 use crate::Result;
 use rusqlite::{Connection, params};
 use serde::Serialize;
@@ -147,6 +148,18 @@ pub(super) fn init(c: &Connection) -> Result<()> {
             }
         }
     }
+    if !column_exists(c, "imported_sources", "requested_revision")? {
+        c.execute(
+            "ALTER TABLE imported_sources ADD COLUMN requested_revision TEXT",
+            [],
+        )?;
+    }
+    if !column_exists(c, "imported_sources", "pinned_commit")? {
+        c.execute(
+            "ALTER TABLE imported_sources ADD COLUMN pinned_commit TEXT",
+            [],
+        )?;
+    }
     if !column_exists(c, "imported_sources", "object_store")? {
         c.execute(
             "ALTER TABLE imported_sources ADD COLUMN object_store TEXT",
@@ -237,7 +250,7 @@ fn identity(locator: &str) -> String {
     )
 }
 
-pub(crate) fn register(c: &Connection, locator: &str) -> Result<()> {
+pub(crate) fn register(c: &Connection, locator: &str, revision: Option<&str>) -> Result<()> {
     let is_remote_git = locator.starts_with("ssh://")
         || locator.starts_with("git@")
         || locator.starts_with("git://")
@@ -290,9 +303,69 @@ pub(crate) fn register(c: &Connection, locator: &str) -> Result<()> {
     } else {
         "file"
     };
+    let requested_revision = if is_git {
+        let revision = revision.unwrap_or("HEAD");
+        if revision.is_empty() || revision.starts_with('-') || revision.contains('\0') {
+            return Err("invalid Git revision".into());
+        }
+        Some(revision)
+    } else {
+        if revision.is_some() {
+            return Err("--revision requires a Git repository".into());
+        }
+        None
+    };
+    let pinned_commit = if let Some(revision) = requested_revision {
+        let git_dir = if path.is_dir() {
+            locator.to_owned()
+        } else {
+            let database_path: String =
+                c.query_row("PRAGMA database_list", [], |row| row.get(2))?;
+            let cache = Path::new(&database_path)
+                .parent()
+                .ok_or("database has no parent directory")?
+                .join("repodb-cache");
+            fs::create_dir_all(&cache)?;
+            let mirror = cache.join(format!("git-{}", checksum(locator.as_bytes())));
+            if !mirror.exists() {
+                let status = Command::new("git")
+                    .args(["clone", "--mirror", locator])
+                    .arg(&mirror)
+                    .status()?;
+                if !status.success() {
+                    return Err(format!("git clone failed for {locator}").into());
+                }
+            } else {
+                let status = Command::new("git")
+                    .arg("--git-dir")
+                    .arg(&mirror)
+                    .args(["fetch", "--prune", "origin"])
+                    .status()?;
+                if !status.success() {
+                    return Err(format!("git fetch failed for {locator}").into());
+                }
+            }
+            mirror.to_string_lossy().into_owned()
+        };
+        let output = Command::new("git")
+            .args([
+                "-C",
+                &git_dir,
+                "rev-parse",
+                "--verify",
+                &format!("{revision}^{{commit}}"),
+            ])
+            .output()?;
+        if !output.status.success() {
+            return Err(format!("could not resolve Git revision {revision}").into());
+        }
+        Some(String::from_utf8(output.stdout)?.trim().to_owned())
+    } else {
+        None
+    };
     c.execute(
-        "INSERT OR IGNORE INTO imported_sources(id,locator,kind) VALUES(?1,?2,?3)",
-        params![identity(locator), locator, kind],
+        "INSERT INTO imported_sources(id,locator,kind,requested_revision,pinned_commit) VALUES(?1,?2,?3,?4,?5) ON CONFLICT(locator) DO UPDATE SET requested_revision=excluded.requested_revision,pinned_commit=excluded.pinned_commit",
+        params![identity(locator), locator, kind, requested_revision, pinned_commit],
     )?;
     Ok(())
 }

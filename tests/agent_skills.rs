@@ -114,6 +114,11 @@ fn import_skill_documents_preview_scope_and_policy_contract() {
         "Do not block solely on size",
         "one explicit `repodb refresh`",
         "source provenance",
+        "Git repository",
+        "`repodb import [--revision REV] REPOSITORY`",
+        "default is `HEAD`",
+        "resolved commit SHA",
+        "Do not import full history",
     ] {
         assert!(
             import.contains(required),
