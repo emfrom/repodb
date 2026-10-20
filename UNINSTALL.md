@@ -1,1 +1,0 @@
-../../../.local/uninstall/repodb-sqlite-vec-cargo-cache-2026-10-16.md
