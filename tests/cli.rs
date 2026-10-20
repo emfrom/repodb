@@ -1577,6 +1577,10 @@ fn html_import_preserves_heading_link_target_and_table_context_in_searchable_tex
     for query in ["Deployment guide", "rollback", "Gold"] {
         let results = search_json(root, &[query]);
         assert!(!results.is_empty(), "missing HTML context for {query}");
+        assert!(
+            results.iter().any(|result| result["path"] == locator),
+            "missing HTML source reference for {query}: {results:?}"
+        );
         let text = results
             .iter()
             .map(|result| result["text"].as_str().unwrap())
@@ -2704,6 +2708,12 @@ fn imported_pdfs_preserve_pages_cache_conversions_and_refresh_versions() {
     assert_eq!(page_two[0]["path"], pdf_string);
     assert_eq!(page_two[0]["page"], 2);
     assert_eq!(page_two[0]["line_start"], 2);
+    let (human_ok, human_page) = run(root, &["search", "second page marker"]);
+    assert!(human_ok, "{human_page}");
+    assert!(
+        human_page.contains(&format!("{pdf_string}:page 2")),
+        "human output must expose the page reference: {human_page}"
+    );
 
     assert!(run(root, &["retention", "all"]).0);
     fs::write(&pdf, b"%PDF-test changed source").unwrap();
