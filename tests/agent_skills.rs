@@ -157,8 +157,9 @@ fn search_skills_document_modes_provenance_and_limitations() {
         "known literal identifiers, symbols, and phrases",
         "literal matching, not a regular-expression search",
         "repodb search 'QUERY'",
-        "all indexed sources by default",
-        "repository history, imported repositories, and imported documentation",
+        "default to scope `all`",
+        "source-code from this repository and imported Git repositories",
+        "all-docs` includes recognized documents from any origin",
         "repository, commit/version, path, and line/page",
         "without fetching or reconstructing the content",
         "indexed Git blob is missing",
@@ -182,8 +183,9 @@ fn search_skills_document_modes_provenance_and_limitations() {
         "conceptual questions about code behavior and documentation",
         "standards, README content, and `AGENTS.md`",
         "repodb search --semantic 'QUERY'",
-        "all indexed content by default",
-        "repository source, imported repositories, and imported documentation",
+        "default to scope `all`",
+        "source-code from this repository and imported Git repositories",
+        "all-docs` includes recognized documents from any origin",
         "semantic search is unavailable",
         "do not silently fall back to exact search",
         "weak or empty results",
@@ -207,7 +209,8 @@ fn search_skills_document_modes_provenance_and_limitations() {
         "semantic search for conceptual questions about code behavior and documentation",
         "combined search when you are unsure whether literal or conceptual matching will find it",
         "repodb search --combined 'QUERY'",
-        "all indexed sources by default",
+        "default to scope `all`",
+        "source-code from this repository and imported Git repositories",
         "filesystem tools",
         "provenance",
         "source content is missing",
@@ -218,6 +221,35 @@ fn search_skills_document_modes_provenance_and_limitations() {
             combined.contains(required),
             "combined search skill must document {required:?}"
         );
+    }
+}
+
+#[test]
+fn search_skills_document_scope_names_default_and_cli_passing_consistently() {
+    for skill_name in [
+        "repodb-search-exact",
+        "repodb-search-semantic",
+        "repodb-search",
+    ] {
+        let search_skill = skill(&format!(".agents/skills/{skill_name}/SKILL.md"));
+        for required in [
+            "`source`",
+            "`repo-local-source`",
+            "`repo-local-docs`",
+            "`all-docs`",
+            "`all`",
+            "default to scope `all`",
+            "`--scope`",
+            "--scope source",
+            "source-code from this repository and imported Git repositories",
+            "this repository’s indexed Git history",
+            "recognized documents from any origin",
+        ] {
+            assert!(
+                search_skill.contains(required),
+                "{skill_name} must document {required:?}"
+            );
+        }
     }
 }
 
