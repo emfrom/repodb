@@ -19,6 +19,23 @@ use cache::{checksum, visit_cache_pages, write_cache};
 use sources::{column_exists, init};
 pub(crate) use sources::{preview, preview_url, register, set_retention};
 const MAX_COMMAND_STDERR_BYTES: usize = 64 * 1024;
+const LARGE_IMPORT_WARNING_THRESHOLD_BYTES: u64 = 50_000_000;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SizeLimit {
+    Error,
+    Warn,
+    Ignore,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ImportSizeAssessment {
+    pub source_bytes: u64,
+    pub estimated_net_db_growth_bytes: Option<u64>,
+    pub warning_basis_bytes: u64,
+    pub warning_basis: &'static str,
+    pub warn_large: bool,
+}
 
 fn html_text(source: &str) -> String {
     let lowercase = source.to_ascii_lowercase();
@@ -349,7 +366,15 @@ fn utc_rfc3339_now() -> String {
 }
 
 pub fn refresh(c: &Connection) -> Result<()> {
+    refresh_with_size_limit(c, SizeLimit::Ignore).map(|_| ())
+}
+
+pub fn refresh_with_size_limit(
+    c: &Connection,
+    size_limit: SizeLimit,
+) -> Result<Vec<ImportSizeAssessment>> {
     init(c)?;
+    let mut size_assessments = Vec::new();
     c.execute_batch("PRAGMA temp_store=FILE;
         DROP TABLE IF EXISTS temp.import_stage_sources; DROP TABLE IF EXISTS temp.import_stage_versions;
         DROP TABLE IF EXISTS temp.import_stage_units; DROP TABLE IF EXISTS temp.import_stage_git_units;
@@ -655,6 +680,44 @@ pub fn refresh(c: &Connection) -> Result<()> {
             }
             output.1
         };
+        let source_size = source_bytes.len() as u64;
+        let source_version = checksum(&source_bytes);
+        let existing_version: bool = c.query_row(
+            "SELECT EXISTS(SELECT 1 FROM temp.import_stage_versions WHERE source_id=?1 AND version=?2 UNION SELECT 1 FROM imported_versions WHERE source_id=?1 AND version=?2)",
+            params![id, source_version],
+            |row| row.get(0),
+        )?;
+        let estimated_growth = existing_version.then_some(0);
+        let database_path: String = c.query_row("PRAGMA database_list", [], |row| row.get(2))?;
+        let database_size = fs::metadata(database_path)
+            .ok()
+            .map(|metadata| metadata.len());
+        let warning_basis_bytes = estimated_growth.unwrap_or(source_size);
+        let warn_large = warning_basis_bytes >= LARGE_IMPORT_WARNING_THRESHOLD_BYTES
+            || database_size.is_some_and(|size| warning_basis_bytes > size.saturating_mul(2));
+        let assessment = ImportSizeAssessment {
+            source_bytes: source_size,
+            estimated_net_db_growth_bytes: estimated_growth,
+            warning_basis_bytes,
+            warning_basis: if estimated_growth.is_some() {
+                "estimated_net_db_growth"
+            } else {
+                "source_bytes_fallback"
+            },
+            warn_large,
+        };
+        if warn_large && size_limit == SizeLimit::Error {
+            return Err(format!(
+                "import size limit exceeded: source bytes={}, estimated net database growth={}, warning basis={} ({})",
+                assessment.source_bytes,
+                assessment.estimated_net_db_growth_bytes.map_or_else(|| "unknown".into(), |value| value.to_string()),
+                assessment.warning_basis_bytes,
+                assessment.warning_basis,
+            ).into());
+        }
+        if size_limit != SizeLimit::Ignore {
+            size_assessments.push(assessment);
+        }
         let is_pdf = source_bytes
             .windows(5)
             .take(1024)
@@ -664,7 +727,6 @@ pub fn refresh(c: &Connection) -> Result<()> {
                 .and_then(|extension| extension.to_str())
                 .is_some_and(|extension| extension.eq_ignore_ascii_case("pdf"));
         let (version, content) = if is_pdf {
-            let source_version = checksum(&source_bytes);
             let cache = cache_dir.join(format!("{source_version}.json"));
             c.execute("DELETE FROM temp.import_pdf_pages", [])?;
             let cached = visit_cache_pages(&cache, |page, text| {
@@ -721,7 +783,6 @@ pub fn refresh(c: &Connection) -> Result<()> {
             (source_version, Some(pdf_representation(&pages)?))
         } else {
             // Imported version identity is the original source, not its decoded representation.
-            let source_version = checksum(&source_bytes);
             let source_text = String::from_utf8(source_bytes)?;
             let is_html = Path::new(&locator)
                 .extension()
@@ -860,7 +921,7 @@ pub fn refresh(c: &Connection) -> Result<()> {
             [dimension as i64],
         )?;
     }
-    Ok(())
+    Ok(size_assessments)
 }
 
 pub fn validate_dimensions(c: &Connection) -> Result<()> {
@@ -1289,11 +1350,188 @@ pub fn search(
 #[cfg(test)]
 mod tests {
     use super::{
-        batch_reader, bounded_command_output_with_input, checksum, hydrate_git_unit_with_reader,
-        pdf_representation, slice_git_unit, visit_cache_pages, write_cache,
+        SizeLimit, batch_reader, bounded_command_output_with_input, checksum,
+        hydrate_git_unit_with_reader, pdf_representation, refresh_with_size_limit, register,
+        slice_git_unit, visit_cache_pages, write_cache,
     };
     use crate::budget::Budget;
-    use std::process::{Command, Stdio};
+    use rusqlite::Connection;
+    use std::{
+        os::unix::fs::PermissionsExt,
+        process::{Command, Stdio},
+    };
+
+    fn size_policy_database(root: &std::path::Path) -> (Connection, std::path::PathBuf) {
+        let database_path = root.join("repodb.sqlite");
+        let connection = Connection::open(&database_path).unwrap();
+        connection
+            .execute_batch(
+                "CREATE TABLE embedding_config(key TEXT PRIMARY KEY,value TEXT NOT NULL);",
+            )
+            .unwrap();
+        let embedder = root.join("embedder.sh");
+        std::fs::write(&embedder, "#!/bin/sh\ncat >/dev/null\nprintf '[1.0]'\n").unwrap();
+        std::fs::set_permissions(&embedder, std::fs::Permissions::from_mode(0o755)).unwrap();
+        connection
+            .execute(
+                "INSERT INTO embedding_config VALUES('command',?1)",
+                [embedder.to_string_lossy().as_ref()],
+            )
+            .unwrap();
+        connection
+            .execute("INSERT INTO embedding_config VALUES('model','test')", [])
+            .unwrap();
+        connection
+            .execute("INSERT INTO embedding_config VALUES('dimension','0')", [])
+            .unwrap();
+        (connection, database_path)
+    }
+
+    #[test]
+    fn callable_size_policy_rejects_atomically_warns_and_ignores_without_temp_files() {
+        let root = tempfile::tempdir().unwrap();
+        let source = root.path().join("document.txt");
+        std::fs::write(&source, "initial").unwrap();
+        let (connection, database_path) = size_policy_database(root.path());
+        register(&connection, source.to_str().unwrap(), None).unwrap();
+        let database_size = std::fs::metadata(&database_path).unwrap().len();
+        let source_bytes = database_size.saturating_mul(2) + 1;
+        std::fs::write(&source, vec![b'x'; source_bytes as usize]).unwrap();
+        let source_size = std::fs::metadata(&source).unwrap().len();
+
+        let rejected = refresh_with_size_limit(&connection, SizeLimit::Error).unwrap_err();
+        assert!(rejected.to_string().contains("import size limit exceeded"));
+        let published_versions: i64 = connection
+            .query_row("SELECT count(*) FROM imported_versions", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(
+            published_versions, 0,
+            "rejection must not publish staged data"
+        );
+
+        let warned = refresh_with_size_limit(&connection, SizeLimit::Warn).unwrap();
+        assert_eq!(warned.len(), 1);
+        assert_eq!(warned[0].source_bytes, source_size);
+        assert_eq!(warned[0].estimated_net_db_growth_bytes, None);
+        assert_eq!(warned[0].warning_basis_bytes, source_size);
+        assert_eq!(warned[0].warning_basis, "source_bytes_fallback");
+        assert!(warned[0].warn_large);
+
+        let ignored = refresh_with_size_limit(&connection, SizeLimit::Ignore).unwrap();
+        assert!(
+            ignored.is_empty(),
+            "ignore continues without reporting warnings"
+        );
+
+        let source_id: String = connection
+            .query_row(
+                "SELECT id FROM imported_sources WHERE locator=?1",
+                [source.to_str().unwrap()],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let source_hash = checksum(&std::fs::read(&source).unwrap());
+        connection
+            .execute(
+                "INSERT INTO imported_versions(source_id,version,content,fetched_order) VALUES(?1,?2,'',1)",
+                rusqlite::params![source_id, source_hash],
+            )
+            .unwrap();
+        let deduplicated = refresh_with_size_limit(&connection, SizeLimit::Error).unwrap();
+        assert_eq!(deduplicated[0].estimated_net_db_growth_bytes, Some(0));
+        assert_eq!(deduplicated[0].warning_basis, "estimated_net_db_growth");
+        assert!(!deduplicated[0].warn_large);
+
+        assert!(source.exists());
+        assert!(!root.path().join("repodb-cache").exists());
+        assert_eq!(
+            std::fs::metadata(&database_path).unwrap().len(),
+            database_size
+        );
+    }
+
+    #[test]
+    fn size_policy_does_not_claim_zero_growth_for_a_different_source() {
+        let root = tempfile::tempdir().unwrap();
+        let first = root.path().join("first.txt");
+        let second = root.path().join("second.txt");
+        let content = "identical imported text";
+        std::fs::write(&first, content).unwrap();
+        std::fs::write(&second, content).unwrap();
+        let (connection, _) = size_policy_database(root.path());
+        register(&connection, first.to_str().unwrap(), None).unwrap();
+        register(&connection, second.to_str().unwrap(), None).unwrap();
+        let first_id: String = connection
+            .query_row(
+                "SELECT id FROM imported_sources WHERE locator=?1",
+                [first.to_str().unwrap()],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let version = checksum(content.as_bytes());
+        connection
+            .execute(
+                "INSERT INTO imported_versions(source_id,version,content,fetched_order) VALUES(?1,?2,'',1)",
+                rusqlite::params![first_id, version],
+            )
+            .unwrap();
+
+        let assessments = refresh_with_size_limit(&connection, SizeLimit::Warn).unwrap();
+        assert_eq!(assessments.len(), 2);
+        assert_eq!(
+            assessments
+                .iter()
+                .filter(|assessment| assessment.estimated_net_db_growth_bytes == Some(0))
+                .count(),
+            1,
+            "only the source with the retained identical version can claim zero growth"
+        );
+        assert_eq!(
+            assessments
+                .iter()
+                .filter(|assessment| assessment.estimated_net_db_growth_bytes.is_none())
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn size_error_policy_never_gates_git_import_content() {
+        let root = tempfile::tempdir().unwrap();
+        let (connection, database_path) = size_policy_database(root.path());
+        let database_size = std::fs::metadata(&database_path).unwrap().len();
+        let repository = root.path().join("repository");
+        std::fs::create_dir(&repository).unwrap();
+        let git = |args: &[&str]| {
+            let output = Command::new("git")
+                .arg("-C")
+                .arg(&repository)
+                .args(args)
+                .output()
+                .unwrap();
+            assert!(output.status.success());
+        };
+        git(&["init", "-q"]);
+        git(&["config", "user.name", "RepoDB test"]);
+        git(&["config", "user.email", "test@example.invalid"]);
+        std::fs::write(
+            repository.join("large.txt"),
+            vec![b'x'; database_size.saturating_mul(2) as usize + 1],
+        )
+        .unwrap();
+        git(&["add", "large.txt"]);
+        git(&["commit", "-qm", "large Git content"]);
+        register(&connection, repository.to_str().unwrap(), None).unwrap();
+
+        let assessment = refresh_with_size_limit(&connection, SizeLimit::Error).unwrap();
+
+        assert!(
+            assessment.is_empty(),
+            "Git commits are outside document-size policy"
+        );
+    }
 
     #[test]
     fn repeated_reembed_units_from_one_blob_share_an_operation_scoped_reader() {
