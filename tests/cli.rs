@@ -1447,6 +1447,42 @@ fn local_document_formats_import_searchable_text_and_reject_unsupported_files() 
 }
 
 #[test]
+fn html_import_preserves_heading_link_target_and_table_context_in_searchable_text() {
+    let repo = repository();
+    let root = repo.path();
+    assert!(run(root, &["init"]).0);
+    let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/context.html");
+    let locator = fixture.to_string_lossy().into_owned();
+    assert!(run(root, &["import", &locator]).0);
+    assert!(run(root, &["refresh", "--imports"]).0);
+
+    for query in ["Deployment guide", "rollback", "Gold"] {
+        let results = search_json(root, &[query]);
+        assert!(!results.is_empty(), "missing HTML context for {query}");
+        let text = results
+            .iter()
+            .map(|result| result["text"].as_str().unwrap())
+            .collect::<Vec<_>>()
+            .join("\\n");
+        assert!(text.contains(query), "{query:?} missing from {text:?}");
+        if query == "rollback" {
+            assert!(
+                text.contains("https://example.test/rollback"),
+                "link target missing from {text:?}"
+            );
+        }
+        if query == "Gold" {
+            for table_context in ["Tier", "Retention", "Thirty days"] {
+                assert!(
+                    text.contains(table_context),
+                    "{table_context:?} missing from {text:?}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
 fn html_import_excludes_script_and_style_contents_from_search() {
     let repo = repository();
     let root = repo.path();
