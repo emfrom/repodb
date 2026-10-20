@@ -18,12 +18,22 @@ The identity and location of content in its source, such as a Git commit, file p
 _Avoid_: citation (when referring to the stored source identity and location)
 
 **Imported source**:
-A document or other supported source added to RepoDB from outside the repository's Git history, such as a local file or URL.
-_Avoid_: external file (when the source may be a URL or another source type)
+A source explicitly added to RepoDB from outside the current repository's tracked Git history, such as a document, URL, or external Git repository.
+_Avoid_: external file (when the source may be a URL or repository)
+
+**Native Git content**:
+The tracked history of the repository in which RepoDB is operating, distinct from an explicitly added external Git repository.
+
+**Website snapshot**:
+The extracted searchable text obtained from a URL at a recorded retrieval time, identified by the source URL and the content hash of that text.
+_Avoid_: web page (when referring to the retained searchable version)
 
 **Current worktree scope**:
 A search scope representing the repository's checked-out commit, excluding staged, unstaged, and untracked changes.
 _Avoid_: working-tree search (when referring to this narrower scope)
+
+**Worktree augmentation**:
+A best-effort search view that relates the checked-out commit to staged and live changes, including eligible untracked files, without making those changes part of committed history.
 
 ## Search
 
