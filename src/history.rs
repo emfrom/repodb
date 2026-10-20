@@ -45,6 +45,19 @@ pub(crate) struct DiffReference {
     pub byte_end: usize,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum DiffSearchMode {
+    Exact,
+    Semantic,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct DiffSearchResult {
+    pub text: String,
+    pub reference: DiffReference,
+    pub distance: Option<f64>,
+}
+
 fn git_capture_limits(requested_stdout: usize, preparation_bytes: usize) -> Result<(usize, usize)> {
     let remaining = MAX_REFRESH_ACCOUNTING_BYTES
         .checked_sub(preparation_bytes)
@@ -1244,6 +1257,7 @@ mod tests {
         fs::write(repo.path().join("added.txt"), "add needle\n").unwrap();
         git(&["add", "-A"]);
         git(&["commit", "-qm", "child"]);
+        enable_vector_extension();
         let child = git(&["rev-parse", "HEAD"]);
 
         let embedder = repo.path().join("embedder");
@@ -1292,6 +1306,79 @@ mod tests {
         assert_eq!(removed.byte_start, 0);
         assert_eq!(removed.byte_end, "remove needle".len());
         assert_ne!(added.blob_id, removed.blob_id);
+
+        let child_commits = vec![child.clone()];
+        assert!(
+            search_diffs(&db, "needle", DiffSearchMode::Exact, 0, &child_commits)
+                .unwrap()
+                .is_empty()
+        );
+        assert!(
+            search_diffs(&db, "needle", DiffSearchMode::Exact, 10, &[])
+                .unwrap()
+                .is_empty()
+        );
+        let exact_added =
+            search_diffs(&db, "add needle", DiffSearchMode::Exact, 10, &child_commits).unwrap();
+        assert_eq!(exact_added.len(), 1);
+        assert_eq!(exact_added[0].text, "add needle");
+        assert_eq!(exact_added[0].reference.side, DiffSide::Added);
+        assert_eq!(exact_added[0].reference.parent_commit_id, parent);
+        assert_eq!(exact_added[0].distance, None);
+        let exact_removed = search_diffs(
+            &db,
+            "remove needle",
+            DiffSearchMode::Exact,
+            10,
+            &child_commits,
+        )
+        .unwrap();
+        assert_eq!(exact_removed.len(), 1);
+        assert_eq!(exact_removed[0].text, "remove needle");
+        assert_eq!(exact_removed[0].reference.side, DiffSide::Removed);
+
+        let semantic = search_diffs(
+            &db,
+            "semantic query",
+            DiffSearchMode::Semantic,
+            10,
+            &child_commits,
+        )
+        .unwrap();
+        assert_eq!(semantic.len(), 2);
+        assert!(semantic.iter().all(|result| result.distance == Some(0.0)));
+        assert!(semantic.iter().any(|result| {
+            result.reference.side == DiffSide::Added && result.text == "add needle"
+        }));
+        assert!(semantic.iter().any(|result| {
+            result.reference.side == DiffSide::Removed && result.text == "remove needle"
+        }));
+
+        let object = repo
+            .path()
+            .join(".git/objects")
+            .join(&added.blob_id[..2])
+            .join(&added.blob_id[2..]);
+        let saved = repo.path().join("saved-added-blob");
+        fs::rename(&object, &saved).unwrap();
+        let missing = search_diffs(&db, "add needle", DiffSearchMode::Exact, 10, &child_commits)
+            .unwrap_err()
+            .to_string();
+        let missing_semantic = search_diffs(
+            &db,
+            "semantic query",
+            DiffSearchMode::Semantic,
+            10,
+            &child_commits,
+        )
+        .unwrap_err()
+        .to_string();
+        fs::rename(saved, object).unwrap();
+        assert!(missing.contains(&added.blob_id), "{missing}");
+        assert!(
+            missing_semantic.contains(&added.blob_id),
+            "{missing_semantic}"
+        );
         std::env::set_current_dir(original_cwd).unwrap();
     }
 
@@ -2612,48 +2699,139 @@ pub fn publish_refresh(tx: &Transaction<'_>) -> Result<()> {
     Ok(())
 }
 
+const DIFF_REFERENCE_COLUMNS: &str = "r.parent_commit_id,r.child_commit_id,r.hunk_id,r.side,r.old_path,r.new_path,r.old_line_start,r.old_line_end,r.new_line_start,r.new_line_end,r.blob_id,r.unit_id,r.byte_start,r.byte_end,r.line_start,r.line_end";
+
+fn read_diff_reference(row: &rusqlite::Row<'_>) -> rusqlite::Result<DiffReference> {
+    let side: String = row.get(3)?;
+    let maybe_usize = |index| -> rusqlite::Result<Option<usize>> {
+        row.get::<_, Option<i64>>(index)?
+            .map(|value| {
+                usize::try_from(value)
+                    .map_err(|_| rusqlite::Error::IntegralValueOutOfRange(index, value))
+            })
+            .transpose()
+    };
+    Ok(DiffReference {
+        parent_commit_id: row.get(0)?,
+        child_commit_id: row.get(1)?,
+        hunk_id: row.get(2)?,
+        side: match side.as_str() {
+            "added" => DiffSide::Added,
+            "removed" => DiffSide::Removed,
+            _ => return Err(rusqlite::Error::InvalidQuery),
+        },
+        old_path: row.get(4)?,
+        new_path: row.get(5)?,
+        old_line_start: maybe_usize(6)?,
+        old_line_end: maybe_usize(7)?,
+        new_line_start: maybe_usize(8)?,
+        new_line_end: maybe_usize(9)?,
+        blob_id: row.get(10)?,
+        unit_id: row.get(11)?,
+        byte_start: usize::try_from(row.get::<_, i64>(12)?)
+            .map_err(|_| rusqlite::Error::InvalidQuery)?,
+        byte_end: usize::try_from(row.get::<_, i64>(13)?)
+            .map_err(|_| rusqlite::Error::InvalidQuery)?,
+        line_start: maybe_usize(14)?.ok_or(rusqlite::Error::InvalidQuery)?,
+        line_end: maybe_usize(15)?.ok_or(rusqlite::Error::InvalidQuery)?,
+    })
+}
+
 pub(crate) fn diff_references(
     c: &Connection,
     parent_commit_id: Option<&str>,
     child_commit_id: Option<&str>,
 ) -> Result<Vec<DiffReference>> {
-    let mut statement = c.prepare("SELECT parent_commit_id,child_commit_id,hunk_id,side,old_path,new_path,old_line_start,old_line_end,new_line_start,new_line_end,blob_id,unit_id,byte_start,byte_end,line_start,line_end FROM diff_references WHERE (?1 IS NULL OR parent_commit_id=?1) AND (?2 IS NULL OR child_commit_id=?2) ORDER BY child_commit_id,parent_commit_id,hunk_id,side,byte_start")?;
-    let rows = statement.query_map(params![parent_commit_id, child_commit_id], |row| {
-        let side: String = row.get(3)?;
-        let maybe_usize = |index| -> rusqlite::Result<Option<usize>> {
-            row.get::<_, Option<i64>>(index)?
-                .map(|value| {
-                    usize::try_from(value)
-                        .map_err(|_| rusqlite::Error::IntegralValueOutOfRange(index, value))
-                })
-                .transpose()
-        };
-        Ok(DiffReference {
-            parent_commit_id: row.get(0)?,
-            child_commit_id: row.get(1)?,
-            hunk_id: row.get(2)?,
-            side: match side.as_str() {
-                "added" => DiffSide::Added,
-                "removed" => DiffSide::Removed,
-                _ => return Err(rusqlite::Error::InvalidQuery),
-            },
-            old_path: row.get(4)?,
-            new_path: row.get(5)?,
-            old_line_start: maybe_usize(6)?,
-            old_line_end: maybe_usize(7)?,
-            new_line_start: maybe_usize(8)?,
-            new_line_end: maybe_usize(9)?,
-            blob_id: row.get(10)?,
-            unit_id: row.get(11)?,
-            byte_start: usize::try_from(row.get::<_, i64>(12)?)
-                .map_err(|_| rusqlite::Error::InvalidQuery)?,
-            byte_end: usize::try_from(row.get::<_, i64>(13)?)
-                .map_err(|_| rusqlite::Error::InvalidQuery)?,
-            line_start: maybe_usize(14)?.ok_or(rusqlite::Error::InvalidQuery)?,
-            line_end: maybe_usize(15)?.ok_or(rusqlite::Error::InvalidQuery)?,
-        })
-    })?;
+    let mut statement = c.prepare(&format!(
+        "SELECT {DIFF_REFERENCE_COLUMNS} FROM diff_references r
+         WHERE (?1 IS NULL OR r.parent_commit_id=?1)
+           AND (?2 IS NULL OR r.child_commit_id=?2)
+         ORDER BY r.child_commit_id,r.parent_commit_id,r.hunk_id,r.side,r.byte_start"
+    ))?;
+    let rows = statement.query_map(
+        params![parent_commit_id, child_commit_id],
+        read_diff_reference,
+    )?;
     Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
+}
+
+pub(crate) fn search_diffs(
+    c: &Connection,
+    query: &str,
+    mode: DiffSearchMode,
+    limit: usize,
+    child_commit_ids: &[String],
+) -> Result<Vec<DiffSearchResult>> {
+    if limit == 0 || child_commit_ids.is_empty() {
+        return Ok(Vec::new());
+    }
+    let commits = serde_json::to_string(child_commit_ids)?;
+    let mut results = Vec::new();
+    let lowercase_query = query.to_lowercase();
+    match mode {
+        DiffSearchMode::Exact => {
+            let mut statement = c.prepare(&format!(
+                "SELECT {DIFF_REFERENCE_COLUMNS} FROM diff_references r
+                 WHERE r.child_commit_id IN (SELECT value FROM json_each(?1))
+                 ORDER BY r.child_commit_id,r.parent_commit_id,r.hunk_id,r.side,r.byte_start"
+            ))?;
+            let mut rows = statement.query_map([commits], read_diff_reference)?;
+            let mut reader = GitBlobReader::new(None)?;
+            while let Some(row) = rows.next() {
+                let reference = row?;
+                let text = hydrate_unit(
+                    &reference.blob_id,
+                    reference.byte_start,
+                    reference.byte_end,
+                    &mut reader,
+                )?;
+                if text.to_lowercase().contains(&lowercase_query) {
+                    results.push(DiffSearchResult {
+                        text,
+                        reference,
+                        distance: None,
+                    });
+                    if results.len() == limit {
+                        break;
+                    }
+                }
+            }
+            reader.finish()?;
+        }
+        DiffSearchMode::Semantic => {
+            let vector = query_vector(c, query)?;
+            let mut statement = c.prepare(&format!(
+                "SELECT {DIFF_REFERENCE_COLUMNS},vec_distance_cosine(e.vector,?1)
+                 FROM diff_references r JOIN unit_embeddings e USING(unit_id)
+                 WHERE r.child_commit_id IN (SELECT value FROM json_each(?2))
+                 ORDER BY 17,r.child_commit_id,r.parent_commit_id,r.hunk_id,r.side,r.byte_start,r.unit_id
+                 LIMIT ?3"
+            ))?;
+            let sql_limit =
+                i64::try_from(limit).map_err(|_| "diff search limit exceeds SQLite range")?;
+            let mut rows = statement
+                .query_map(params![as_bytes(&vector), commits, sql_limit], |row| {
+                    Ok((read_diff_reference(row)?, row.get::<_, f64>(16)?))
+                })?;
+            let mut reader = GitBlobReader::new(None)?;
+            while let Some(row) = rows.next() {
+                let (reference, distance) = row?;
+                let text = hydrate_unit(
+                    &reference.blob_id,
+                    reference.byte_start,
+                    reference.byte_end,
+                    &mut reader,
+                )?;
+                results.push(DiffSearchResult {
+                    text,
+                    reference,
+                    distance: Some(distance),
+                });
+            }
+            reader.finish()?;
+        }
+    }
+    Ok(results)
 }
 
 pub fn reembed(c: &mut Connection, command: &str, model: &str) -> Result<()> {
