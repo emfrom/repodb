@@ -213,7 +213,7 @@ fn status(db_path: &std::path::Path) -> Result<serde_json::Value> {
         }
         if version >= 2 {
             c.query_row(
-                "SELECT commit_id FROM git_commits ORDER BY commit_id LIMIT 1",
+                "SELECT commit_id FROM git_commits ORDER BY timestamp DESC, commit_id DESC LIMIT 1",
                 [],
                 |r| r.get::<_, String>(0),
             )
@@ -236,7 +236,32 @@ fn status(db_path: &std::path::Path) -> Result<serde_json::Value> {
         .filter(|output| output.status.success())
         .and_then(|output| String::from_utf8(output.stdout).ok())
         .map(|head| head.trim().to_owned());
-    let dirty = !git(&["status", "--porcelain", "--untracked-files=normal"])?.is_empty();
+    let porcelain = git(&["status", "--porcelain", "--untracked-files=normal"])?;
+    let dirty = !porcelain.is_empty();
+    let (mut staged_changes, mut worktree_changes, mut untracked_files) = (false, false, false);
+    for line in porcelain
+        .split(|byte| *byte == b'\n')
+        .filter(|line| line.len() >= 2)
+    {
+        staged_changes |= line[0] != b' ' && line[0] != b'?';
+        worktree_changes |= line[1] != b' ' && line[0] != b'?';
+        untracked_files |= line[0..2] == *b"??";
+    }
+    let staged_coverage = if staged_changes {
+        "present-unindexed"
+    } else {
+        "clean"
+    };
+    let worktree_coverage = if worktree_changes {
+        "present-unindexed"
+    } else {
+        "clean"
+    };
+    let untracked_coverage = if untracked_files {
+        "present-unindexed"
+    } else {
+        "clean"
+    };
     let (unit_count, unsupported_count) = if database_exists {
         let c = Connection::open(db_path)?;
         let version: i64 = c.query_row("PRAGMA user_version", [], |r| r.get(0))?;
@@ -260,7 +285,7 @@ fn status(db_path: &std::path::Path) -> Result<serde_json::Value> {
     } else {
         (0, 0)
     };
-    let state = if !database_exists {
+    let content_state = if !database_exists {
         "missing"
     } else if unit_count == 0 && unsupported_count > 0 {
         "unsupported"
@@ -269,23 +294,39 @@ fn status(db_path: &std::path::Path) -> Result<serde_json::Value> {
     } else {
         "usable"
     };
+    let state = if content_state == "usable"
+        && indexed_head
+            .as_deref()
+            .is_some_and(|head| Some(head) != live_head.as_deref())
+    {
+        "stale"
+    } else {
+        content_state
+    };
     let exact = database_exists && state == "usable";
     let embedder = config::embedding_command()
         .ok()
         .and_then(|command| resolved_executable(&command));
     let semantic_ready = exact && embedder.is_some();
     let pdftotext = resolved_executable("pdftotext").is_some();
+    let unavailable_reason = if !database_exists {
+        "database is missing"
+    } else if state == "unsupported" {
+        "index contains only unsupported content"
+    } else {
+        "index has no searchable units"
+    };
     let readiness = serde_json::json!({
-        "exact": capability(exact, (!exact).then(|| if database_exists { "index has no searchable units".to_owned() } else { "database is missing".to_owned() })),
-        "semantic": capability(semantic_ready, (!semantic_ready).then(|| if !exact { "index has no searchable units".to_owned() } else { "embedding command is missing".to_owned() })),
+        "exact": capability(exact, (!exact).then(|| unavailable_reason.to_owned())),
+        "semantic": capability(semantic_ready, (!semantic_ready).then(|| if !exact { unavailable_reason.to_owned() } else { "embedding command is missing".to_owned() })),
         "refresh": capability(embedder.is_some(), embedder.is_none().then(|| "embedding command is missing".to_owned())),
         "document_import": capability(pdftotext, (!pdftotext).then(|| "pdftotext is missing".to_owned()))
     });
     Ok(serde_json::json!({
-        "database": { "path": db_path, "state": state },
+        "database": { "path": db_path, "state": state, "content_state": content_state },
         "indexed_head": indexed_head,
         "live_head": live_head,
-        "worktree": { "dirty": dirty, "staged_coverage": "not-indexed", "worktree_coverage": "not-indexed", "untracked_coverage": "not-indexed" },
+        "worktree": { "dirty": dirty, "staged_coverage": staged_coverage, "worktree_coverage": worktree_coverage, "untracked_coverage": untracked_coverage },
         "indexed_units": { "total": unit_count, "unsupported": unsupported_count },
         "capabilities": readiness
     }))
@@ -604,10 +645,49 @@ fn execute() -> Result<()> {
     let db_path = selected_database(option)?;
     match cmd.as_str() {
         "status" => {
-            if a.next().as_deref() != Some("--json") || a.next().is_some() {
-                return Err("usage: repodb status --json".into());
+            let json = match a.next().as_deref() {
+                None => false,
+                Some("--json") if a.next().is_none() => true,
+                _ => return Err("usage: repodb status [--json]".into()),
+            };
+            let report = status(&db_path)?;
+            if json {
+                println!("{}", serde_json::to_string_pretty(&report)?);
+            } else {
+                let database = &report["database"];
+                let state = database["state"].as_str().unwrap_or("unknown");
+                println!("Database: {state}");
+                println!(
+                    "Indexed HEAD: {}",
+                    report["indexed_head"].as_str().unwrap_or("none")
+                );
+                println!(
+                    "Live HEAD: {}",
+                    report["live_head"].as_str().unwrap_or("unavailable")
+                );
+                println!("Worktree dirty: {}", report["worktree"]["dirty"]);
+                for capability in ["exact", "semantic", "refresh", "document_import"] {
+                    let entry = &report["capabilities"][capability];
+                    let name = match capability {
+                        "exact" => "Exact search",
+                        "semantic" => "Semantic search",
+                        "refresh" => "Refresh",
+                        _ => "Document import",
+                    };
+                    println!(
+                        "{name}: {}{}",
+                        if entry["ready"] == true {
+                            "ready"
+                        } else {
+                            "not ready"
+                        },
+                        entry["reason"]
+                            .as_str()
+                            .map(|reason| format!(" ({reason})"))
+                            .unwrap_or_default()
+                    );
+                }
             }
-            println!("{}", serde_json::to_string_pretty(&status(&db_path)?)?);
         }
         "init" | "refresh" => {
             let arguments: Vec<_> = a.collect();
