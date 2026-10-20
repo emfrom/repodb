@@ -24,6 +24,7 @@ repodb search 'literal text' --history=all --json
 repodb search 'literal text' --history=20 --commit COMMIT_ID
 repodb search 'literal text' --history=src/
 repodb search 'literal text' --all-history --json  # legacy alias
+repodb search 'literal text' --explore --history=all --json # all refs, reference-only pages
 repodb search 'question' --semantic --include-commit ID1 --include-commit ID2
 repodb search 'question' --combined --all-history --exclude-commit ID3
 repodb search 'question' --scope repo-local-docs
@@ -78,8 +79,10 @@ HEAD lines. Newly staged/untracked additions and excluded files are disclosed
 as coverage gaps. Neither mode refreshes or persists worktree text. Concurrent
 edits may produce a non-atomic observation, which is labeled in the output.
 With `--json`, opted-in output is an object containing `results` and a
-`worktree` observation/coverage summary; normal JSON search keeps its existing
-array shape. `--current-worktree` remains HEAD-only.
+`worktree` observation/coverage summary. Responses that need pagination include
+`results`, `cursor`, `snapshot_id`, `truncated`, `total_count` (null when not
+known), and any worktree summary; an untruncated ordinary JSON response retains
+the existing array shape. `--current-worktree` remains HEAD-only.
 
 Use one coarse history selector:
 
@@ -157,6 +160,26 @@ are stored per database and reused on later scans. Use
 `reembed [--command PATH] [--model ID]` to change them. `--semantic-limit N`
 (default 20) limits semantic candidates, not exact matches in combined search.
 
+### Bounded search and exploration
+
+Ordinary search returns at most 5 results per page; `--explore` returns at most
+50 reference-only results per page and enumerates every eligible historical
+occurrence, including duplicate blobs at different commits or paths. Both use a
+5,000-byte serialized-response budget by default. Configure the page count with
+`--limit N` and the byte budget with `--byte-budget N`. JSON pagination responses
+include a stable `snapshot_id`, `total_count` when known, `truncated`, and a
+`cursor` when another page is available; pass that cursor back with `--cursor`.
+The cursor is valid only while the selected result snapshot remains the same.
+
+If a complete result cannot fit, RepoDB emits its reference and sets
+`text_omitted_for_size` rather than cutting text. Fetch that result separately
+by repeating the same search with `--fetch-reference REFERENCE_ID`; increase
+`--byte-budget` enough to fit the complete result. `--fetch-reference` cannot be
+combined with `--explore` or `--cursor`. If even the minimal reference cannot
+fit, search returns an explicit `result_limit` error. `--explore` removes text
+recursively, including indexed/live semantic text, but preserves references and
+ranking/provenance metadata.
+
 ### Imported sources
 
 Register one local file, HTTP(S) URL, local Git repository, or remote Git URL at a time with `repodb import PATH_OR_URL`. Git remotes can use SSH, Git, `file://`, or HTTP(S) URLs ending in `.git`; ordinary directories are rejected. `repodb import --preview URL` performs one GET to the selected HTTP(S) page without registering, indexing, or updating retrieval timestamps; it reports response-body bytes and warns at 50,000,000 bytes or when bytes exceed twice the current database size. URL growth is unknown, so source bytes are the warning basis. Preview has no fixed byte ceiling and is advisory: the later import fetches again and may observe different content. It follows no links. `repodb retention latest` (the default) keeps the most recently successfully published version per source; `all` retains distinct hashes. For URL pages, SHA-256 of response-body bytes is the version identity and existing JSON `blob_id`; unchanged bytes deduplicate, while changed bytes create versions. URL JSON provenance includes UTC RFC3339 `first_retrieved_at` and `last_retrieved_at`; legacy unknown first timestamps remain null even after a later refresh, which updates `last_retrieved_at` without inventing historical provenance. With `latest`, A→B→A makes A latest again, but a pruned hash's first timestamp starts a new retained-row lifetime because its discarded metadata cannot be reconstructed; with `all`, distinct hashes and their original first timestamps are retained. `repodb refresh` and `repodb refresh --imports` explicitly observe registered URLs; search never fetches. Imported Git results include the repository locator, commit ID, repository-relative path, and one-based line reference. Semantic imported search uses the repository's configured embedding command.
@@ -165,14 +188,17 @@ Refresh does not impose fixed per-file, URL, PDF-text, page-count, unit-count, o
 
 ### References, duplicates, and ordering
 
-JSON results contain `commit_id`, `blob_id`, `path`, `line_start`, `line_end`,
-`text`, and (for semantic/combined searches) cosine `distance`. Human output also
+JSON results contain a stable-within-snapshot `reference_id`, `commit_id`,
+`blob_id`, `path`, `line_start`, `line_end`, `text`, and (for semantic/combined
+searches) cosine `distance`. Human output also
 includes full commit and blob IDs. Line ranges are one-based and inclusive;
 each result returns the complete matching indexed unit, not just a matching line.
 
-Commit filtering happens **before** duplicate collapse. Each indexed unit of an
-identical blob appears once, at the newest eligible occurrence: committer timestamp
-descending, then full commit ID descending, then path ascending (byte order).
+Commit filtering happens **before** ordinary-search duplicate collapse. Each
+indexed unit of an identical blob appears once, at the newest eligible occurrence:
+committer timestamp descending, then full commit ID descending, then path ascending
+(byte order). `--explore` bypasses this collapse and pages every eligible
+commit/path reference.
 This is a deterministic timestamp policy, not ancestry ordering. The chosen
 occurrence's path determines the segmentation kind; only that representation of
 the blob is returned, even when identical content occurs as both `.md` and `.rs`.

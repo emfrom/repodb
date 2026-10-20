@@ -24,6 +24,60 @@ mod semgrep_languages;
 
 type Result<T> = std::result::Result<T, Box<dyn Error>>;
 
+fn contains_text_omission(value: &serde_json::Value) -> bool {
+    match value {
+        serde_json::Value::Object(object) => {
+            [
+                "text_omitted_for_size",
+                "head_text_omitted_for_size",
+                "live_text_omitted_for_size",
+            ]
+            .iter()
+            .any(|field| object.get(*field) == Some(&serde_json::Value::Bool(true)))
+                || object.values().any(contains_text_omission)
+        }
+        serde_json::Value::Array(values) => values.iter().any(contains_text_omission),
+        _ => false,
+    }
+}
+
+fn reference_cli_error(json: bool, reference_id: &str) -> Box<dyn Error> {
+    let message = format!("reference ID was not found in this search: {reference_id}");
+    if json {
+        println!(
+            "{}",
+            serde_json::json!({
+                "error": {
+                    "code": "reference_not_found",
+                    "message": message,
+                }
+            })
+        );
+    }
+    std::io::Error::other(message).into()
+}
+
+fn pagination_cli_error(json: bool, message: impl Into<String>) -> Box<dyn Error> {
+    let message = message.into();
+    if json {
+        let code = if message.contains("cursor") {
+            "invalid_cursor"
+        } else {
+            "result_limit"
+        };
+        println!(
+            "{}",
+            serde_json::json!({
+                "error": {
+                    "code": code,
+                    "message": message,
+                }
+            })
+        );
+    }
+    std::io::Error::other(message).into()
+}
+
 fn worktree_cli_error(
     json: bool,
     code: &str,
@@ -194,7 +248,6 @@ fn search_evidence(
             result.page,
             result.line_start,
             result.line_end,
-            &result.text,
         ))?
     );
     let exact = mode == "exact"
@@ -520,6 +573,7 @@ fn annotated_ranked_payload(
     if !value.is_object() {
         value = serde_json::json!({"reference": value});
     }
+    value["reference_id"] = serde_json::Value::String(candidate.reference_id.clone());
     value["component"] = serde_json::Value::String(component_name(candidate.component).to_owned());
     value["primary_component"] =
         serde_json::Value::String(component_name(group.primary).to_owned());
@@ -800,10 +854,22 @@ fn print_ranked_human(
     c: &Connection,
     history_path_links: &HashMap<(String, String), Vec<history::HeuristicPathLink>>,
     cache: &mut DiffMetadataCache,
+    page: &repodb::pagination::SearchPage,
+    explore: bool,
 ) -> Result<()> {
     for (group_id, group) in ranked.iter().enumerate() {
         for candidate in &group.components {
-            let prefix = ranked_human_prefix(group, group_id, candidate.component);
+            let Some(page_result) = page.results.iter().find(|result| {
+                result["reference_id"].as_str() == Some(candidate.reference_id.as_str())
+            }) else {
+                continue;
+            };
+            let text_omitted = explore || contains_text_omission(page_result);
+            let prefix = format!(
+                "{}[reference_id={}] ",
+                ranked_human_prefix(group, group_id, candidate.component),
+                candidate.reference_id
+            );
             match displays.get(&candidate.reference_id) {
                 Some(EvidenceDisplay::Search(x)) => {
                     let mut reference = String::new();
@@ -826,7 +892,7 @@ fn print_ranked_human(
                             worktree.score_provenance,
                             worktree.head_line_start,
                             worktree.head_line_end,
-                            worktree.head_text,
+                            if text_omitted { "[text omitted]" } else { &worktree.head_text },
                         ));
                         if worktree.changed_live_text == Some(true) {
                             reference.push_str(" [live text differs from indexed HEAD]");
@@ -885,15 +951,19 @@ fn print_ranked_human(
                             .unwrap_or("");
                         format!(" [cosine embedding distance {distance}{basis}]")
                     });
+                    let text = if explore {
+                        "[reference only]"
+                    } else if text_omitted {
+                        "[text omitted for size]"
+                    } else {
+                        &x.text
+                    };
                     if let Some(page) = x.page {
-                        println!(
-                            "{prefix}{path}:page {page}{reference}{distance}: {}",
-                            x.text
-                        );
+                        println!("{prefix}{path}:page {page}{reference}{distance}: {text}");
                     } else {
                         println!(
-                            "{prefix}{path}:{}-{}{reference}{distance}: {}",
-                            x.line_start, x.line_end, x.text
+                            "{prefix}{path}:{}-{}{reference}{distance}: {text}",
+                            x.line_start, x.line_end
                         );
                     }
                 }
@@ -960,12 +1030,16 @@ fn print_ranked_human(
                     let distance = group.distance.map_or_else(String::new, |distance| {
                         format!(" [cosine embedding distance {distance}]")
                     });
+                    let text = if explore {
+                        "[reference only]"
+                    } else if text_omitted {
+                        "[text omitted for size]"
+                    } else {
+                        &hit.text
+                    };
                     println!(
-                        "{prefix}diff {side} match={matching} [parent {} child {} hunk {}] old={old} new={new} file_change={change_kind} heuristic={heuristic} similarity={similarity} detection={detection} parent-file-command={parent_command} child-file-command={child_command}{distance}: {}",
-                        reference.parent_commit_id,
-                        reference.child_commit_id,
-                        reference.hunk_id,
-                        hit.text,
+                        "{prefix}diff {side} match={matching} [parent {} child {} hunk {}] old={old} new={new} file_change={change_kind} heuristic={heuristic} similarity={similarity} detection={detection} parent-file-command={parent_command} child-file-command={child_command}{distance}: {text}",
+                        reference.parent_commit_id, reference.child_commit_id, reference.hunk_id,
                     );
                 }
                 None => return Err("ranked evidence lost its display reference".into()),
@@ -1744,7 +1818,13 @@ fn execute() -> Result<()> {
             let mut type_set_selected = false;
             let mut diff_flag = false;
             let mut worktree_flag = false;
-            let (mut json, mut mode, mut limit) = (false, "exact", 20usize);
+            let mut explore = false;
+            let mut result_limit_set = false;
+            let mut result_limit = 5usize;
+            let mut byte_budget = 5_000usize;
+            let mut cursor = None;
+            let mut fetch_reference = None;
+            let (mut json, mut mode, mut semantic_limit) = (false, "exact", 20usize);
             while let Some(x) = a.next() {
                 match x.as_str() {
                     "--json" => json = true,
@@ -1765,6 +1845,21 @@ fn execute() -> Result<()> {
                     "--all-history" => scope.all_history = true,
                     "--current-worktree" => scope.current_worktree = true,
                     "--worktree" => worktree_flag = true,
+                    "--explore" => explore = true,
+                    "--limit" | "--result-limit" => {
+                        result_limit = a.next().ok_or("--limit requires a value")?.parse()?;
+                        result_limit_set = true;
+                    }
+                    "--byte-budget" => {
+                        byte_budget = a.next().ok_or("--byte-budget requires a value")?.parse()?;
+                    }
+                    "--cursor" => cursor = Some(a.next().ok_or("--cursor requires a value")?),
+                    "--fetch-reference" => {
+                        fetch_reference = Some(
+                            a.next()
+                                .ok_or("--fetch-reference requires a reference ID")?,
+                        );
+                    }
                     "--commit" => {
                         if scope.commit.is_some() {
                             return Err("--commit may only be specified once".into());
@@ -1817,13 +1912,26 @@ fn execute() -> Result<()> {
                         })?;
                         type_set_selected = true;
                     }
-                    "--semantic-limit" => limit = a.next().ok_or("missing limit")?.parse()?,
+                    "--semantic-limit" => {
+                        semantic_limit = a.next().ok_or("missing limit")?.parse()?;
+                    }
                     _ if x.starts_with('-') => {
                         return Err(format!("unexpected argument {x}").into());
                     }
                     _ if query.is_none() => query = Some(x),
                     _ => return Err(format!("unexpected argument {x}").into()),
                 }
+            }
+            if explore && fetch_reference.is_some() {
+                return Err("--explore cannot be combined with --fetch-reference".into());
+            }
+            if fetch_reference.is_some() && cursor.is_some() {
+                return Err("--fetch-reference cannot be combined with --cursor".into());
+            }
+            if explore && !result_limit_set {
+                result_limit = 50;
+            } else if fetch_reference.is_some() && !result_limit_set {
+                result_limit = 1;
             }
             let q = query.ok_or("search requires query")?;
             if worktree_flag {
@@ -1855,9 +1963,16 @@ fn execute() -> Result<()> {
                     ));
                 }
             }
-            if mode == "semantic" && limit == 0 {
+            if mode == "semantic" && semantic_limit == 0 && !explore {
+                let page = repodb::pagination::page_results(
+                    &[],
+                    result_limit,
+                    byte_budget.saturating_sub(1),
+                    cursor.as_deref(),
+                )
+                .map_err(|error| pagination_cli_error(json, error))?;
                 if json {
-                    println!("[]");
+                    println!("{}", serde_json::to_string(&page)?);
                 }
                 return Ok(());
             }
@@ -1999,12 +2114,29 @@ fn execute() -> Result<()> {
             let mut result = if !wants_content {
                 Vec::new()
             } else if history::is_current(&c)? {
-                history::search(&c, &q, mode, limit, &commits, include_result)?
+                if explore {
+                    history::search_all_occurrences(
+                        &c,
+                        &q,
+                        mode,
+                        usize::MAX,
+                        &commits,
+                        include_result,
+                    )?
+                } else {
+                    history::search(&c, &q, mode, semantic_limit, &commits, include_result)?
+                }
             } else if mode == "exact" {
                 exact(&c, &q, &commits)?
             } else if mode == "combined" {
                 let v = query_vector(&c, &q)?;
-                let mut candidates = semantic_with_vector(&c, &v, limit, &commits, include_result)?;
+                let mut candidates = semantic_with_vector(
+                    &c,
+                    &v,
+                    if explore { usize::MAX } else { semantic_limit },
+                    &commits,
+                    include_result,
+                )?;
                 let mut seen = std::collections::HashSet::new();
                 for x in &candidates {
                     seen.insert((x.path.clone(), x.line_start));
@@ -2028,12 +2160,22 @@ fn execute() -> Result<()> {
                 });
                 candidates
             } else {
-                semantic(&c, &q, limit, &commits, include_result)?
+                semantic(
+                    &c,
+                    &q,
+                    if explore { usize::MAX } else { semantic_limit },
+                    &commits,
+                    include_result,
+                )?
             };
             if wants_content {
-                result.extend(imports::search(&c, &q, mode, limit, |result| {
-                    result_scope.matches(result)
-                })?);
+                result.extend(imports::search(
+                    &c,
+                    &q,
+                    mode,
+                    if explore { usize::MAX } else { semantic_limit },
+                    |result| result_scope.matches(result),
+                )?);
             }
             result.retain(|candidate| include_result(candidate));
             if let Some(report) = worktree_report.as_ref() {
@@ -2180,7 +2322,11 @@ fn execute() -> Result<()> {
                 && history_path_filter.is_none()
             {
                 result.extend(history::search_commit_messages(
-                    &c, &q, mode, limit, &commits,
+                    &c,
+                    &q,
+                    mode,
+                    if explore { usize::MAX } else { semantic_limit },
+                    &commits,
                 )?);
             }
             result.retain(|candidate| include_result(candidate));
@@ -2194,11 +2340,14 @@ fn execute() -> Result<()> {
                         .then(a.line_start.cmp(&b.line_start))
                 });
                 if mode == "semantic" {
-                    result.truncate(limit);
+                    if !explore {
+                        result.truncate(semantic_limit);
+                    }
                 } else {
                     let mut rank = 0;
                     result.retain(|candidate| {
-                        let keep = rank < limit
+                        let keep = explore
+                            || rank < semantic_limit
                             || candidate.text.to_lowercase().contains(&q.to_lowercase());
                         rank += 1;
                         keep
@@ -2265,12 +2414,15 @@ fn execute() -> Result<()> {
                         };
                     diff_results = match mode {
                         "exact" => search_diff_results(history::DiffSearchMode::Exact, usize::MAX)?,
-                        "semantic" => {
-                            search_diff_results(history::DiffSearchMode::Semantic, limit)?
-                        }
+                        "semantic" => search_diff_results(
+                            history::DiffSearchMode::Semantic,
+                            if explore { usize::MAX } else { semantic_limit },
+                        )?,
                         "combined" => {
-                            let semantic =
-                                search_diff_results(history::DiffSearchMode::Semantic, limit)?;
+                            let semantic = search_diff_results(
+                                history::DiffSearchMode::Semantic,
+                                if explore { usize::MAX } else { semantic_limit },
+                            )?;
                             let exact =
                                 search_diff_results(history::DiffSearchMode::Exact, usize::MAX)?;
                             let mut seen = std::collections::HashSet::new();
@@ -2370,8 +2522,8 @@ fn execute() -> Result<()> {
             };
             // `--semantic-limit` bounds semantic candidate retrieval; exact-mode
             // references remain uncapped, and combined mode retains all exact hits.
-            let ranking_limit = if mode == "semantic" {
-                limit
+            let ranking_limit = if mode == "semantic" && !explore {
+                semantic_limit
             } else {
                 candidates.len().max(1)
             };
@@ -2383,29 +2535,63 @@ fn execute() -> Result<()> {
                 &related_diffs,
             )
             .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidInput, error))?;
-            if json {
-                let mut values = Vec::new();
-                for (group_id, group) in ranked.iter().enumerate() {
-                    values.extend(group.components.iter().map(|candidate| {
-                        annotated_ranked_payload(candidate, group, group_id, &history_path_links)
-                    }));
+            let mut values = Vec::new();
+            for (group_id, group) in ranked.iter().enumerate() {
+                values.extend(group.components.iter().map(|candidate| {
+                    annotated_ranked_payload(candidate, group, group_id, &history_path_links)
+                }));
+            }
+            if let Some(reference_id) = fetch_reference.as_deref() {
+                values.retain(|value| value["reference_id"].as_str() == Some(reference_id));
+                if values.is_empty() {
+                    return Err(reference_cli_error(json, reference_id));
                 }
-                let worktree_summary = if let Some(report) = worktree_report.as_ref() {
-                    let mut summary = worktree_report_json(report);
-                    if let Some(semantic) = semantic_worktree_report.as_ref() {
-                        summary["semantic_mapping"] = semantic_worktree_report_json(semantic);
-                    }
-                    Some(summary)
+            }
+            let worktree_summary = if let Some(report) = worktree_report.as_ref() {
+                let mut summary = worktree_report_json(report);
+                if let Some(semantic) = semantic_worktree_report.as_ref() {
+                    summary["semantic_mapping"] = semantic_worktree_report_json(semantic);
+                }
+                Some(summary)
+            } else {
+                semantic_worktree_report
+                    .as_ref()
+                    .map(semantic_worktree_report_json)
+            };
+            let serialized_budget = byte_budget.saturating_sub(1);
+            let mut page = if explore {
+                repodb::pagination::page_references_with_metadata(
+                    &values,
+                    result_limit,
+                    serialized_budget,
+                    cursor.as_deref(),
+                    worktree_summary,
+                )
+            } else {
+                repodb::pagination::page_results_with_metadata(
+                    &values,
+                    result_limit,
+                    serialized_budget,
+                    cursor.as_deref(),
+                    worktree_summary,
+                )
+            }
+            .map_err(|error| pagination_cli_error(json, error))?;
+            if !explore && (mode == "semantic" || mode == "combined") {
+                page.total_count = None;
+            }
+            if json {
+                let output = if !explore
+                    && cursor.is_none()
+                    && page.cursor.is_none()
+                    && !page.truncated
+                    && page.worktree.is_none()
+                {
+                    serde_json::Value::Array(page.results.clone())
                 } else {
-                    semantic_worktree_report
-                        .as_ref()
-                        .map(semantic_worktree_report_json)
+                    serde_json::to_value(&page)?
                 };
-                let output = match worktree_summary {
-                    Some(worktree) => serde_json::json!({"results": values, "worktree": worktree}),
-                    None => serde_json::Value::Array(values),
-                };
-                println!("{}", serde_json::to_string_pretty(&output)?);
+                println!("{}", serde_json::to_string(&output)?);
             } else {
                 print_ranked_human(
                     &ranked,
@@ -2413,12 +2599,27 @@ fn execute() -> Result<()> {
                     &c,
                     &history_path_links,
                     &mut diff_metadata_cache,
+                    &page,
+                    explore,
                 )?;
                 if let Some(report) = worktree_report.as_ref() {
                     print_worktree_summary(report);
                 }
                 if let Some(report) = semantic_worktree_report.as_ref() {
                     print_semantic_worktree_summary(report);
+                }
+                if page.cursor.is_some() || page.truncated {
+                    println!(
+                        "Page: {} results; total {}; truncated={}; snapshot={}",
+                        page.results.len(),
+                        page.total_count
+                            .map_or_else(|| "unknown".to_owned(), |count| count.to_string()),
+                        page.truncated,
+                        page.snapshot_id,
+                    );
+                    if let Some(next) = page.cursor.as_deref() {
+                        println!("Next cursor: {next}");
+                    }
                 }
             }
         }

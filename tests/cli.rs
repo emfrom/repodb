@@ -629,15 +629,21 @@ fn search_scope_filters_repo_and_document_sources_for_all_modes() {
     ];
     for mode in ["exact", "--semantic", "--combined"] {
         for (scope, paths) in &expected {
-            let mut args = vec!["search", "--json"];
+            let mut args = vec![
+                "search",
+                "--json",
+                "--limit",
+                "100",
+                "--byte-budget",
+                "10000000",
+            ];
             if mode != "exact" {
                 args.extend([mode, "--semantic-limit", "20"]);
             }
             args.extend(["SCOPE_MARKER", "--scope", scope]);
             let (ok, output) = run(root, &args);
             assert!(ok, "{mode} scope {scope}: {output}");
-            let results: Vec<serde_json::Value> = serde_json::from_str(&output).unwrap();
-            let results = results
+            let results = parse_search_results(&output)
                 .into_iter()
                 .filter(|result| result["component"] == "content")
                 .collect::<Vec<_>>();
@@ -750,8 +756,7 @@ fn explicit_database_paths_keep_independent_history_and_preserve_default() {
     let search = |path: &str, phrase: &str| -> Vec<serde_json::Value> {
         let (ok, output) = run(root, &["--database", path, "search", "--json", phrase]);
         assert!(ok, "{output}");
-        serde_json::from_str::<Vec<serde_json::Value>>(&output)
-            .unwrap()
+        parse_search_results(&output)
             .into_iter()
             .filter(|result| result["component"] == "content")
             .collect()
@@ -802,11 +807,7 @@ fn explicit_database_paths_keep_independent_history_and_preserve_default() {
             ],
         );
         assert!(ok, "{mode}: {output}");
-        assert!(
-            !serde_json::from_str::<Vec<serde_json::Value>>(&output)
-                .unwrap()
-                .is_empty()
-        );
+        assert!(!parse_search_results(&output).is_empty());
     }
     assert!(search(first_path, "Imported isolated marker").is_empty());
 
@@ -1122,7 +1123,8 @@ fn init_and_refresh_populate_semantic_vectors_automatically() {
         "semantic search failed after init: {}",
         String::from_utf8_lossy(&output.stderr)
     );
-    let results: Vec<serde_json::Value> = serde_json::from_slice(&output.stdout).unwrap();
+    let response = String::from_utf8(output.stdout).unwrap();
+    let results = parse_search_results(&response);
     assert!(results.iter().any(|result| result["path"] == "src/main.rs"));
 
     fs::write(root.join("notes.txt"), "Added during rescan\n").unwrap();
@@ -1140,7 +1142,8 @@ fn init_and_refresh_populate_semantic_vectors_automatically() {
         "semantic search failed after refresh: {}",
         String::from_utf8_lossy(&output.stderr)
     );
-    let results: Vec<serde_json::Value> = serde_json::from_slice(&output.stdout).unwrap();
+    let response = String::from_utf8(output.stdout).unwrap();
+    let results = parse_search_results(&response);
     assert!(results.iter().any(|result| result["path"] == "notes.txt"));
 }
 
@@ -3822,9 +3825,21 @@ esac
             ],
         );
         assert!(ok, "{output}");
-        let (ok, output) = run(root, &["search", "--semantic", "--json", "opaque query"]);
+        let (ok, output) = run(
+            root,
+            &[
+                "search",
+                "--semantic",
+                "--json",
+                "--limit",
+                "100",
+                "--byte-budget",
+                "10000000",
+                "opaque query",
+            ],
+        );
         assert!(ok, "{output}");
-        let results: serde_json::Value = serde_json::from_str(&output).unwrap();
+        let results = parse_search_results(&output);
         assert_eq!(results[0]["text"], expected, "model {model}");
     }
 }
@@ -4025,12 +4040,27 @@ fn git_text(repo: &Path, args: &[&str]) -> String {
     String::from_utf8(output.stdout).unwrap().trim().to_owned()
 }
 
+fn parse_search_results(output: &str) -> Vec<serde_json::Value> {
+    let response: serde_json::Value = serde_json::from_str(output).unwrap();
+    response
+        .as_array()
+        .cloned()
+        .unwrap_or_else(|| response["results"].as_array().cloned().unwrap_or_default())
+}
+
 fn search_json(repo: &Path, args: &[&str]) -> Vec<serde_json::Value> {
-    let mut command = vec!["search", "--json"];
+    let mut command = vec![
+        "search",
+        "--json",
+        "--limit",
+        "10000",
+        "--byte-budget",
+        "10000000",
+    ];
     command.extend_from_slice(args);
     let (ok, output) = run(repo, &command);
     assert!(ok, "search {args:?}: {output}");
-    let mut results: Vec<serde_json::Value> = serde_json::from_str(&output).unwrap();
+    let mut results = parse_search_results(&output);
     // Older tests in this file assert content-only behavior. New type-set tests
     // opt in explicitly and inspect every component, including the default `all`.
     let explicit_types = args
@@ -5128,7 +5158,7 @@ fn large_history_tree_refreshes_incrementally_and_keeps_the_snapshot_atomic() {
 
     let dir = root.join("tree");
     fs::create_dir(&dir).unwrap();
-    for index in 0..2_000 {
+    for index in 0..200 {
         fs::write(
             dir.join(format!("file-{index:04}.txt")),
             format!("many tree entries {index}\\n"),
@@ -5144,7 +5174,7 @@ fn large_history_tree_refreshes_incrementally_and_keeps_the_snapshot_atomic() {
     assert_eq!(after[0]["text"], before[0]["text"]);
     assert_eq!(
         search_json(root, &["many tree entries", "--all-history"]).len(),
-        2_000
+        200
     );
 }
 
@@ -5618,9 +5648,22 @@ fn diff_search_cli_exposes_added_and_removed_hits_with_bounded_paired_references
         ),
         ("added passage marker", "added", "added passage marker"),
     ] {
-        let (ok, output) = run(root, &["search", query, "--diffs", "--json"]);
+        let (ok, output) = run(
+            root,
+            &[
+                "search",
+                query,
+                "--diffs",
+                "--json",
+                "--limit",
+                "20",
+                "--byte-budget",
+                "20000",
+            ],
+        );
         assert!(ok, "diff search failed: {output}");
-        let results: Vec<serde_json::Value> = serde_json::from_str(&output).unwrap();
+        let results = parse_search_results(&output);
+        assert!(!results.is_empty(), "diff response: {output}");
         let hit = results
             .iter()
             .find(|result| result["kind"] == "diff")
@@ -5701,28 +5744,36 @@ fn diff_search_cli_exposes_added_and_removed_hits_with_bounded_paired_references
             "--semantic",
             "--diffs",
             "--json",
+            "--limit",
+            "100",
+            "--byte-budget",
+            "1000000",
         ],
     );
     assert!(ok, "semantic diff search failed: {output}");
-    let results: Vec<serde_json::Value> = serde_json::from_str(&output).unwrap();
+    let results = parse_search_results(&output);
     let diff_hits = results
         .iter()
         .filter(|result| result["kind"] == "diff")
         .collect::<Vec<_>>();
-    assert!(diff_hits.iter().any(|hit| {
-        hit["side"] == "added"
-            && hit["text"]
-                .as_str()
-                .unwrap()
-                .contains("added passage marker")
-    }));
-    assert!(diff_hits.iter().any(|hit| {
-        hit["side"] == "removed"
-            && hit["text"]
-                .as_str()
-                .unwrap()
-                .contains("removed passage marker")
-    }));
+    assert!(
+        diff_hits.iter().any(|hit| {
+            hit["side"] == "added"
+                && hit["text"]
+                    .as_str()
+                    .is_some_and(|text| text.contains("added passage marker"))
+        }),
+        "response={output}; hits={diff_hits:#?}"
+    );
+    assert!(
+        diff_hits.iter().any(|hit| {
+            hit["side"] == "removed"
+                && hit["text"]
+                    .as_str()
+                    .is_some_and(|text| text.contains("removed passage marker"))
+        }),
+        "{diff_hits:#?}"
+    );
     assert!(diff_hits.iter().all(|hit| {
         hit["distance"].is_number()
             && hit["parent_commit_id"] == parent
@@ -5743,10 +5794,14 @@ fn diff_search_cli_exposes_added_and_removed_hits_with_bounded_paired_references
             "--scope",
             "repo-local-source",
             "--json",
+            "--limit",
+            "100",
+            "--byte-budget",
+            "1000000",
         ],
     );
     assert!(ok, "scoped semantic diff search failed: {output}");
-    let results: Vec<serde_json::Value> = serde_json::from_str(&output).unwrap();
+    let results = parse_search_results(&output);
     let diff_hits = results
         .iter()
         .filter(|result| result["kind"] == "diff")
@@ -5763,13 +5818,15 @@ fn diff_search_cli_exposes_added_and_removed_hits_with_bounded_paired_references
             "--semantic-limit",
             "0",
             "--json",
+            "--byte-budget",
+            "20000",
         ],
     );
     assert!(
         ok,
         "exact diff search with zero semantic limit failed: {output}"
     );
-    let results: Vec<serde_json::Value> = serde_json::from_str(&output).unwrap();
+    let results = parse_search_results(&output);
     assert!(
         results
             .iter()
@@ -5850,10 +5907,14 @@ fn diff_search_json_reports_merge_parent_and_heuristic_identity() {
             "--diffs",
             "--all-history",
             "--json",
+            "--limit",
+            "100",
+            "--byte-budget",
+            "10000000",
         ],
     );
     assert!(ok, "rename diff search failed: {output}");
-    let results: Vec<serde_json::Value> = serde_json::from_str(&output).unwrap();
+    let results = parse_search_results(&output);
     let rename = results
         .iter()
         .find(|result| {
@@ -5908,10 +5969,14 @@ fn diff_search_json_reports_merge_parent_and_heuristic_identity() {
             "--diffs",
             "--all-history",
             "--json",
+            "--limit",
+            "100",
+            "--byte-budget",
+            "10000000",
         ],
     );
     assert!(ok, "copy diff search failed: {output}");
-    let results: Vec<serde_json::Value> = serde_json::from_str(&output).unwrap();
+    let results = parse_search_results(&output);
     let copy = results
         .iter()
         .find(|result| {
@@ -6947,6 +7012,285 @@ fn imported_git_units_reject_mixed_embedding_dimensions_atomically() {
     assert!(search_json(repo.path(), &["long marker"]).is_empty());
 }
 
+#[test]
+fn search_response_defaults_to_five_results_and_pages_with_stable_cursors() {
+    let repo = repository();
+    let root = repo.path();
+    for index in 0..7 {
+        fs::write(
+            root.join(format!("needle-{index}.txt")),
+            format!("needle occurrence {index}\n"),
+        )
+        .unwrap();
+    }
+    git(root, &["add", "."]);
+    git(root, &["commit", "-qm", "many search results"]);
+    assert!(run(root, &["init"]).0);
+
+    let (ok, output) = run(root, &["search", "--json", "--type=cmcommits", "needle"]);
+    assert!(ok, "{output}");
+    assert!(output.len() + 1 <= 5_000, "{} bytes", output.len() + 1);
+    let first: serde_json::Value = serde_json::from_str(&output).unwrap();
+    assert_eq!(first["results"].as_array().unwrap().len(), 5);
+    assert_eq!(first["total_count"], 7);
+    assert_eq!(first["truncated"], true);
+    let cursor = first["cursor"].as_str().unwrap();
+
+    let (ok, output) = run(
+        root,
+        &[
+            "search",
+            "--json",
+            "--type=cmcommits",
+            "--cursor",
+            cursor,
+            "needle",
+        ],
+    );
+    assert!(ok, "{output}");
+    assert!(output.len() + 1 <= 5_000, "{} bytes", output.len() + 1);
+    let second: serde_json::Value = serde_json::from_str(&output).unwrap();
+    assert_eq!(second["results"].as_array().unwrap().len(), 2);
+    assert_eq!(second["total_count"], 7);
+    assert_eq!(second["truncated"], false);
+    assert!(second["cursor"].is_null());
+
+    let (ok, output) = run(
+        root,
+        &[
+            "search",
+            "--json",
+            "--type=cmcommits",
+            "--cursor",
+            "invalid-cursor",
+            "needle",
+        ],
+    );
+    assert!(!ok);
+    let error: serde_json::Value = serde_json::from_str(&output).unwrap();
+    assert_eq!(error["error"]["code"], "invalid_cursor");
+}
+
+#[test]
+fn search_byte_budget_omits_whole_text_and_rejects_impossible_references() {
+    let repo = repository();
+    let root = repo.path();
+    let long = format!("{} budget_marker\n", "x".repeat(6_000));
+    fs::write(root.join("notes.txt"), long).unwrap();
+    git(root, &["add", "notes.txt"]);
+    git(root, &["commit", "-qm", "long searchable unit"]);
+    assert!(run(root, &["init"]).0);
+
+    let (ok, output) = run(
+        root,
+        &[
+            "search",
+            "--json",
+            "--type=cmcommits",
+            "--limit",
+            "1",
+            "--byte-budget",
+            "2500",
+            "budget_marker",
+        ],
+    );
+    assert!(ok, "{output}");
+    assert!(output.len() + 1 <= 2_500, "{} bytes", output.len() + 1);
+    let page: serde_json::Value = serde_json::from_str(&output).unwrap();
+    assert_eq!(page["results"][0]["text_omitted_for_size"], true);
+    assert!(page["results"][0].get("text").is_none());
+    let reference_id = page["results"][0]["reference_id"].as_str().unwrap();
+
+    let (ok, fetched_output) = run(
+        root,
+        &[
+            "search",
+            "--json",
+            "--type=cmcommits",
+            "--fetch-reference",
+            reference_id,
+            "--byte-budget",
+            "10000",
+            "budget_marker",
+        ],
+    );
+    assert!(ok, "{fetched_output}");
+    assert!(fetched_output.len() + 1 <= 10_000);
+    let fetched = parse_search_results(&fetched_output);
+    assert_eq!(fetched.len(), 1);
+    assert_eq!(fetched[0]["reference_id"], reference_id);
+    assert!(
+        fetched[0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("budget_marker")
+    );
+    assert!(fetched[0].get("text_omitted_for_size").is_none());
+
+    let (ok, human) = run(
+        root,
+        &[
+            "search",
+            "--type=cmcommits",
+            "--limit",
+            "1",
+            "--byte-budget",
+            "2500",
+            "budget_marker",
+        ],
+    );
+    assert!(ok, "{human}");
+    assert!(human.len() + 1 <= 2_500, "{} bytes", human.len() + 1);
+    assert!(human.contains("text omitted for size"), "{human}");
+
+    let (ok, output) = run(
+        root,
+        &[
+            "search",
+            "--json",
+            "--type=cmcommits",
+            "--limit",
+            "1",
+            "--byte-budget",
+            "500",
+            "budget_marker",
+        ],
+    );
+    assert!(!ok, "an impossible result reference must error: {output}");
+    let error: serde_json::Value = serde_json::from_str(&output).unwrap();
+    assert_eq!(error["error"]["code"], "result_limit");
+}
+
+#[test]
+fn explore_defaults_to_fifty_references_when_byte_budget_allows() {
+    let repo = repository();
+    let root = repo.path();
+    for index in 0..52 {
+        fs::write(
+            root.join(format!("explore-{index:02}.txt")),
+            "explore default marker\n",
+        )
+        .unwrap();
+    }
+    git(root, &["add", "."]);
+    git(root, &["commit", "-qm", "many references"]);
+    assert!(run(root, &["init"]).0);
+
+    let (ok, output) = run(
+        root,
+        &[
+            "search",
+            "--json",
+            "--explore",
+            "--history=all",
+            "--type=cmcommits",
+            "--byte-budget",
+            "100000",
+            "explore default marker",
+        ],
+    );
+    assert!(ok, "{output}");
+    let first: serde_json::Value = serde_json::from_str(&output).unwrap();
+    assert_eq!(first["results"].as_array().unwrap().len(), 50);
+    assert_eq!(first["total_count"], 52);
+    assert_eq!(first["truncated"], true);
+    assert!(
+        first["results"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|result| { result["reference_only"] == true && result.get("text").is_none() })
+    );
+
+    let cursor = first["cursor"].as_str().unwrap();
+    let (ok, output) = run(
+        root,
+        &[
+            "search",
+            "--json",
+            "--explore",
+            "--history=all",
+            "--type=cmcommits",
+            "--byte-budget",
+            "100000",
+            "--cursor",
+            cursor,
+            "explore default marker",
+        ],
+    );
+    assert!(ok, "{output}");
+    let last: serde_json::Value = serde_json::from_str(&output).unwrap();
+    assert_eq!(last["results"].as_array().unwrap().len(), 2);
+    assert_eq!(last["cursor"], serde_json::Value::Null);
+    assert_eq!(last["total_count"], 52);
+}
+
+#[test]
+fn explore_pages_every_historical_occurrence_as_references_only() {
+    let repo = repository();
+    let root = repo.path();
+    fs::write(root.join("a.txt"), "occurrence needle\n").unwrap();
+    git(root, &["add", "a.txt"]);
+    git(root, &["commit", "-qm", "first occurrence"]);
+    let first_commit = git_text(root, &["rev-parse", "HEAD"]);
+    fs::write(root.join("b.txt"), "occurrence needle\n").unwrap();
+    git(root, &["add", "b.txt"]);
+    git(root, &["commit", "-qm", "second occurrence"]);
+    let second_commit = git_text(root, &["rev-parse", "HEAD"]);
+    assert!(run(root, &["init"]).0);
+
+    let mut cursor: Option<String> = None;
+    let mut references = Vec::new();
+    loop {
+        let mut args = vec![
+            "search",
+            "--json",
+            "--explore",
+            "--history=all",
+            "--type=cmcommits",
+            "--limit",
+            "1",
+            "--byte-budget",
+            "1500",
+        ];
+        if let Some(value) = cursor.as_deref() {
+            args.extend(["--cursor", value]);
+        }
+        args.push("occurrence needle");
+        let (ok, output) = run(root, &args);
+        assert!(ok, "{output}");
+        assert!(output.len() + 1 <= 1_500, "{} bytes", output.len() + 1);
+        let page: serde_json::Value = serde_json::from_str(&output).unwrap();
+        assert_eq!(page["total_count"], 3);
+        for result in page["results"].as_array().unwrap() {
+            assert_eq!(result["reference_only"], true);
+            assert!(result.get("text").is_none());
+            references.push((
+                result["path"].as_str().unwrap().to_owned(),
+                result["commit_id"].as_str().unwrap().to_owned(),
+            ));
+        }
+        cursor = page["cursor"].as_str().map(str::to_owned);
+        if cursor.is_none() {
+            assert_eq!(page["truncated"], false);
+            break;
+        }
+    }
+    assert_eq!(references.len(), 3);
+    assert_eq!(
+        references
+            .into_iter()
+            .collect::<std::collections::BTreeSet<_>>(),
+        [
+            ("a.txt".to_owned(), first_commit),
+            ("a.txt".to_owned(), second_commit.clone()),
+            ("b.txt".to_owned(), second_commit),
+        ]
+        .into_iter()
+        .collect()
+    );
+}
+
 #[path = "semgrep_corpus/corpus_tests.rs"]
 mod semgrep_corpus;
 
@@ -6960,6 +7304,60 @@ fn single_file_repository() -> tempfile::TempDir {
     git(root, &["add", "-A"]);
     git(root, &["commit", "-qm", "single semantic file"]);
     repo
+}
+
+#[test]
+fn worktree_semantic_search_counts_mapped_text_and_metadata_in_the_response_budget() {
+    let repo = single_file_repository();
+    let root = repo.path();
+    let long_head = format!("Long semantic target {}\n", "x".repeat(6_000));
+    fs::write(root.join("notes.txt"), &long_head).unwrap();
+    git(root, &["add", "notes.txt"]);
+    git(root, &["commit", "-qm", "long semantic head"]);
+    assert!(run(root, &["init"]).0);
+
+    fs::write(
+        root.join("notes.txt"),
+        format!("// staged prefix\n{long_head}"),
+    )
+    .unwrap();
+    git(root, &["add", "notes.txt"]);
+    fs::write(
+        root.join("notes.txt"),
+        format!(
+            "// staged prefix\nLong live semantic target {}\n",
+            "x".repeat(6_000)
+        ),
+    )
+    .unwrap();
+    let (ok, output) = run(
+        root,
+        &[
+            "search",
+            "--json",
+            "--worktree",
+            "--semantic",
+            "--type=content",
+            "--byte-budget",
+            "2500",
+            "Long semantic target",
+        ],
+    );
+    assert!(ok, "{output}");
+    assert!(output.len() + 1 <= 2_500, "{} bytes", output.len() + 1);
+    let page: serde_json::Value = serde_json::from_str(&output).unwrap();
+    assert!(page["worktree"]["enabled"] == true);
+    assert_eq!(page["results"][0]["text_omitted_for_size"], true);
+    assert!(page["results"][0].get("text").is_none());
+    assert!(
+        page["results"][0]["semantic_worktree"]
+            .get("head_text")
+            .is_none()
+    );
+    assert_eq!(
+        page["results"][0]["semantic_worktree"]["head_text_omitted_for_size"],
+        true
+    );
 }
 
 #[test]

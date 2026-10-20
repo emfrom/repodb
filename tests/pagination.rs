@@ -85,6 +85,37 @@ fn reference_only_pages_enumerate_duplicate_refs_without_text() {
 }
 
 #[test]
+fn worktree_observation_time_does_not_invalidate_same_snapshot_cursor() {
+    let results = vec![
+        json!({"path":"a","text":"one"}),
+        json!({"path":"b","text":"two"}),
+    ];
+    let first = repodb::pagination::page_results_with_metadata(
+        &results,
+        1,
+        1024,
+        None,
+        Some(json!({"observed_at_unix_ms": 100, "coverage": {"changed": 1}})),
+    )
+    .unwrap();
+    let second = repodb::pagination::page_results_with_metadata(
+        &results,
+        1,
+        1024,
+        first.cursor.as_deref(),
+        Some(json!({"observed_at_unix_ms": 200, "coverage": {"changed": 1}})),
+    )
+    .unwrap();
+    assert_eq!(first.snapshot_id, second.snapshot_id);
+    assert_eq!(first.worktree.as_ref().unwrap()["observed_at_unix_ms"], 100);
+    assert_eq!(
+        second.worktree.as_ref().unwrap()["observed_at_unix_ms"],
+        200
+    );
+    assert_eq!(second.results[0]["path"], "b");
+}
+
+#[test]
 fn preserves_each_duplicate_eligible_occurrence_across_pages() {
     let results = vec![
         json!({"blob":"same","path":"first","text":"match"}),
