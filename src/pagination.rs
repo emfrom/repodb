@@ -10,6 +10,46 @@ pub struct SearchPage {
     pub total_count: Option<usize>,
 }
 
+/// Paginate references without returning any indexed or live text.
+///
+/// Reference identity, source, line/page anchors, and ranking metadata are kept;
+/// text fields are removed recursively before cursor identity and byte
+/// accounting are calculated.
+pub fn page_references(
+    results: &[Value],
+    count_budget: usize,
+    byte_budget: usize,
+    cursor: Option<&str>,
+) -> Result<SearchPage, String> {
+    let mut references = results.to_vec();
+    for reference in &mut references {
+        strip_text(reference);
+        if let Some(object) = reference.as_object_mut() {
+            object.insert("reference_only".to_owned(), Value::Bool(true));
+        }
+    }
+    page_results(&references, count_budget, byte_budget, cursor)
+}
+
+fn strip_text(value: &mut Value) {
+    match value {
+        Value::Object(object) => {
+            for field in ["text", "head_text", "live_text", "text_omitted_for_size"] {
+                object.remove(field);
+            }
+            for nested in object.values_mut() {
+                strip_text(nested);
+            }
+        }
+        Value::Array(values) => {
+            for nested in values {
+                strip_text(nested);
+            }
+        }
+        _ => {}
+    }
+}
+
 /// Paginate a deterministically ordered set of complete search results.
 pub fn page_results(
     results: &[Value],

@@ -62,6 +62,29 @@ fn rejects_changed_snapshot_cursor_and_zero_limits() {
 }
 
 #[test]
+fn reference_only_pages_enumerate_duplicate_refs_without_text() {
+    let results = vec![
+        json!({"path":"a.rs", "commit_id":"one", "line_start":1, "text":"same text"}),
+        json!({"path":"a.rs", "commit_id":"two", "line_start":1, "text":"same text"}),
+        json!({"path":"b.rs", "commit_id":"two", "line_start":1, "text":"same text"}),
+    ];
+    let first = repodb::pagination::page_references(&results, 1, 1024, None).unwrap();
+    let second =
+        repodb::pagination::page_references(&results, 1, 1024, first.cursor.as_deref()).unwrap();
+    let third =
+        repodb::pagination::page_references(&results, 1, 1024, second.cursor.as_deref()).unwrap();
+
+    assert_eq!(first.total_count, Some(3));
+    assert_eq!(first.results[0]["path"], "a.rs");
+    assert_eq!(second.results[0]["commit_id"], "two");
+    assert_eq!(third.results[0]["path"], "b.rs");
+    for page in [&first, &second, &third] {
+        assert!(page.results[0].get("text").is_none());
+        assert!(page.results[0]["reference_only"].as_bool().unwrap());
+    }
+}
+
+#[test]
 fn preserves_each_duplicate_eligible_occurrence_across_pages() {
     let results = vec![
         json!({"blob":"same","path":"first","text":"match"}),

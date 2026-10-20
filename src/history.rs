@@ -1493,6 +1493,109 @@ mod tests {
 
     static CWD_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
+    #[test]
+    fn all_occurrence_search_returns_every_matching_commit_path_reference() {
+        use std::{fs, os::unix::fs::PermissionsExt, process::Command};
+
+        let _cwd_lock = CWD_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+        let original_cwd = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let repo = tempfile::tempdir().unwrap();
+        let git = |args: &[&str]| {
+            let output = Command::new("git")
+                .args(args)
+                .current_dir(repo.path())
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            String::from_utf8(output.stdout).unwrap().trim().to_owned()
+        };
+        git(&["init", "-q"]);
+        git(&["config", "user.email", "test@example.com"]);
+        git(&["config", "user.name", "Test"]);
+        fs::write(repo.path().join("a.txt"), "shared occurrence marker\n").unwrap();
+        git(&["add", "."]);
+        git(&["commit", "-qm", "first occurrence"]);
+        let first = git(&["rev-parse", "HEAD"]);
+        fs::write(repo.path().join("b.txt"), "shared occurrence marker\n").unwrap();
+        git(&["add", "b.txt"]);
+        git(&["commit", "-qm", "second occurrence"]);
+        let second = git(&["rev-parse", "HEAD"]);
+
+        enable_vector_extension();
+        let embedder = repo.path().join("embedder");
+        fs::write(&embedder, "#!/bin/sh\ncat >/dev/null\nprintf '[1,0]'\n").unwrap();
+        fs::set_permissions(&embedder, fs::Permissions::from_mode(0o755)).unwrap();
+        let db = Connection::open_in_memory().unwrap();
+        db.execute_batch("CREATE TABLE embedding_config(key TEXT PRIMARY KEY,value TEXT NOT NULL); CREATE TEMP TABLE import_refresh_dimension(value INTEGER);").unwrap();
+        for (key, value) in [
+            ("command", embedder.to_str().unwrap()),
+            ("model", "test"),
+            ("dimension", "0"),
+        ] {
+            db.execute(
+                "INSERT INTO embedding_config VALUES(?1,?2)",
+                params![key, value],
+            )
+            .unwrap();
+        }
+        std::env::set_current_dir(repo.path()).unwrap();
+        prepare_refresh(&db).unwrap();
+        let tx = db.unchecked_transaction().unwrap();
+        publish_refresh(&tx).unwrap();
+        tx.commit().unwrap();
+
+        let commits = vec![first, second];
+        let compact = search(
+            &db,
+            "shared occurrence",
+            "exact",
+            usize::MAX,
+            &commits,
+            |_| true,
+        )
+        .unwrap();
+        assert_eq!(compact.len(), 1, "ordinary search remains compact");
+        let all = search_all_occurrences(
+            &db,
+            "shared occurrence",
+            "exact",
+            usize::MAX,
+            &commits,
+            |_| true,
+        )
+        .unwrap();
+        assert_eq!(all.len(), 3);
+        assert_eq!(
+            all.iter()
+                .map(|result| (result.commit_id.as_deref().unwrap(), result.path.as_str()))
+                .collect::<std::collections::BTreeSet<_>>(),
+            [
+                (commits[0].as_str(), "a.txt"),
+                (commits[1].as_str(), "a.txt"),
+                (commits[1].as_str(), "b.txt"),
+            ]
+            .into_iter()
+            .collect()
+        );
+
+        let semantic = search_all_occurrences(
+            &db,
+            "semantic query",
+            "semantic",
+            usize::MAX,
+            &commits,
+            |_| true,
+        )
+        .unwrap();
+        assert_eq!(semantic.len(), 3);
+        assert!(semantic.iter().all(|result| result.distance == Some(0.0)));
+        std::env::set_current_dir(original_cwd).unwrap();
+    }
+
     fn enable_vector_extension() {
         unsafe {
             rusqlite::ffi::sqlite3_auto_extension(Some(std::mem::transmute::<
@@ -3859,13 +3962,41 @@ pub fn search(
     commits: &[String],
     include: impl Fn(&SearchResult) -> bool,
 ) -> Result<Vec<SearchResult>> {
+    search_impl(c, query, mode, limit, commits, include, false)
+}
+
+/// Search every eligible commit/path occurrence instead of collapsing identical
+/// blobs to one compact reference. This is the backend enumeration seam for
+/// callers that page through complete history; `limit` still bounds semantic
+/// candidate rows, so pass `usize::MAX` to enumerate them all.
+#[allow(dead_code)] // CLI paging in #69 consumes this public backend operation.
+pub fn search_all_occurrences(
+    c: &Connection,
+    query: &str,
+    mode: &str,
+    limit: usize,
+    commits: &[String],
+    include: impl Fn(&SearchResult) -> bool,
+) -> Result<Vec<SearchResult>> {
+    search_impl(c, query, mode, limit, commits, include, true)
+}
+
+fn search_impl(
+    c: &Connection,
+    query: &str,
+    mode: &str,
+    limit: usize,
+    commits: &[String],
+    include: impl Fn(&SearchResult) -> bool,
+    all_occurrences: bool,
+) -> Result<Vec<SearchResult>> {
     let v = if mode == "exact" {
         None
     } else {
         Some(query_vector(c, query)?)
     };
-    // Filter occurrences first, then choose one reference per blob. Every indexed
-    // unit of that blob shares the reference; duplicate occurrences never use top-N.
+    // Compact search chooses one eligible reference per blob; all-occurrence
+    // search leaves every matching commit/path row available to the caller.
     // Version 2 snapshots keep their original line units until explicit refresh.
     let schema: i64 = c.query_row("PRAGMA user_version", [], |r| r.get(0))?;
     let variant = if schema >= 3 {
@@ -3874,6 +4005,11 @@ pub fn search(
         ""
     };
     let occurrence_partition = "blob_id";
+    let occurrence_filter = if all_occurrences {
+        ""
+    } else {
+        "WHERE occurrence_rank=1"
+    };
     let range_columns = if schema >= 4 {
         "u.byte_start,u.byte_end,''"
     } else {
@@ -3889,7 +4025,7 @@ pub fn search(
         CASE WHEN ?2 IS NULL THEN NULL ELSE vec_distance_cosine(e.vector,?2) END
         FROM eligible o JOIN git_blob_units b ON b.blob_id=o.blob_id {variant}
         JOIN indexed_units u USING(unit_id) LEFT JOIN unit_embeddings e USING(unit_id)
-        WHERE occurrence_rank=1 ORDER BY o.path,u.line_start,o.blob_id,o.commit_id,u.unit_id",
+        {occurrence_filter} ORDER BY o.path,u.line_start,o.blob_id,o.commit_id,u.unit_id",
     ))?;
     let rows = s.query_map(
         params![
