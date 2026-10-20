@@ -8,7 +8,14 @@ fn skill(path: &str) -> String {
 
 #[test]
 fn distributed_skills_match_the_repo_local_pi_skills() {
-    for skill_name in ["repodb-enabler", "repodb-help", "repodb-import", "repodb-search", "repodb-search-exact", "repodb-search-semantic"] {
+    for skill_name in [
+        "repodb-enabler",
+        "repodb-help",
+        "repodb-import",
+        "repodb-search",
+        "repodb-search-exact",
+        "repodb-search-semantic",
+    ] {
         let local = skill(&format!(".agents/skills/{skill_name}/SKILL.md"));
         let distributed = skill(&format!("skills/{skill_name}/SKILL.md"));
         assert_eq!(
@@ -91,6 +98,64 @@ fn import_skill_documents_preview_scope_and_policy_contract() {
         assert!(
             !import.contains(obsolete),
             "import skill must use the current preview field names, not {obsolete:?}"
+        );
+    }
+}
+
+#[test]
+fn search_skills_document_modes_provenance_and_limitations() {
+    let exact = skill(".agents/skills/repodb-search-exact/SKILL.md");
+    for required in [
+        "name: repodb-search-exact",
+        "known identifiers, symbols, or literal phrases",
+        "repodb search 'QUERY'",
+        "all indexed sources by default",
+        "repository, commit/version, path, and line/page",
+        "source content is missing",
+        "semantic/combined search",
+        "does not refresh the index",
+    ] {
+        assert!(
+            exact.contains(required),
+            "exact search skill must document {required:?}"
+        );
+    }
+
+    let semantic = skill(".agents/skills/repodb-search-semantic/SKILL.md");
+    for required in [
+        "name: repodb-search-semantic",
+        "conceptual questions about code behavior and documentation",
+        "standards, README content, and `AGENTS.md`",
+        "repodb search --semantic 'QUERY'",
+        "all indexed sources by default",
+        "semantic search is unavailable",
+        "do not silently fall back to exact search",
+        "weak or empty results",
+        "provenance actually returned",
+        "without fetching or reconstructing it",
+    ] {
+        assert!(
+            semantic.contains(required),
+            "semantic search skill must document {required:?}"
+        );
+    }
+
+    let combined = skill(".agents/skills/repodb-search/SKILL.md");
+    for required in [
+        "name: repodb-search",
+        "combined search",
+        "a literal phrase and a concept",
+        "repodb search --combined 'QUERY'",
+        "all indexed sources by default",
+        "filesystem tools",
+        "provenance",
+        "source content is missing",
+        "weak or empty",
+        "does not refresh the index",
+    ] {
+        assert!(
+            combined.contains(required),
+            "combined search skill must document {required:?}"
         );
     }
 }
