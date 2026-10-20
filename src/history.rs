@@ -19,6 +19,29 @@ fn memory_limit() -> Box<dyn std::error::Error> {
 
 const MAX_GIT_STDERR_BYTES: usize = 64 * 1024;
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum DiffSide {
+    Added,
+    Removed,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct DiffReference {
+    pub parent_commit_id: String,
+    pub child_commit_id: String,
+    pub hunk_id: i64,
+    pub side: DiffSide,
+    pub old_path: Option<Vec<u8>>,
+    pub new_path: Option<Vec<u8>>,
+    pub old_line_start: Option<usize>,
+    pub old_line_end: Option<usize>,
+    pub new_line_start: Option<usize>,
+    pub new_line_end: Option<usize>,
+    pub blob_id: String,
+    pub byte_start: usize,
+    pub byte_end: usize,
+}
+
 fn git_capture_limits(requested_stdout: usize, preparation_bytes: usize) -> Result<(usize, usize)> {
     let remaining = MAX_REFRESH_ACCOUNTING_BYTES
         .checked_sub(preparation_bytes)
@@ -60,6 +83,151 @@ fn git_output(
     drop(output.stderr);
     preparation_bytes.release(stderr_capacity);
     Ok(output.stdout)
+}
+
+fn stage_diff_pair(
+    c: &Connection,
+    parent: Option<&str>,
+    child: &str,
+    next_unit_id: &mut i64,
+    batch: &mut Vec<(i64, String)>,
+    pipeline: &mut EmbeddingPipeline,
+    embedding_dimension: &mut Option<usize>,
+    embedding_statement: &mut rusqlite::Statement<'_>,
+    budget: &mut Budget,
+) -> Result<()> {
+    const EMPTY_TREE: &str = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
+    let args = if let Some(parent) = parent {
+        vec![
+            "diff-tree",
+            "--no-commit-id",
+            "--raw",
+            "--no-renames",
+            "-r",
+            "-z",
+            parent,
+            child,
+        ]
+    } else {
+        vec![
+            "diff-tree",
+            "--root",
+            "--no-commit-id",
+            "--raw",
+            "--no-renames",
+            "-r",
+            "-z",
+            child,
+        ]
+    };
+    let output = git_output(
+        &args,
+        budget.remaining().saturating_sub(MAX_GIT_STDERR_BYTES),
+        budget,
+    )?;
+    let records: Vec<&[u8]> = output
+        .split(|byte| *byte == 0)
+        .filter(|record| !record.is_empty())
+        .collect();
+    let mut i = 0;
+    let mut hunk_id = 0i64;
+    while i < records.len() {
+        let metadata = std::str::from_utf8(records[i])?;
+        i += 1;
+        let fields: Vec<&str> = metadata.split_whitespace().collect();
+        if fields.len() != 5 || !fields[0].starts_with(':') {
+            return Err("invalid raw Git diff record".into());
+        }
+        let status = fields[4]
+            .as_bytes()
+            .first()
+            .copied()
+            .ok_or("missing Git diff status")?;
+        let path = records.get(i).ok_or("missing Git diff path")?.to_vec();
+        i += 1;
+        if status != b'A' && status != b'D' {
+            continue;
+        }
+        let (side, blob_id, old_path, new_path) = if status == b'A' {
+            (DiffSide::Added, fields[3], None, Some(path))
+        } else {
+            (DiffSide::Removed, fields[2], Some(path), None)
+        };
+        let bytes = git_output(
+            &["cat-file", "blob", blob_id],
+            budget.remaining().saturating_sub(MAX_GIT_STDERR_BYTES),
+            budget,
+        )?;
+        let Ok(text) = std::str::from_utf8(&bytes) else {
+            continue;
+        };
+        if text.contains('\0') {
+            continue;
+        }
+        let this_hunk_id = hunk_id;
+        hunk_id += 1;
+        let mut unit_statement =
+            c.prepare("INSERT INTO temp.refresh_units VALUES(?1,?2,'diff',?3,?4,?5,?6,?7)")?;
+        let mut reference_statement = c.prepare("INSERT INTO temp.refresh_diff_references(parent_commit_id,child_commit_id,hunk_id,side,old_path,new_path,old_line_start,old_line_end,new_line_start,new_line_end,blob_id,unit_id) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12)")?;
+        let mut unit_error = None;
+        segmentation::visit("fallback", text, |unit| {
+            let result = (|| -> Result<()> {
+                budget.charge(unit.text.len(), "diff embedding batch text")?;
+                *next_unit_id += 1;
+                unit_statement.execute(params![
+                    *next_unit_id,
+                    blob_id,
+                    unit.text,
+                    unit.byte_start,
+                    unit.byte_end,
+                    unit.line_start,
+                    unit.line_end
+                ])?;
+                let (old_line_start, old_line_end, new_line_start, new_line_end) = match side {
+                    DiffSide::Added => (None, None, Some(unit.line_start), Some(unit.line_end)),
+                    DiffSide::Removed => (Some(unit.line_start), Some(unit.line_end), None, None),
+                };
+                reference_statement.execute(params![
+                    parent.unwrap_or(EMPTY_TREE),
+                    child,
+                    this_hunk_id,
+                    if side == DiffSide::Added {
+                        "added"
+                    } else {
+                        "removed"
+                    },
+                    old_path,
+                    new_path,
+                    old_line_start,
+                    old_line_end,
+                    new_line_start,
+                    new_line_end,
+                    blob_id,
+                    *next_unit_id
+                ])?;
+                batch.push((*next_unit_id, unit.text.to_owned()));
+                if batch.len() >= HISTORY_EMBEDDING_BATCH_SIZE {
+                    flush_embedding_batch(
+                        batch,
+                        pipeline,
+                        embedding_dimension,
+                        embedding_statement,
+                        budget,
+                    )?;
+                }
+                Ok(())
+            })();
+            if let Err(error) = result {
+                unit_error = Some(error);
+                return false;
+            }
+            true
+        })?;
+        if let Some(error) = unit_error {
+            return Err(error);
+        }
+    }
+    Ok(())
 }
 
 fn commit_message(commit_id: &str, budget: &mut Budget) -> Result<(String, usize, usize)> {
@@ -667,6 +835,88 @@ impl StagedUnitWriter<'_, '_> {
 mod tests {
     use super::*;
 
+    #[test]
+    fn full_refresh_indexes_added_and_removed_diff_references() {
+        use std::{fs, os::unix::fs::PermissionsExt, process::Command};
+
+        let _cwd_lock = CWD_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+        let original_cwd = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let repo = tempfile::tempdir().unwrap();
+        let git = |args: &[&str]| {
+            let output = Command::new("git")
+                .args(args)
+                .current_dir(repo.path())
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            String::from_utf8(output.stdout).unwrap().trim().to_owned()
+        };
+        git(&["init", "-q"]);
+        git(&["config", "user.email", "test@example.com"]);
+        git(&["config", "user.name", "Test"]);
+        fs::write(repo.path().join("removed.txt"), "remove needle\n").unwrap();
+        git(&["add", "."]);
+        git(&["commit", "-qm", "parent"]);
+        let parent = git(&["rev-parse", "HEAD"]);
+        fs::remove_file(repo.path().join("removed.txt")).unwrap();
+        fs::write(repo.path().join("added.txt"), "add needle\n").unwrap();
+        git(&["add", "-A"]);
+        git(&["commit", "-qm", "child"]);
+        let child = git(&["rev-parse", "HEAD"]);
+
+        let embedder = repo.path().join("embedder");
+        fs::write(&embedder, "#!/bin/sh\ncat >/dev/null\nprintf '[1,0]'\n").unwrap();
+        fs::set_permissions(&embedder, fs::Permissions::from_mode(0o755)).unwrap();
+        let db = Connection::open_in_memory().unwrap();
+        db.execute_batch("CREATE TABLE embedding_config(key TEXT PRIMARY KEY,value TEXT NOT NULL); CREATE TEMP TABLE import_refresh_dimension(value INTEGER);").unwrap();
+        for (key, value) in [
+            ("command", embedder.to_str().unwrap()),
+            ("model", "test"),
+            ("dimension", "0"),
+        ] {
+            db.execute(
+                "INSERT INTO embedding_config VALUES(?1,?2)",
+                params![key, value],
+            )
+            .unwrap();
+        }
+        std::env::set_current_dir(repo.path()).unwrap();
+        prepare_refresh(&db).unwrap();
+        let tx = db.unchecked_transaction().unwrap();
+        publish_refresh(&tx).unwrap();
+        tx.commit().unwrap();
+
+        let references = diff_references(&db, Some(&parent), Some(&child)).unwrap();
+        assert_eq!(references.len(), 2);
+        let added = references
+            .iter()
+            .find(|reference| reference.side == DiffSide::Added)
+            .unwrap();
+        assert_eq!(added.child_commit_id, child);
+        assert_eq!(added.old_path, None);
+        assert_eq!(added.new_path.as_deref(), Some(b"added.txt".as_slice()));
+        assert_eq!(added.old_line_start, None);
+        assert_eq!(added.new_line_start, Some(1));
+        assert_eq!(added.byte_start, 0);
+        assert_eq!(added.byte_end, "add needle".len());
+        let removed = references
+            .iter()
+            .find(|reference| reference.side == DiffSide::Removed)
+            .unwrap();
+        assert_eq!(removed.old_path.as_deref(), Some(b"removed.txt".as_slice()));
+        assert_eq!(removed.new_path, None);
+        assert_eq!(removed.old_line_start, Some(1));
+        assert_eq!(removed.new_line_start, None);
+        assert_eq!(removed.byte_start, 0);
+        assert_eq!(removed.byte_end, "remove needle".len());
+        assert_ne!(added.blob_id, removed.blob_id);
+        std::env::set_current_dir(original_cwd).unwrap();
+    }
+
     static CWD_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     fn enable_vector_extension() {
@@ -1033,6 +1283,7 @@ pub fn prepare_refresh(c: &Connection) -> Result<()> {
         CREATE TEMP TABLE refresh_variants(blob_id TEXT NOT NULL, segmentation_kind TEXT NOT NULL, PRIMARY KEY(blob_id,segmentation_kind));
         CREATE TEMP TABLE refresh_units(unit_id INTEGER PRIMARY KEY, blob_id TEXT NOT NULL, segmentation_kind TEXT NOT NULL, text TEXT NOT NULL, byte_start INTEGER NOT NULL, byte_end INTEGER NOT NULL, line_start INTEGER NOT NULL, line_end INTEGER NOT NULL);
         CREATE TEMP TABLE refresh_commit_message_units(commit_id TEXT NOT NULL, unit_id INTEGER NOT NULL, byte_start INTEGER NOT NULL, byte_end INTEGER NOT NULL, line_start INTEGER NOT NULL, line_end INTEGER NOT NULL);
+        CREATE TEMP TABLE refresh_diff_references(parent_commit_id TEXT NOT NULL,child_commit_id TEXT NOT NULL,hunk_id INTEGER NOT NULL,side TEXT NOT NULL,old_path BLOB,new_path BLOB,old_line_start INTEGER,old_line_end INTEGER,new_line_start INTEGER,new_line_end INTEGER,blob_id TEXT NOT NULL,unit_id INTEGER NOT NULL);
         CREATE TEMP TABLE refresh_embeddings(unit_id INTEGER PRIMARY KEY, vector BLOB NOT NULL);
         DROP TABLE IF EXISTS temp.refresh_dimension; CREATE TEMP TABLE refresh_dimension(value INTEGER);
         DROP TABLE IF EXISTS temp.refresh_config; CREATE TEMP TABLE refresh_config(key TEXT PRIMARY KEY,value TEXT NOT NULL);")?;
@@ -1149,6 +1400,52 @@ pub fn prepare_refresh(c: &Connection) -> Result<()> {
                 Ok(())
             })
         })?;
+        let commits = {
+            let mut statement =
+                c.prepare("SELECT commit_id FROM temp.refresh_commits ORDER BY commit_id")?;
+            statement
+                .query_map([], |row| row.get::<_, String>(0))?
+                .collect::<std::result::Result<Vec<_>, _>>()?
+        };
+        for child in commits {
+            let record = String::from_utf8(git_output(
+                &["rev-list", "--parents", "-n", "1", &child],
+                1024,
+                &mut preparation_bytes,
+            )?)?;
+            let mut fields = record.split_whitespace();
+            if fields.next() != Some(child.as_str()) {
+                return Err("invalid Git parent record".into());
+            }
+            let parents: Vec<String> = fields.map(str::to_owned).collect();
+            if parents.is_empty() {
+                stage_diff_pair(
+                    c,
+                    None,
+                    &child,
+                    &mut unit_count,
+                    &mut batch,
+                    &mut pipeline,
+                    &mut embedding_dimension,
+                    &mut embedding_statement,
+                    &mut preparation_bytes,
+                )?;
+            } else {
+                for parent in parents {
+                    stage_diff_pair(
+                        c,
+                        Some(&parent),
+                        &child,
+                        &mut unit_count,
+                        &mut batch,
+                        &mut pipeline,
+                        &mut embedding_dimension,
+                        &mut embedding_statement,
+                        &mut preparation_bytes,
+                    )?;
+                }
+            }
+        }
         flush_embedding_batch(
             &mut batch,
             &mut pipeline,
@@ -1536,13 +1833,14 @@ fn refresh_scoped(c: &mut Connection, target: Option<&str>) -> Result<()> {
 }
 
 pub fn publish_refresh(tx: &Transaction<'_>) -> Result<()> {
-    tx.execute_batch("DROP TABLE IF EXISTS unit_embeddings; DROP TABLE IF EXISTS commit_message_units; DROP TABLE IF EXISTS git_blob_units; DROP TABLE IF EXISTS indexed_units; DROP TABLE IF EXISTS git_occurrences; DROP TABLE IF EXISTS blob_contents; DROP TABLE IF EXISTS git_commits;
+    tx.execute_batch("DROP TABLE IF EXISTS diff_references; DROP TABLE IF EXISTS unit_embeddings; DROP TABLE IF EXISTS commit_message_units; DROP TABLE IF EXISTS git_blob_units; DROP TABLE IF EXISTS indexed_units; DROP TABLE IF EXISTS git_occurrences; DROP TABLE IF EXISTS blob_contents; DROP TABLE IF EXISTS git_commits;
         CREATE TABLE git_commits(commit_id TEXT PRIMARY KEY NOT NULL, timestamp INTEGER NOT NULL);
         CREATE TABLE blob_contents(blob_id TEXT PRIMARY KEY NOT NULL, status TEXT NOT NULL);
         CREATE TABLE git_occurrences(commit_id TEXT NOT NULL REFERENCES git_commits, blob_id TEXT NOT NULL REFERENCES blob_contents, path BLOB NOT NULL, segmentation_kind TEXT NOT NULL, PRIMARY KEY(commit_id,path));
         CREATE TABLE indexed_units(unit_id INTEGER PRIMARY KEY, byte_start INTEGER NOT NULL, byte_end INTEGER NOT NULL, line_start INTEGER NOT NULL, line_end INTEGER NOT NULL);
         CREATE TABLE git_blob_units(blob_id TEXT NOT NULL REFERENCES blob_contents, unit_id INTEGER NOT NULL REFERENCES indexed_units, segmentation_kind TEXT NOT NULL, PRIMARY KEY(blob_id,segmentation_kind,unit_id));
         CREATE TABLE commit_message_units(commit_id TEXT NOT NULL REFERENCES git_commits, unit_id INTEGER NOT NULL REFERENCES indexed_units, byte_start INTEGER NOT NULL, byte_end INTEGER NOT NULL, line_start INTEGER NOT NULL, line_end INTEGER NOT NULL, PRIMARY KEY(commit_id,unit_id));
+        CREATE TABLE diff_references(parent_commit_id TEXT NOT NULL,child_commit_id TEXT NOT NULL REFERENCES git_commits,hunk_id INTEGER NOT NULL,side TEXT NOT NULL,old_path BLOB,new_path BLOB,old_line_start INTEGER,old_line_end INTEGER,new_line_start INTEGER,new_line_end INTEGER,blob_id TEXT NOT NULL,unit_id INTEGER NOT NULL REFERENCES indexed_units,byte_start INTEGER NOT NULL,byte_end INTEGER NOT NULL,line_start INTEGER NOT NULL,line_end INTEGER NOT NULL,PRIMARY KEY(parent_commit_id,child_commit_id,hunk_id,side,unit_id));
         CREATE TABLE unit_embeddings(unit_id INTEGER PRIMARY KEY REFERENCES indexed_units, vector BLOB NOT NULL);")?;
     tx.execute(
         "INSERT INTO git_commits SELECT * FROM temp.refresh_commits",
@@ -1560,11 +1858,12 @@ pub fn publish_refresh(tx: &Transaction<'_>) -> Result<()> {
         "INSERT INTO indexed_units SELECT unit_id,byte_start,byte_end,line_start,line_end FROM temp.refresh_units",
         [],
     )?;
-    tx.execute("INSERT INTO git_blob_units SELECT blob_id,unit_id,segmentation_kind FROM temp.refresh_units WHERE segmentation_kind!='commit-message'", [])?;
+    tx.execute("INSERT INTO git_blob_units SELECT blob_id,unit_id,segmentation_kind FROM temp.refresh_units WHERE segmentation_kind NOT IN ('commit-message','diff')", [])?;
     tx.execute(
         "INSERT INTO commit_message_units SELECT * FROM temp.refresh_commit_message_units",
         [],
     )?;
+    tx.execute("INSERT INTO diff_references SELECT r.parent_commit_id,r.child_commit_id,r.hunk_id,r.side,r.old_path,r.new_path,r.old_line_start,r.old_line_end,r.new_line_start,r.new_line_end,r.blob_id,r.unit_id,u.byte_start,u.byte_end,u.line_start,u.line_end FROM temp.refresh_diff_references r JOIN temp.refresh_units u USING(unit_id)", [])?;
     tx.execute(
         "INSERT INTO unit_embeddings SELECT * FROM temp.refresh_embeddings",
         [],
@@ -1585,6 +1884,47 @@ pub fn publish_refresh(tx: &Transaction<'_>) -> Result<()> {
     }
     tx.execute_batch("DROP TABLE IF EXISTS indexed_files; DROP TABLE IF EXISTS embeddings; PRAGMA user_version=4;")?;
     Ok(())
+}
+
+pub(crate) fn diff_references(
+    c: &Connection,
+    parent_commit_id: Option<&str>,
+    child_commit_id: Option<&str>,
+) -> Result<Vec<DiffReference>> {
+    let mut statement = c.prepare("SELECT parent_commit_id,child_commit_id,hunk_id,side,old_path,new_path,old_line_start,old_line_end,new_line_start,new_line_end,blob_id,byte_start,byte_end FROM diff_references WHERE (?1 IS NULL OR parent_commit_id=?1) AND (?2 IS NULL OR child_commit_id=?2) ORDER BY child_commit_id,parent_commit_id,hunk_id,side,byte_start")?;
+    let rows = statement.query_map(params![parent_commit_id, child_commit_id], |row| {
+        let side: String = row.get(3)?;
+        let maybe_usize = |index| -> rusqlite::Result<Option<usize>> {
+            row.get::<_, Option<i64>>(index)?
+                .map(|value| {
+                    usize::try_from(value)
+                        .map_err(|_| rusqlite::Error::IntegralValueOutOfRange(index, value))
+                })
+                .transpose()
+        };
+        Ok(DiffReference {
+            parent_commit_id: row.get(0)?,
+            child_commit_id: row.get(1)?,
+            hunk_id: row.get(2)?,
+            side: match side.as_str() {
+                "added" => DiffSide::Added,
+                "removed" => DiffSide::Removed,
+                _ => return Err(rusqlite::Error::InvalidQuery),
+            },
+            old_path: row.get(4)?,
+            new_path: row.get(5)?,
+            old_line_start: maybe_usize(6)?,
+            old_line_end: maybe_usize(7)?,
+            new_line_start: maybe_usize(8)?,
+            new_line_end: maybe_usize(9)?,
+            blob_id: row.get(10)?,
+            byte_start: usize::try_from(row.get::<_, i64>(11)?)
+                .map_err(|_| rusqlite::Error::InvalidQuery)?,
+            byte_end: usize::try_from(row.get::<_, i64>(12)?)
+                .map_err(|_| rusqlite::Error::InvalidQuery)?,
+        })
+    })?;
+    Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
 }
 
 pub fn reembed(c: &mut Connection, command: &str, model: &str) -> Result<()> {
