@@ -263,13 +263,33 @@ fn stage_legacy_git_units(
     Ok(())
 }
 
+fn utc_rfc3339_now() -> String {
+    let seconds = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("system clock is before Unix epoch")
+        .as_secs() as libc::time_t;
+    let mut tm = std::mem::MaybeUninit::<libc::tm>::uninit();
+    // gmtime_r writes a complete UTC calendar value without using process-global state.
+    let tm = unsafe { libc::gmtime_r(&seconds, tm.as_mut_ptr()) };
+    let tm = unsafe { tm.as_ref().expect("gmtime_r supports current timestamp") };
+    format!(
+        "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}Z",
+        tm.tm_year + 1900,
+        tm.tm_mon + 1,
+        tm.tm_mday,
+        tm.tm_hour,
+        tm.tm_min,
+        tm.tm_sec
+    )
+}
+
 pub fn refresh(c: &Connection) -> Result<()> {
     init(c)?;
     c.execute_batch("PRAGMA temp_store=FILE;
         DROP TABLE IF EXISTS temp.import_stage_sources; DROP TABLE IF EXISTS temp.import_stage_versions;
         DROP TABLE IF EXISTS temp.import_stage_units; DROP TABLE IF EXISTS temp.import_stage_git_units;
         CREATE TEMP TABLE import_stage_sources(id TEXT PRIMARY KEY,locator TEXT NOT NULL,kind TEXT NOT NULL,object_store TEXT);
-        CREATE TEMP TABLE import_stage_versions(source_id TEXT NOT NULL,version TEXT NOT NULL,content TEXT NOT NULL,fetched_order INTEGER NOT NULL,PRIMARY KEY(source_id,version));
+        CREATE TEMP TABLE import_stage_versions(source_id TEXT NOT NULL,version TEXT NOT NULL,content TEXT NOT NULL,fetched_order INTEGER NOT NULL,first_retrieved_at TEXT,last_retrieved_at TEXT,PRIMARY KEY(source_id,version));
         CREATE TEMP TABLE import_stage_units(source_id TEXT NOT NULL,version TEXT NOT NULL,line INTEGER NOT NULL,line_end INTEGER NOT NULL,text TEXT NOT NULL,vector BLOB,page INTEGER,PRIMARY KEY(source_id,version,line,text));
         CREATE TEMP TABLE import_stage_git_units(source_id TEXT NOT NULL,commit_id TEXT NOT NULL,path TEXT NOT NULL,blob_id TEXT NOT NULL,segmentation_kind TEXT NOT NULL,byte_start INTEGER NOT NULL,byte_end INTEGER NOT NULL,line INTEGER NOT NULL,line_end INTEGER NOT NULL,vector BLOB,PRIMARY KEY(source_id,commit_id,path,byte_start));")?;
     if table_exists(c, "imported_sources")? {
@@ -284,7 +304,17 @@ pub fn refresh(c: &Connection) -> Result<()> {
         } else {
             "rowid"
         };
-        c.execute(&format!("INSERT INTO temp.import_stage_versions SELECT source_id,version,content,{order} FROM imported_versions"), [])?;
+        let first = if column_exists(c, "imported_versions", "first_retrieved_at")? {
+            "first_retrieved_at"
+        } else {
+            "NULL"
+        };
+        let last = if column_exists(c, "imported_versions", "last_retrieved_at")? {
+            "last_retrieved_at"
+        } else {
+            "NULL"
+        };
+        c.execute(&format!("INSERT INTO temp.import_stage_versions SELECT source_id,version,content,{order},{first},{last} FROM imported_versions"), [])?;
     }
     if table_exists(c, "imported_units")? {
         let line_end = if column_exists(c, "imported_units", "line_end")? {
@@ -659,10 +689,18 @@ pub fn refresh(c: &Connection) -> Result<()> {
             [],
             |r| r.get(0),
         )?;
-        c.execute(
-            "INSERT INTO temp.import_stage_versions(source_id,version,content,fetched_order) VALUES(?1,?2,?3,?4) ON CONFLICT(source_id,version) DO UPDATE SET content=excluded.content,fetched_order=excluded.fetched_order",
-            params![id, version, content.as_deref().unwrap_or(""), fetched_order],
-        )?;
+        if kind == "url" {
+            let observed_at = utc_rfc3339_now();
+            c.execute(
+                "INSERT INTO temp.import_stage_versions(source_id,version,content,fetched_order,first_retrieved_at,last_retrieved_at) VALUES(?1,?2,?3,?4,?5,?5) ON CONFLICT(source_id,version) DO UPDATE SET content=excluded.content,fetched_order=excluded.fetched_order,first_retrieved_at=COALESCE(import_stage_versions.first_retrieved_at,excluded.first_retrieved_at),last_retrieved_at=excluded.last_retrieved_at",
+                params![id, version, content.as_deref().unwrap_or(""), fetched_order, observed_at],
+            )?;
+        } else {
+            c.execute(
+                "INSERT INTO temp.import_stage_versions(source_id,version,content,fetched_order) VALUES(?1,?2,?3,?4) ON CONFLICT(source_id,version) DO UPDATE SET content=excluded.content,fetched_order=excluded.fetched_order",
+                params![id, version, content.as_deref().unwrap_or(""), fetched_order],
+            )?;
+        }
         if is_pdf {
             let mut stmt =
                 c.prepare("SELECT page,text FROM temp.import_pdf_pages ORDER BY page")?;
@@ -825,7 +863,7 @@ pub fn publish(tx: &rusqlite::Transaction<'_>) -> Result<()> {
     ] {
         tx.execute(&format!("DELETE FROM {table}"), [])?;
         if table == "imported_versions" {
-            tx.execute("INSERT INTO imported_versions(source_id,version,content,fetched_order) SELECT source_id,version,content,fetched_order FROM temp.import_stage_versions", [])?;
+            tx.execute("INSERT INTO imported_versions(source_id,version,content,fetched_order,first_retrieved_at,last_retrieved_at) SELECT source_id,version,content,fetched_order,first_retrieved_at,last_retrieved_at FROM temp.import_stage_versions", [])?;
             let representations = {
                 let mut statement = tx.prepare(
                     "SELECT source_id,version,content FROM imported_versions WHERE content<>''",
@@ -982,7 +1020,7 @@ pub fn search(
             return Err("query embedding dimension mismatch".into());
         }
     }
-    let mut st = c.prepare("SELECT s.locator,u.line,u.line_end,u.text,u.version,u.vector,u.page FROM imported_units u JOIN imported_sources s ON s.id=u.source_id WHERE s.kind<>'git'")?;
+    let mut st = c.prepare("SELECT s.locator,u.line,u.line_end,u.text,u.version,u.vector,u.page,v.first_retrieved_at,v.last_retrieved_at FROM imported_units u JOIN imported_sources s ON s.id=u.source_id LEFT JOIN imported_versions v ON v.source_id=u.source_id AND v.version=u.version WHERE s.kind<>'git'")?;
     let rows = st.query_map([], |r| {
         Ok((
             r.get::<_, String>(0)?,
@@ -992,11 +1030,23 @@ pub fn search(
             r.get::<_, String>(4)?,
             r.get::<_, Option<Vec<u8>>>(5)?,
             r.get::<_, Option<usize>>(6)?,
+            r.get::<_, Option<String>>(7)?,
+            r.get::<_, Option<String>>(8)?,
         ))
     })?;
     let mut out = Vec::new();
     for row in rows {
-        let (locator, line, line_end, text, version, stored, page) = row?;
+        let (
+            locator,
+            line,
+            line_end,
+            text,
+            version,
+            stored,
+            page,
+            first_retrieved_at,
+            last_retrieved_at,
+        ) = row?;
         if semantic {
             if let (Some(v), Some(q)) = (stored.as_deref(), vector.as_deref()) {
                 if v.len() != q.len() {
@@ -1018,6 +1068,8 @@ pub fn search(
                         blob_id: Some(version),
                         page,
                         repo_id: None,
+                        first_retrieved_at: first_retrieved_at.clone(),
+                        last_retrieved_at: last_retrieved_at.clone(),
                     },
                     None,
                 ));
@@ -1035,6 +1087,8 @@ pub fn search(
                     blob_id: Some(version),
                     page,
                     repo_id: None,
+                    first_retrieved_at,
+                    last_retrieved_at,
                 },
                 None,
             ));
@@ -1119,6 +1173,8 @@ pub fn search(
                         blob_id: None,
                         page: None,
                         repo_id: Some(repo_id),
+                        first_retrieved_at: None,
+                        last_retrieved_at: None,
                     },
                     deferred_payload,
                 ));
@@ -1136,6 +1192,8 @@ pub fn search(
                     blob_id: None,
                     page: None,
                     repo_id: Some(repo_id),
+                    first_retrieved_at: None,
+                    last_retrieved_at: None,
                 },
                 None,
             ));

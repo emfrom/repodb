@@ -1402,6 +1402,8 @@ pub fn search(
                     distance: r.get(8)?,
                     page: None,
                     repo_id: None,
+                    first_retrieved_at: None,
+                    last_retrieved_at: None,
                 },
             ))
         },

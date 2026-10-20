@@ -2689,14 +2689,35 @@ fn imported_url_and_semantic_search_use_loopback_and_fake_embeddings() {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let address = listener.local_addr().unwrap();
     let server = std::thread::spawn(move || {
-        let (mut stream, _) = listener.accept().unwrap();
-        let mut request = [0; 1024];
-        let _ = stream.read(&mut request);
-        stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 23\r\nConnection: close\r\n\r\nurl imported semantic!\n").unwrap();
+        for status in ["200 OK", "200 OK", "500 Internal Server Error"] {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = [0; 1024];
+            let _ = stream.read(&mut request);
+            if status == "200 OK" {
+                stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 23\r\nConnection: close\r\n\r\nurl imported semantic!\n").unwrap();
+            } else {
+                stream.write_all(b"HTTP/1.1 500 Internal Server Error\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").unwrap();
+            }
+        }
     });
     let url = format!("http://{address}/source.txt");
     assert!(run(root, &["import", &url]).0);
     assert!(run(root, &["refresh", "--imports"]).0);
+    let first_results = search_json(root, &["semantic", "--semantic"]);
+    let first_observation = first_results
+        .iter()
+        .find(|result| result["path"] == url && result["line_start"] == 1)
+        .unwrap()
+        .clone();
+    std::thread::sleep(std::time::Duration::from_millis(1100));
+    assert!(run(root, &["refresh", "--imports"]).0);
+    let second_results = search_json(root, &["semantic", "--semantic"]);
+    let second_observation = second_results
+        .iter()
+        .find(|result| result["path"] == url && result["line_start"] == 1)
+        .unwrap()
+        .clone();
+    assert!(!run(root, &["refresh", "--imports"]).0);
     server.join().unwrap();
     let results = search_json(root, &["semantic", "--semantic"]);
     let imported = results
@@ -2704,6 +2725,135 @@ fn imported_url_and_semantic_search_use_loopback_and_fake_embeddings() {
         .find(|result| result["path"] == url && result["line_start"] == 1)
         .unwrap_or_else(|| panic!("{results:?}"));
     assert_eq!(imported["blob_id"].as_str().unwrap().len(), 64);
+    for field in ["first_retrieved_at", "last_retrieved_at"] {
+        let timestamp = imported[field].as_str().unwrap();
+        assert!(timestamp.ends_with('Z'), "{field}: {timestamp}");
+        assert_eq!(timestamp.len(), 20, "{field}: {timestamp}");
+    }
+    assert_eq!(imported["blob_id"], second_observation["blob_id"]);
+    assert_eq!(imported["blob_id"], first_observation["blob_id"]);
+    assert_eq!(
+        second_observation["first_retrieved_at"],
+        first_observation["first_retrieved_at"]
+    );
+    assert!(
+        second_observation["last_retrieved_at"].as_str().unwrap()
+            > first_observation["last_retrieved_at"].as_str().unwrap()
+    );
+    assert_eq!(
+        imported["first_retrieved_at"],
+        second_observation["first_retrieved_at"]
+    );
+    assert_eq!(
+        imported["last_retrieved_at"],
+        second_observation["last_retrieved_at"]
+    );
+    let database = rusqlite::Connection::open(root.join(".git/repodb.sqlite")).unwrap();
+    let version_count: i64 = database
+        .query_row("SELECT count(*) FROM imported_versions", [], |row| {
+            row.get(0)
+        })
+        .unwrap();
+    assert_eq!(version_count, 1, "identical response bytes deduplicate");
+    let (ok, human) = run(root, &["search", "semantic"]);
+    assert!(ok);
+    assert!(human.contains(imported["blob_id"].as_str().unwrap()));
+    assert!(human.contains(imported["first_retrieved_at"].as_str().unwrap()));
+    assert!(human.contains(imported["last_retrieved_at"].as_str().unwrap()));
+}
+
+#[test]
+fn imported_url_versions_follow_latest_and_all_hash_retention() {
+    use std::{
+        io::{Read, Write},
+        net::TcpListener,
+    };
+
+    let repo = repository();
+    let root = repo.path();
+    assert!(run(root, &["init"]).0);
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = std::thread::spawn(move || {
+        for body in [
+            "alpha url version marker\n",
+            "beta url version marker\n",
+            "alpha url version marker\n",
+            "beta url version marker\n",
+            "alpha url version marker\n",
+        ] {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = [0; 1024];
+            let _ = stream.read(&mut request);
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            stream.write_all(response.as_bytes()).unwrap();
+        }
+    });
+    let url = format!("http://{address}/versions.txt");
+    assert!(run(root, &["import", &url]).0);
+    assert!(run(root, &["refresh", "--imports"]).0);
+    assert!(run(root, &["retention", "all"]).0);
+    assert!(run(root, &["refresh", "--imports"]).0);
+    assert!(run(root, &["refresh", "--imports"]).0);
+
+    let database = rusqlite::Connection::open(root.join(".git/repodb.sqlite")).unwrap();
+    let hashes: Vec<String> = database
+        .prepare("SELECT version FROM imported_versions ORDER BY fetched_order")
+        .unwrap()
+        .query_map([], |row| row.get(0))
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap();
+    assert_eq!(
+        hashes.len(),
+        2,
+        "all retains distinct hashes, not observations"
+    );
+    let alpha_hash: String = database
+        .query_row(
+            "SELECT version FROM imported_versions WHERE content='alpha url version marker\n'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let alpha_times: (String, String) = database
+        .query_row(
+            "SELECT first_retrieved_at,last_retrieved_at FROM imported_versions WHERE version=?1",
+            [&alpha_hash],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    assert!(run(root, &["retention", "latest"]).0);
+    assert!(run(root, &["refresh", "--imports"]).0);
+    std::thread::sleep(std::time::Duration::from_millis(1100));
+    assert!(run(root, &["refresh", "--imports"]).0);
+    server.join().unwrap();
+    let remaining: (i64, String, String) = database
+        .query_row(
+            "SELECT count(*),min(version),min(content) FROM imported_versions",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .unwrap();
+    assert_eq!(remaining.0, 1, "latest prunes prior URL hashes");
+    assert_eq!(remaining.2, "alpha url version marker\n");
+    assert_eq!(
+        remaining.1, alpha_hash,
+        "SHA-256 remains the version identity"
+    );
+    let latest_times: (String, String) = database
+        .query_row(
+            "SELECT first_retrieved_at,last_retrieved_at FROM imported_versions WHERE version=?1",
+            [&remaining.1],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    assert!(latest_times.0.ends_with('Z') && latest_times.1.ends_with('Z'));
+    assert_ne!(alpha_times.0, latest_times.0);
 }
 
 #[test]

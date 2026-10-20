@@ -112,7 +112,7 @@ fn collect_preview_files(directory: &Path, files: &mut Vec<PathBuf>) -> Result<(
 }
 
 pub(super) fn init(c: &Connection) -> Result<()> {
-    c.execute_batch("CREATE TABLE IF NOT EXISTS imported_sources(id TEXT PRIMARY KEY, locator TEXT NOT NULL UNIQUE, kind TEXT NOT NULL, object_store TEXT); CREATE TABLE IF NOT EXISTS imported_versions(source_id TEXT NOT NULL, version TEXT NOT NULL, content TEXT NOT NULL, fetched_order INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(source_id,version)); CREATE TABLE IF NOT EXISTS imported_units(source_id TEXT NOT NULL, version TEXT NOT NULL, line INTEGER NOT NULL, text TEXT NOT NULL, vector BLOB, page INTEGER, line_end INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(source_id,version,line,text)); CREATE TABLE IF NOT EXISTS import_config(key TEXT PRIMARY KEY,value TEXT NOT NULL); CREATE TABLE IF NOT EXISTS imported_git_units(source_id TEXT NOT NULL,commit_id TEXT NOT NULL,path TEXT NOT NULL,blob_id TEXT NOT NULL,segmentation_kind TEXT NOT NULL,byte_start INTEGER NOT NULL,byte_end INTEGER NOT NULL,line INTEGER NOT NULL,line_end INTEGER NOT NULL,vector BLOB,PRIMARY KEY(source_id,commit_id,path,byte_start));")?;
+    c.execute_batch("CREATE TABLE IF NOT EXISTS imported_sources(id TEXT PRIMARY KEY, locator TEXT NOT NULL UNIQUE, kind TEXT NOT NULL, object_store TEXT); CREATE TABLE IF NOT EXISTS imported_versions(source_id TEXT NOT NULL, version TEXT NOT NULL, content TEXT NOT NULL, fetched_order INTEGER NOT NULL DEFAULT 0, first_retrieved_at TEXT, last_retrieved_at TEXT, PRIMARY KEY(source_id,version)); CREATE TABLE IF NOT EXISTS imported_units(source_id TEXT NOT NULL, version TEXT NOT NULL, line INTEGER NOT NULL, text TEXT NOT NULL, vector BLOB, page INTEGER, line_end INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(source_id,version,line,text)); CREATE TABLE IF NOT EXISTS import_config(key TEXT PRIMARY KEY,value TEXT NOT NULL); CREATE TABLE IF NOT EXISTS imported_git_units(source_id TEXT NOT NULL,commit_id TEXT NOT NULL,path TEXT NOT NULL,blob_id TEXT NOT NULL,segmentation_kind TEXT NOT NULL,byte_start INTEGER NOT NULL,byte_end INTEGER NOT NULL,line INTEGER NOT NULL,line_end INTEGER NOT NULL,vector BLOB,PRIMARY KEY(source_id,commit_id,path,byte_start));")?;
     if !column_exists(c, "imported_versions", "representation_sha256")? {
         c.execute(
             "ALTER TABLE imported_versions ADD COLUMN representation_sha256 TEXT",
@@ -200,6 +200,18 @@ pub(super) fn init(c: &Connection) -> Result<()> {
         )?
     {
         c.execute_batch("CREATE TABLE imported_git_units_new(source_id TEXT NOT NULL,commit_id TEXT NOT NULL,path TEXT NOT NULL,line INTEGER NOT NULL,line_end INTEGER NOT NULL,text TEXT NOT NULL,vector BLOB,PRIMARY KEY(source_id,commit_id,path,line,text)); INSERT INTO imported_git_units_new SELECT source_id,commit_id,path,line,line_end,text,vector FROM imported_git_units; DROP TABLE imported_git_units; ALTER TABLE imported_git_units_new RENAME TO imported_git_units;")?;
+    }
+    if !column_exists(c, "imported_versions", "first_retrieved_at")? {
+        c.execute(
+            "ALTER TABLE imported_versions ADD COLUMN first_retrieved_at TEXT",
+            [],
+        )?;
+    }
+    if !column_exists(c, "imported_versions", "last_retrieved_at")? {
+        c.execute(
+            "ALTER TABLE imported_versions ADD COLUMN last_retrieved_at TEXT",
+            [],
+        )?;
     }
     if !column_exists(c, "imported_versions", "fetched_order")? {
         c.execute(
@@ -400,8 +412,10 @@ mod tests {
              CREATE TABLE imported_versions(source_id TEXT NOT NULL,version TEXT NOT NULL,content TEXT NOT NULL,fetched_order INTEGER NOT NULL DEFAULT 0,PRIMARY KEY(source_id,version));
              INSERT INTO imported_sources VALUES('pdf','manual.pdf','file');
              INSERT INTO imported_sources VALUES('text','notes.txt','file');
+             INSERT INTO imported_sources VALUES('url','http://127.0.0.1:1/legacy','url');
              INSERT INTO imported_versions VALUES('pdf','source-hash','',1);
-             INSERT INTO imported_versions VALUES('text','text-hash','durable text',2);",
+             INSERT INTO imported_versions VALUES('text','text-hash','durable text',2);
+             INSERT INTO imported_versions VALUES('url','legacy-hash','legacy page',3);",
         ).unwrap();
 
         init(&connection).unwrap();
@@ -416,6 +430,14 @@ mod tests {
             pdf_hash, None,
             "a source hash cannot recover legacy PDF text"
         );
+        let legacy_url_timestamps: (Option<String>, Option<String>) = connection
+            .query_row(
+                "SELECT first_retrieved_at,last_retrieved_at FROM imported_versions WHERE source_id='url'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(legacy_url_timestamps, (None, None));
         let text_hash: String = connection
             .query_row(
                 "SELECT representation_sha256 FROM imported_versions WHERE source_id='text'",
@@ -443,7 +465,7 @@ mod tests {
             })
             .unwrap();
         assert_eq!(
-            original_rows, 2,
+            original_rows, 3,
             "failed integrity migration must not discard versions"
         );
     }

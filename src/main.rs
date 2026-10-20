@@ -56,6 +56,8 @@ struct SearchResult {
     page: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
     repo_id: Option<String>,
+    first_retrieved_at: Option<String>,
+    last_retrieved_at: Option<String>,
 }
 
 #[derive(Clone, Copy, Default)]
@@ -420,6 +422,8 @@ fn exact(c: &Connection, q: &str, commits: &[String]) -> Result<Vec<SearchResult
                     blob_id: None,
                     page: None,
                     repo_id: None,
+                    first_retrieved_at: None,
+                    last_retrieved_at: None,
                 })
             }
         }
@@ -472,6 +476,8 @@ fn semantic_with_vector(
             blob_id: None,
             page: None,
             repo_id: None,
+            first_retrieved_at: None,
+            last_retrieved_at: None,
         })
     })?;
     let mut results = rows.collect::<std::result::Result<Vec<_>, _>>()?;
@@ -728,6 +734,12 @@ fn execute() -> Result<()> {
                     }
                     if let Some(repo_id) = x.repo_id {
                         reference.push_str(&format!(" [repo {repo_id}]"));
+                    }
+                    if let Some(first) = x.first_retrieved_at {
+                        reference.push_str(&format!(" [first retrieved {first}]"));
+                    }
+                    if let Some(last) = x.last_retrieved_at {
+                        reference.push_str(&format!(" [last retrieved {last}]"));
                     }
                     let path = readable_path(&x.path);
                     if let Some(page) = x.page {
