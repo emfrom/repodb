@@ -637,6 +637,10 @@ fn search_scope_filters_repo_and_document_sources_for_all_modes() {
             let (ok, output) = run(root, &args);
             assert!(ok, "{mode} scope {scope}: {output}");
             let results: Vec<serde_json::Value> = serde_json::from_str(&output).unwrap();
+            let results = results
+                .into_iter()
+                .filter(|result| result["component"] == "content")
+                .collect::<Vec<_>>();
             let mut actual: Vec<_> = results
                 .iter()
                 .map(|result| result["path"].as_str().unwrap())
@@ -746,7 +750,11 @@ fn explicit_database_paths_keep_independent_history_and_preserve_default() {
     let search = |path: &str, phrase: &str| -> Vec<serde_json::Value> {
         let (ok, output) = run(root, &["--database", path, "search", "--json", phrase]);
         assert!(ok, "{output}");
-        serde_json::from_str(&output).unwrap()
+        serde_json::from_str::<Vec<serde_json::Value>>(&output)
+            .unwrap()
+            .into_iter()
+            .filter(|result| result["component"] == "content")
+            .collect()
     };
 
     assert!(run(root, &["--database", first_path, "init"]).0);
@@ -848,7 +856,9 @@ fn database_option_resolves_relative_to_cwd_and_rejects_missing_paths() {
     assert_eq!(
         serde_json::from_slice::<Vec<serde_json::Value>>(&output.stdout)
             .unwrap()
-            .len(),
+            .into_iter()
+            .filter(|result| result["component"] == "content")
+            .count(),
         1
     );
     for args in [
@@ -2494,12 +2504,13 @@ fn imported_git_semantic_top_n_does_not_hydrate_nonselected_blob() {
         "--semantic",
         "--semantic-limit",
         "1",
+        "--type=content",
         "--json",
     ]);
     assert!(success, "{output}");
     let results: Vec<serde_json::Value> = serde_json::from_str(&output).unwrap();
     assert_eq!(results.len(), 1, "{results:?}");
-    assert_eq!(results[0]["path"], "selected.txt");
+    assert_eq!(results[0]["path"], "selected.txt", "{results:?}");
 }
 
 #[test]
@@ -3299,8 +3310,12 @@ fn scoped_refresh_indexes_commit_changes_and_reuses_unchanged_units() {
     )
     .unwrap();
     let invoke = |args: &[&str]| {
+        let mut args = args.to_vec();
+        if args.first() == Some(&"search") {
+            args.push("--type=cmcommits");
+        }
         let output = Command::new(env!("CARGO_BIN_EXE_repodb"))
-            .args(args)
+            .args(&args)
             .current_dir(root)
             .env("XDG_CONFIG_HOME", config_home.path())
             .env(
@@ -3582,28 +3597,28 @@ fn init_refresh_search_and_json_are_repository_local_and_exact() {
     assert!(ok);
     assert!(root.join(".git/repodb.sqlite").is_file());
 
-    let (ok, human) = run(root, &["search", "tArGeT"]);
+    let (ok, human) = run(root, &["search", "tArGeT", "--type=cmcommits"]);
     assert!(ok);
     assert!(human.contains("notes.txt"), "{human}");
     assert!(human.contains("notes.txt:1-3"), "{human}");
     assert!(!human.contains("ignored.bin"));
 
-    let (ok, json) = run(root, &["search", "--json", "[literal]"]);
+    let (ok, json) = run(root, &["search", "--json", "[literal]", "--type=cmcommits"]);
     assert!(ok);
     let results: serde_json::Value = serde_json::from_str(&json).unwrap();
     assert_eq!(results[0]["path"], "notes.txt");
     assert_eq!(results[0]["line_start"], 1);
     assert_eq!(results[0]["line_end"], 3);
-    let (ok, options_first) = run(root, &["search", "--json", "TARGET"]);
+    let (ok, options_first) = run(root, &["search", "--json", "TARGET", "--type=cmcommits"]);
     assert!(ok);
-    let (ok, legacy) = run(root, &["search", "TARGET", "--json"]);
+    let (ok, legacy) = run(root, &["search", "TARGET", "--json", "--type=cmcommits"]);
     assert!(ok);
     assert_eq!(
         serde_json::from_str::<serde_json::Value>(&options_first).unwrap(),
         serde_json::from_str::<serde_json::Value>(&legacy).unwrap()
     );
 
-    let (ok, output) = run(root, &["search", "[literal]"]);
+    let (ok, output) = run(root, &["search", "[literal]", "--type=cmcommits"]);
     assert!(ok && output.contains("notes.txt"));
     let (ok, output) = run(root, &["search", ".*"]);
     assert!(
@@ -3616,9 +3631,9 @@ fn init_refresh_search_and_json_are_repository_local_and_exact() {
     git(root, &["commit", "-qm", "second"]);
     let (ok, _) = run(root, &["refresh"]);
     assert!(ok);
-    let (ok, output) = run(root, &["search", "updated phrase"]);
+    let (ok, output) = run(root, &["search", "updated phrase", "--type=cmcommits"]);
     assert!(ok && output.contains("notes.txt"), "{output}");
-    let (ok, output) = run(root, &["search", "[literal]"]);
+    let (ok, output) = run(root, &["search", "[literal]", "--type=cmcommits"]);
     assert!(ok && output.trim().is_empty(), "{output}");
 }
 
@@ -3689,11 +3704,15 @@ fn semantic_search_uses_configured_fake_embeddings_and_precise_refs() {
     );
     assert!(ok, "{output}");
     let results: serde_json::Value = serde_json::from_str(&output).unwrap();
-    assert!(!results.as_array().unwrap().is_empty());
-    assert_eq!(results[0]["path"], "notes.txt");
-    assert_eq!(results[0]["line_start"], 1);
-    assert!(results[0]["commit_id"].as_str().is_some());
-    assert!(results[0]["distance"].as_f64().is_some());
+    let content = results
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|result| result["component"] == "content" && result["path"] == "notes.txt")
+        .unwrap();
+    assert_eq!(content["line_start"], 1);
+    assert!(content["commit_id"].as_str().is_some());
+    assert!(content["distance"].as_f64().is_some());
 }
 
 #[test]
@@ -3874,8 +3893,12 @@ esac
         ],
     );
     assert!(ok, "{output}");
-    let results: serde_json::Value = serde_json::from_str(&output).unwrap();
-    assert_eq!(results.as_array().unwrap().len(), 2);
+    let all_results: Vec<serde_json::Value> = serde_json::from_str(&output).unwrap();
+    let results = all_results
+        .into_iter()
+        .filter(|result| result["component"] == "content")
+        .collect::<Vec<_>>();
+    assert_eq!(results.len(), 2);
     assert_eq!(
         results[0]["text"],
         "fn main() { println!(\"Rust phrase\"); }"
@@ -4007,7 +4030,140 @@ fn search_json(repo: &Path, args: &[&str]) -> Vec<serde_json::Value> {
     command.extend_from_slice(args);
     let (ok, output) = run(repo, &command);
     assert!(ok, "search {args:?}: {output}");
-    serde_json::from_str(&output).unwrap()
+    let mut results: Vec<serde_json::Value> = serde_json::from_str(&output).unwrap();
+    // Older tests in this file assert content-only behavior. New type-set tests
+    // opt in explicitly and inspect every component, including the default `all`.
+    let explicit_types = args
+        .iter()
+        .any(|arg| *arg == "--type" || arg.starts_with("--type="));
+    if !explicit_types && !args.contains(&"--diffs") {
+        results.retain(|result| result["component"] == "content");
+    }
+    results
+}
+
+#[test]
+fn search_type_sets_label_grouped_evidence_and_exact_fallback() {
+    let repo = repository();
+    let root = repo.path();
+    fs::write(
+        root.join("notes.txt"),
+        "rank-type-marker appears in this content\n",
+    )
+    .unwrap();
+    git(root, &["add", "notes.txt"]);
+    git(
+        root,
+        &["commit", "-qm", "rank-type-marker is the change rationale"],
+    );
+    assert!(run(root, &["init"]).0);
+
+    let (ok, default_output) = run(root, &["search", "--json", "rank-type-marker"]);
+    assert!(ok, "{default_output}");
+    let default_results: Vec<serde_json::Value> = serde_json::from_str(&default_output).unwrap();
+    let default_components = default_results
+        .iter()
+        .map(|result| result["component"].as_str().unwrap())
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(
+        default_components,
+        ["content", "diff", "commit_message"].into_iter().collect()
+    );
+
+    let expected = [
+        ("all", &["content", "diff", "commit_message"][..]),
+        ("content", &["content", "diff"][..]),
+        ("cmdiffs", &["diff", "commit_message"][..]),
+        ("diffs", &["diff"][..]),
+        ("cmcommits", &["content", "commit_message"][..]),
+        ("commits", &["commit_message"][..]),
+    ];
+    for (type_set, wanted) in expected {
+        let type_arg = format!("--type={type_set}");
+        let results = search_json(root, &["rank-type-marker", &type_arg]);
+        let components = results
+            .iter()
+            .map(|result| result["component"].as_str().unwrap())
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(
+            components,
+            wanted.iter().copied().collect(),
+            "type={type_set}"
+        );
+        for result in &results {
+            assert_eq!(result["ranking_method"], "deterministic_fallback");
+            assert!(result.get("distance_qualifier").is_none());
+        }
+        if type_set == "all" {
+            let diff = results
+                .iter()
+                .find(|result| result["component"] == "diff")
+                .unwrap();
+            assert_eq!(diff["primary_component"], "diff");
+            assert_eq!(diff["matched_components"].as_array().unwrap().len(), 3);
+            assert_eq!(diff["group_id"], results[0]["group_id"]);
+        }
+    }
+    let (ok, human) = run(root, &["search", "rank-type-marker", "--type=all"]);
+    assert!(ok, "{human}");
+    assert!(human.contains("primary=diff"), "{human}");
+    assert!(human.contains("matching=commit_message"), "{human}");
+    assert!(human.contains("deterministic_fallback"), "{human}");
+}
+
+#[test]
+fn combined_cli_reserves_exact_and_semantic_only_commit_slots_with_qualified_distance() {
+    let repo = repository();
+    let root = repo.path();
+    git(
+        root,
+        &[
+            "commit",
+            "--allow-empty",
+            "-qm",
+            "quota-marker change rationale",
+        ],
+    );
+    assert!(run(root, &["init"]).0);
+
+    let results = search_json(
+        root,
+        &[
+            "quota-marker",
+            "--combined",
+            "--type=commits",
+            "--history=all",
+            "--semantic-limit",
+            "2",
+        ],
+    );
+    assert_eq!(
+        results.len(),
+        2,
+        "exact and semantic-only slots: {results:?}"
+    );
+    assert!(results.iter().any(|result| result["exact_match"] == true));
+    assert!(results.iter().any(|result| result["exact_match"] == false));
+    for result in results {
+        assert_eq!(result["ranking_method"], "semantic_distance");
+        assert_eq!(result["distance_qualifier"], "cosine_embedding_distance");
+        assert!(result["distance"].as_f64().is_some());
+    }
+    let (ok, human) = run(
+        root,
+        &[
+            "search",
+            "quota-marker",
+            "--combined",
+            "--type=commits",
+            "--history=all",
+            "--semantic-limit",
+            "2",
+        ],
+    );
+    assert!(ok, "{human}");
+    assert!(human.contains("matching=commit_message"), "{human}");
+    assert!(human.contains("cosine embedding distance"), "{human}");
 }
 
 #[test]
@@ -4026,7 +4182,10 @@ fn commit_message_search_is_exposed_with_message_provenance_and_unscored_exact_h
     let commit = git_text(root, &["rev-parse", "HEAD"]);
     assert!(run(root, &["init"]).0);
 
-    let exact = search_json(root, &["transaction ledger", "--all-history"]);
+    let exact = search_json(
+        root,
+        &["transaction ledger", "--all-history", "--type=commits"],
+    );
     let message = exact
         .iter()
         .find(|result| result["kind"] == "commit_message" && result["commit_id"] == commit)
@@ -4041,7 +4200,15 @@ fn commit_message_search_is_exposed_with_message_provenance_and_unscored_exact_h
     );
     assert!(message.get("distance").is_none());
     assert!(message.get("confidence").is_none());
-    let (ok, human) = run(root, &["search", "transaction ledger", "--all-history"]);
+    let (ok, human) = run(
+        root,
+        &[
+            "search",
+            "transaction ledger",
+            "--all-history",
+            "--type=commits",
+        ],
+    );
     assert!(ok, "{human}");
     assert!(human.contains("[commit message]"), "{human}");
     assert!(human.contains(&commit), "{human}");
@@ -4107,7 +4274,12 @@ fn semantic_commit_message_search_returns_distance_without_confidence_claim() {
 
     let results = search_json(
         root,
-        &["handle request outages", "--semantic", "--all-history"],
+        &[
+            "handle request outages",
+            "--semantic",
+            "--all-history",
+            "--type=commits",
+        ],
     );
     let message = results
         .iter()
@@ -4292,7 +4464,7 @@ fn exact_commit_inclusion_and_exclusion_select_before_all_search_modes() {
     );
     assert!(run(root, &["reembed", "--command", fake.to_str().unwrap()]).0);
     for mode in ["--exact", "--semantic", "--combined"] {
-        let mut args = vec!["TARGET", "--semantic-limit", "1"];
+        let mut args = vec!["TARGET", "--semantic-limit", "1", "--type=cmcommits"];
         if mode != "--exact" {
             args.push(mode);
         }
@@ -4632,7 +4804,7 @@ fn deleted_refs_are_pruned_only_on_refresh_while_shared_reachable_blobs_survive(
     assert!(run(root, &["init"]).0);
     let before = fs::read(root.join(".git/repodb.sqlite")).unwrap();
     git(root, &["branch", "-D", "side"]);
-    let old = search_json(root, &["side-only", "--all-history"]);
+    let old = search_json(root, &["side-only", "--all-history", "--type=all"]);
     assert!(
         old.iter()
             .any(|result| result["path"] == "side.txt" && result["commit_id"] == side)
@@ -5211,7 +5383,7 @@ fn empty_repository_can_initialize_then_index_its_first_commit() {
     git(root, &["add", "first.txt"]);
     git(root, &["commit", "-qm", "first"]);
     assert!(run(root, &["refresh"]).0);
-    let exact = search_json(root, &["first"]);
+    let exact = search_json(root, &["first", "--type=all"]);
     assert!(exact.iter().any(|result| result["path"] == "first.txt"));
     assert!(
         exact
@@ -6169,7 +6341,7 @@ fn refresh_does_not_publish_vectors_over_a_concurrently_changed_model() {
         "stale refresh must not overwrite a newer model"
     );
     let results = search_json(root, &["question", "--semantic"]);
-    assert_eq!(results.len(), 4);
+    assert_eq!(results.len(), 3);
     assert!(results.iter().all(|r| r["distance"] == 0.0));
 }
 
@@ -6621,7 +6793,7 @@ esac
         assert_eq!(file_result["commit_id"], commit);
         assert_eq!(file_result["blob_id"], blob);
         if mode != "exact" {
-            assert_eq!(file_result["distance"], 1.0);
+            assert_eq!(file_result["distance"], 0.0);
         }
     }
 }

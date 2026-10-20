@@ -137,8 +137,12 @@ fn exact_search_finds_unique_content_in_an_indexed_test_file() {
 
     let marker = ["zlkfh", "ldfad;l"].concat();
     let results = search_results(root, &[&marker]);
-    assert_eq!(results.len(), 1);
-    assert_eq!(results[0]["path"], relative_path.to_string_lossy().as_ref());
+    let content = results
+        .iter()
+        .filter(|result| result["component"] == "content")
+        .collect::<Vec<_>>();
+    assert_eq!(content.len(), 1);
+    assert_eq!(content[0]["path"], relative_path.to_string_lossy().as_ref());
 }
 
 #[test]
@@ -150,9 +154,8 @@ fn semantic_search_finds_test_file_content_by_meaning() {
     // The test embedder maps query, fixture, and commit message to the same
     // vector. Ensure the indexed test-file content remains among semantic hits.
     let results = search_results(root, &["philosophy", "--semantic"]);
-    assert!(
-        results
-            .iter()
-            .any(|result| { result["path"] == relative_path.to_string_lossy().as_ref() })
-    );
+    assert!(results.iter().any(|result| {
+        result["component"] == "content"
+            && result["path"] == relative_path.to_string_lossy().as_ref()
+    }));
 }

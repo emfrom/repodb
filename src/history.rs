@@ -3551,6 +3551,32 @@ pub(crate) fn search_diffs(
     search_diffs_filtered(c, query, mode, limit, child_commit_ids, |_| true)
 }
 
+pub(crate) fn score_diff_results(
+    c: &Connection,
+    query: &str,
+    results: &mut [DiffSearchResult],
+) -> Result<()> {
+    if results.iter().all(|result| result.distance.is_some()) {
+        return Ok(());
+    }
+    let vector = query_vector(c, query)?;
+    let mut statement = c.prepare(
+        "SELECT vec_distance_cosine(e.vector,?1) FROM unit_embeddings e WHERE e.unit_id=?2",
+    )?;
+    for result in results
+        .iter_mut()
+        .filter(|result| result.distance.is_none())
+    {
+        result.distance = statement
+            .query_row(
+                params![as_bytes(&vector), result.reference.unit_id],
+                |row| row.get(0),
+            )
+            .optional()?;
+    }
+    Ok(())
+}
+
 pub(crate) fn search_diffs_filtered(
     c: &Connection,
     query: &str,
@@ -3744,7 +3770,7 @@ pub fn search_commit_messages(
     limit: usize,
     commits: &[String],
 ) -> Result<Vec<SearchResult>> {
-    if limit == 0 {
+    if limit == 0 && mode != "combined" {
         return Ok(Vec::new());
     }
     let query_embedding = if mode == "exact" {
@@ -3767,6 +3793,7 @@ pub fn search_commit_messages(
     ])?;
     let lowercase_query = query.to_lowercase();
     let mut results = Vec::new();
+    let mut semantic_count = 0;
     while let Some(row) = rows.next()? {
         let commit_id: String = row.get(0)?;
         let start: usize = row.get(1)?;
@@ -3775,7 +3802,11 @@ pub fn search_commit_messages(
         let line_end: usize = row.get(4)?;
         let distance: Option<f64> = row.get(5)?;
         let text = hydrate_commit_message(&commit_id, start, end)?;
-        if mode == "exact" && !text.to_lowercase().contains(&lowercase_query) {
+        let exact_match = text.to_lowercase().contains(&lowercase_query);
+        if mode == "exact" && !exact_match {
+            continue;
+        }
+        if mode == "combined" && semantic_count >= limit && !exact_match {
             continue;
         }
         results.push(SearchResult {
@@ -3791,8 +3822,12 @@ pub fn search_commit_messages(
             first_retrieved_at: None,
             last_retrieved_at: None,
         });
-        if results.len() == limit {
-            break;
+        if mode != "combined" {
+            if results.len() == limit {
+                break;
+            }
+        } else if semantic_count < limit {
+            semantic_count += 1;
         }
     }
     Ok(results)

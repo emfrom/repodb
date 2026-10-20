@@ -1,5 +1,9 @@
+use repodb::ranking::{
+    EvidenceCandidate, EvidenceComponent, RankedEvidence, RankingMethod, SearchMode, TypeSet,
+    rank_evidence,
+};
 use rusqlite::{Connection, ffi::sqlite3_auto_extension, params};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::{
     collections::{HashMap, HashSet},
     env,
@@ -41,7 +45,7 @@ fn readable_path(path: &str) -> String {
         .map_or_else(|| path.to_owned(), |hex| format!("bytes:{hex} (non-UTF-8)"))
 }
 
-#[derive(Serialize)]
+#[derive(Clone, Deserialize, Serialize)]
 struct SearchResult {
     path: String,
     line_start: usize,
@@ -59,6 +63,127 @@ struct SearchResult {
     repo_id: Option<String>,
     first_retrieved_at: Option<String>,
     last_retrieved_at: Option<String>,
+}
+
+#[derive(Clone)]
+enum EvidenceDisplay {
+    Search(SearchResult),
+    Diff(history::DiffSearchResult),
+}
+
+fn component_name(component: EvidenceComponent) -> &'static str {
+    match component {
+        EvidenceComponent::Content => "content",
+        EvidenceComponent::Diff => "diff",
+        EvidenceComponent::CommitMessage => "commit_message",
+    }
+}
+
+fn evidence_path_bytes(path: &str) -> Vec<u8> {
+    let Some(hex) = decoded_git_path_hex(path) else {
+        return path.as_bytes().to_vec();
+    };
+    let decoded = hex
+        .as_bytes()
+        .chunks_exact(2)
+        .map(|pair| {
+            std::str::from_utf8(pair)
+                .ok()
+                .and_then(|byte| u8::from_str_radix(byte, 16).ok())
+        })
+        .collect::<Option<Vec<_>>>();
+    decoded.unwrap_or_else(|| path.as_bytes().to_vec())
+}
+
+fn search_evidence(
+    result: &SearchResult,
+    query: &str,
+    mode: &str,
+    order: usize,
+) -> Result<EvidenceCandidate> {
+    let component = if result.path == "[commit message]" {
+        EvidenceComponent::CommitMessage
+    } else {
+        EvidenceComponent::Content
+    };
+    let source_id = if let Some(repo_id) = &result.repo_id {
+        format!(
+            "git-import:{repo_id}:{}",
+            result.commit_id.as_deref().unwrap_or("")
+        )
+    } else if result.commit_id.is_none() && result.blob_id.is_some() {
+        format!(
+            "document-import:{}:{}:{}:{}",
+            result.path,
+            result.blob_id.as_deref().unwrap_or(""),
+            result.first_retrieved_at.as_deref().unwrap_or(""),
+            result.last_retrieved_at.as_deref().unwrap_or(""),
+        )
+    } else {
+        "local".to_owned()
+    };
+    let reference_id = format!(
+        "{order:020}:{}",
+        serde_json::to_string(&(
+            component,
+            &source_id,
+            &result.path,
+            &result.commit_id,
+            &result.blob_id,
+            result.page,
+            result.line_start,
+            result.line_end,
+            &result.text,
+        ))?
+    );
+    let exact = mode == "exact" || result.text.to_lowercase().contains(&query.to_lowercase());
+    Ok(EvidenceCandidate {
+        component,
+        source_id,
+        reference_id,
+        commit_id: result.commit_id.clone(),
+        change_commit_id: (component == EvidenceComponent::CommitMessage)
+            .then(|| result.commit_id.clone())
+            .flatten(),
+        parent_commit_id: None,
+        path: (component != EvidenceComponent::CommitMessage)
+            .then(|| evidence_path_bytes(&result.path)),
+        side: None,
+        line_start: Some(result.line_start),
+        line_end: Some(result.line_end),
+        exact,
+        distance: result.distance,
+        payload: serde_json::to_value(result)?,
+    })
+}
+
+fn diff_reference_json(reference: &history::DiffReference) -> serde_json::Value {
+    let (old_path, old_path_bytes_hex) = diff_path_fields(reference.old_path.as_deref());
+    let (new_path, new_path_bytes_hex) = diff_path_fields(reference.new_path.as_deref());
+    let side = match reference.side {
+        history::DiffSide::Added => "added",
+        history::DiffSide::Removed => "removed",
+    };
+    let mut value = serde_json::json!({
+        "parent_commit_id": reference.parent_commit_id,
+        "child_commit_id": reference.child_commit_id,
+        "hunk_id": reference.hunk_id,
+        "side": side,
+        "old_path": old_path,
+        "new_path": new_path,
+        "old_line_start": reference.old_line_start,
+        "old_line_end": reference.old_line_end,
+        "new_line_start": reference.new_line_start,
+        "new_line_end": reference.new_line_end,
+        "blob_id": reference.blob_id,
+    });
+    if let Some(hex) = old_path_bytes_hex {
+        value["old_path_bytes_hex"] = serde_json::Value::String(hex);
+    }
+    if let Some(hex) = new_path_bytes_hex {
+        value["new_path_bytes_hex"] = serde_json::Value::String(hex);
+    }
+    value
 }
 
 #[derive(Clone, Copy, Default)]
@@ -306,6 +431,262 @@ fn diff_search_json(
         value["new_path_bytes_hex"] = serde_json::Value::String(hex);
     }
     Ok(value)
+}
+
+fn annotated_ranked_payload(
+    candidate: &EvidenceCandidate,
+    group: &RankedEvidence,
+    group_id: usize,
+    history_path_links: &HashMap<(String, String), Vec<history::HeuristicPathLink>>,
+) -> serde_json::Value {
+    let mut value = candidate.payload.clone();
+    if !value.is_object() {
+        value = serde_json::json!({"reference": value});
+    }
+    value["component"] = serde_json::Value::String(component_name(candidate.component).to_owned());
+    value["primary_component"] =
+        serde_json::Value::String(component_name(group.primary).to_owned());
+    value["matching_component"] =
+        serde_json::Value::String(component_name(candidate.component).to_owned());
+    let mut matched_components = group
+        .components
+        .iter()
+        .map(|item| component_name(item.component))
+        .collect::<Vec<_>>();
+    matched_components.sort_unstable();
+    matched_components.dedup();
+    value["matched_components"] = serde_json::Value::Array(
+        matched_components
+            .iter()
+            .map(|component| serde_json::Value::String((*component).to_owned()))
+            .collect(),
+    );
+    value["ranking_method"] = serde_json::Value::String(
+        match group.ranking_method {
+            RankingMethod::SemanticDistance => "semantic_distance",
+            RankingMethod::Deterministic => "deterministic_fallback",
+        }
+        .to_owned(),
+    );
+    value["exact_match"] = serde_json::Value::Bool(group.exact_match);
+    value["group_id"] = serde_json::Value::Number(group_id.into());
+    if let Some(score_source) = group.score_source {
+        value["score_source"] = serde_json::Value::String(component_name(score_source).to_owned());
+    }
+    if let Some(distance) = group.distance {
+        value["distance"] = serde_json::json!(distance);
+        value["distance_qualifier"] =
+            serde_json::Value::String("cosine_embedding_distance".to_owned());
+    } else {
+        value.as_object_mut().unwrap().remove("distance");
+        value.as_object_mut().unwrap().remove("distance_qualifier");
+    }
+    if candidate.component == EvidenceComponent::CommitMessage {
+        value["kind"] = serde_json::Value::String("commit_message".to_owned());
+        if let Some(commit) = &candidate.commit_id {
+            value["source_reference"] =
+                serde_json::Value::String(format!("git show --no-patch --format=%B {commit}"));
+        }
+        value["related_diffs"] = serde_json::Value::Array(group.related_diffs.clone());
+    } else if candidate.component == EvidenceComponent::Content {
+        value["kind"] = serde_json::Value::String("content".to_owned());
+        if let Some(commit_id) = candidate.commit_id.as_ref() {
+            if let Some(path) = candidate.payload["path"].as_str() {
+                if let Some(links) = history_path_links.get(&(commit_id.clone(), path.to_owned())) {
+                    value["history_path_links"] = serde_json::Value::Array(
+                        links.iter().map(history_path_link_json).collect(),
+                    );
+                }
+            }
+        }
+        if let Some(path) = candidate.payload["path"].as_str() {
+            if let Some(hex) = decoded_git_path_hex(path) {
+                value["path"] = serde_json::Value::String(format!("bytes:{hex}"));
+                value["path_bytes_hex"] = serde_json::Value::String(hex.to_owned());
+            }
+        }
+    }
+    value
+}
+
+fn ranked_human_prefix(
+    group: &RankedEvidence,
+    group_id: usize,
+    component: EvidenceComponent,
+) -> String {
+    let matched = group
+        .components
+        .iter()
+        .map(|item| component_name(item.component))
+        .collect::<std::collections::BTreeSet<_>>()
+        .into_iter()
+        .collect::<Vec<_>>()
+        .join(",");
+    let ranking = match group.ranking_method {
+        RankingMethod::SemanticDistance => format!(
+            "semantic_distance score_component={} distance={} (cosine embedding distance)",
+            component_name(group.score_source.unwrap()),
+            group.distance.unwrap(),
+        ),
+        RankingMethod::Deterministic => "deterministic_fallback".to_owned(),
+    };
+    format!(
+        "[group {group_id} primary={} matching={} matched={matched} ranking={ranking}] ",
+        component_name(group.primary),
+        component_name(component),
+    )
+}
+
+fn print_ranked_human(
+    ranked: &[RankedEvidence],
+    displays: &HashMap<String, EvidenceDisplay>,
+    c: &Connection,
+    history_path_links: &HashMap<(String, String), Vec<history::HeuristicPathLink>>,
+    cache: &mut DiffMetadataCache,
+) -> Result<()> {
+    for (group_id, group) in ranked.iter().enumerate() {
+        for candidate in &group.components {
+            let prefix = ranked_human_prefix(group, group_id, candidate.component);
+            match displays.get(&candidate.reference_id) {
+                Some(EvidenceDisplay::Search(x)) => {
+                    let mut reference = String::new();
+                    if let Some(commit) = x.commit_id.as_deref() {
+                        reference.push_str(&format!(" [commit {commit}]"));
+                        if let Some(links) =
+                            history_path_links.get(&(commit.to_owned(), x.path.clone()))
+                        {
+                            for link in links {
+                                let similarity = link.similarity_percent.map_or_else(
+                                    || "similarity estimate unavailable".to_owned(),
+                                    |score| format!("similarity estimate {score}%"),
+                                );
+                                reference.push_str(&format!(
+                                    " [heuristic rename link {}:{} -> {}:{}; {similarity}]",
+                                    link.parent_commit_id,
+                                    diff_path_display(&link.old_path).escape_debug(),
+                                    link.child_commit_id,
+                                    diff_path_display(&link.new_path).escape_debug(),
+                                ));
+                            }
+                        }
+                    }
+                    if let Some(blob) = x.blob_id.as_deref() {
+                        reference.push_str(&format!(" [blob {blob}]"));
+                    }
+                    if let Some(repo_id) = x.repo_id.as_deref() {
+                        reference.push_str(&format!(" [repo {repo_id}]"));
+                    }
+                    if let Some(first) = x.first_retrieved_at.as_deref() {
+                        reference.push_str(&format!(" [first retrieved {first}]"));
+                    }
+                    if let Some(last) = x.last_retrieved_at.as_deref() {
+                        reference.push_str(&format!(" [last retrieved {last}]"));
+                    }
+                    if candidate.component == EvidenceComponent::CommitMessage {
+                        if let Some(commit) = x.commit_id.as_deref() {
+                            reference.push_str(&format!(
+                                " [source: git show --no-patch --format=%B {commit}]"
+                            ));
+                        }
+                        if !group.related_diffs.is_empty() {
+                            reference.push_str(&format!(
+                                " [related parent diff references: {}]",
+                                group.related_diffs.len()
+                            ));
+                        }
+                    }
+                    let path = readable_path(&x.path);
+                    let distance = group.distance.map_or_else(String::new, |distance| {
+                        format!(" [cosine embedding distance {distance}]")
+                    });
+                    if let Some(page) = x.page {
+                        println!(
+                            "{prefix}{path}:page {page}{reference}{distance}: {}",
+                            x.text
+                        );
+                    } else {
+                        println!(
+                            "{prefix}{path}:{}-{}{reference}{distance}: {}",
+                            x.line_start, x.line_end, x.text
+                        );
+                    }
+                }
+                Some(EvidenceDisplay::Diff(hit)) => {
+                    let reference = &hit.reference;
+                    let (side, matching) = match reference.side {
+                        history::DiffSide::Added => (
+                            "added",
+                            diff_endpoint(
+                                reference.new_path.as_deref(),
+                                Some(reference.line_start),
+                                Some(reference.line_end),
+                            ),
+                        ),
+                        history::DiffSide::Removed => (
+                            "removed",
+                            diff_endpoint(
+                                reference.old_path.as_deref(),
+                                Some(reference.line_start),
+                                Some(reference.line_end),
+                            ),
+                        ),
+                    };
+                    let old = diff_endpoint(
+                        reference.old_path.as_deref(),
+                        reference.old_line_start,
+                        reference.old_line_end,
+                    );
+                    let new = diff_endpoint(
+                        reference.new_path.as_deref(),
+                        reference.new_line_start,
+                        reference.new_line_end,
+                    );
+                    let file_change = diff_file_change_json(c, reference, cache)?;
+                    let change_kind = file_change["kind"].as_str().unwrap_or("unavailable");
+                    let heuristic = file_change["heuristic"].as_bool().unwrap_or(false);
+                    let similarity = file_change["similarity_percent"]
+                        .as_u64()
+                        .map(|score| format!("{score}%"))
+                        .unwrap_or_else(|| "n/a".to_owned());
+                    let settings = &file_change["detection_settings"];
+                    let detection = if file_change["refresh_required"] == true {
+                        "refresh required".to_owned()
+                    } else {
+                        format!(
+                            "rename={}%,copy={}%,copies-harder={},algorithm={},git={}",
+                            settings["rename_threshold_percent"],
+                            settings["copy_threshold_percent"],
+                            settings["find_copies_harder"],
+                            settings["diff_algorithm"],
+                            settings["git_version"],
+                        )
+                    };
+                    let parent_command = reference
+                        .old_path
+                        .as_deref()
+                        .map(|path| git_show_command(&reference.parent_commit_id, path))
+                        .unwrap_or_else(|| "<absent>".to_owned());
+                    let child_command = reference
+                        .new_path
+                        .as_deref()
+                        .map(|path| git_show_command(&reference.child_commit_id, path))
+                        .unwrap_or_else(|| "<absent>".to_owned());
+                    let distance = group.distance.map_or_else(String::new, |distance| {
+                        format!(" [cosine embedding distance {distance}]")
+                    });
+                    println!(
+                        "{prefix}diff {side} match={matching} [parent {} child {} hunk {}] old={old} new={new} file_change={change_kind} heuristic={heuristic} similarity={similarity} detection={detection} parent-file-command={parent_command} child-file-command={child_command}{distance}: {}",
+                        reference.parent_commit_id,
+                        reference.child_commit_id,
+                        reference.hunk_id,
+                        hit.text,
+                    );
+                }
+                None => return Err("ranked evidence lost its display reference".into()),
+            }
+        }
+    }
+    Ok(())
 }
 
 fn diff_path_display(path: &[u8]) -> String {
@@ -1069,7 +1450,9 @@ fn execute() -> Result<()> {
             let mut history_selector = None;
             let mut result_scope = SearchScope::default();
             let mut result_scope_set = false;
-            let mut include_diffs = false;
+            let mut selected_types = TypeSet::All;
+            let mut type_set_selected = false;
+            let mut diff_flag = false;
             let (mut json, mut mode, mut limit) = (false, "exact", 20usize);
             while let Some(x) = a.next() {
                 match x.as_str() {
@@ -1120,7 +1503,28 @@ fn execute() -> Result<()> {
                     }
                     "--semantic" => mode = "semantic",
                     "--combined" => mode = "combined",
-                    "--diffs" => include_diffs = true,
+                    "--diffs" => diff_flag = true,
+                    "--type" => {
+                        if type_set_selected {
+                            return Err("--type may only be specified once".into());
+                        }
+                        selected_types = TypeSet::parse(
+                            &a.next().ok_or("--type requires a value")?,
+                        )
+                        .map_err(|error| {
+                            std::io::Error::new(std::io::ErrorKind::InvalidInput, error)
+                        })?;
+                        type_set_selected = true;
+                    }
+                    _ if x.starts_with("--type=") => {
+                        if type_set_selected {
+                            return Err("--type may only be specified once".into());
+                        }
+                        selected_types = TypeSet::parse(&x[7..]).map_err(|error| {
+                            std::io::Error::new(std::io::ErrorKind::InvalidInput, error)
+                        })?;
+                        type_set_selected = true;
+                    }
                     "--semantic-limit" => limit = a.next().ok_or("missing limit")?.parse()?,
                     _ if x.starts_with('-') => {
                         return Err(format!("unexpected argument {x}").into());
@@ -1130,6 +1534,12 @@ fn execute() -> Result<()> {
                 }
             }
             let q = query.ok_or("search requires query")?;
+            if mode == "semantic" && limit == 0 {
+                if json {
+                    println!("[]");
+                }
+                return Ok(());
+            }
             let mut connection = open_db(&db_path)?;
             // Scope, model configuration and results belong to one read snapshot.
             let c = connection.transaction()?;
@@ -1198,7 +1608,12 @@ fn execute() -> Result<()> {
             let include_result = |candidate: &SearchResult| {
                 result_scope.matches(candidate) && matches_history_path(candidate)
             };
-            let mut result = if history::is_current(&c)? {
+            let wants_content = selected_types
+                .components()
+                .contains(&EvidenceComponent::Content);
+            let mut result = if !wants_content {
+                Vec::new()
+            } else if history::is_current(&c)? {
                 history::search(&c, &q, mode, limit, &commits, include_result)?
             } else if mode == "exact" {
                 exact(&c, &q, &commits)?
@@ -1230,7 +1645,7 @@ fn execute() -> Result<()> {
             } else {
                 semantic(&c, &q, limit, &commits, include_result)?
             };
-            if mode == "exact" || mode == "semantic" || mode == "combined" {
+            if wants_content {
                 result.extend(imports::search(&c, &q, mode, limit, |result| {
                     result_scope.matches(result)
                 })?);
@@ -1241,7 +1656,12 @@ fn execute() -> Result<()> {
                 [],
                 |row| row.get(0),
             )?;
-            if history::is_current(&c)? && has_commit_message_index && history_path_filter.is_none()
+            if selected_types
+                .components()
+                .contains(&EvidenceComponent::CommitMessage)
+                && history::is_current(&c)?
+                && has_commit_message_index
+                && history_path_filter.is_none()
             {
                 result.extend(history::search_commit_messages(
                     &c, &q, mode, limit, &commits,
@@ -1270,236 +1690,199 @@ fn execute() -> Result<()> {
                 }
             }
             let mut diff_results = Vec::new();
-            if include_diffs {
-                if !history::is_current(&c)? {
+            let mut include_diffs = selected_types
+                .components()
+                .contains(&EvidenceComponent::Diff);
+            let include_diff = |reference: &history::DiffReference| {
+                let (path, commit_id) = match reference.side {
+                    history::DiffSide::Added => {
+                        (reference.new_path.as_deref(), &reference.child_commit_id)
+                    }
+                    history::DiffSide::Removed => {
+                        (reference.old_path.as_deref(), &reference.parent_commit_id)
+                    }
+                };
+                path.is_some_and(|path| {
+                    result_scope.matches_diff(path)
+                        && history_path_filter.as_ref().map_or(true, |paths| {
+                            paths.contains(&(commit_id.clone(), internal_git_path(path)))
+                        })
+                })
+            };
+            if include_diffs && !history::is_current(&c)? {
+                if type_set_selected || diff_flag {
                     return Err(
                         "diff search requires a current history index; run `repodb refresh`".into(),
                     );
                 }
+                include_diffs = false;
+            }
+            if include_diffs {
                 let has_diff_index: bool = c.query_row(
                     "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='diff_references')",
                     [],
                     |row| row.get(0),
                 )?;
                 if !has_diff_index {
-                    return Err("diff search is not indexed; run `repodb refresh`".into());
-                }
-                let include_diff = |reference: &history::DiffReference| {
-                    let (path, commit_id) = match reference.side {
-                        history::DiffSide::Added => {
-                            (reference.new_path.as_deref(), &reference.child_commit_id)
-                        }
-                        history::DiffSide::Removed => {
-                            (reference.old_path.as_deref(), &reference.parent_commit_id)
-                        }
-                    };
-                    path.is_some_and(|path| {
-                        result_scope.matches_diff(path)
-                            && history_path_filter.as_ref().map_or(true, |paths| {
-                                paths.contains(&(commit_id.clone(), internal_git_path(path)))
-                            })
-                    })
-                };
-                let search_diff_results =
-                    |search_mode, search_limit| -> Result<Vec<history::DiffSearchResult>> {
-                        if matches!(result_scope, SearchScope::All) && history_path_filter.is_none()
-                        {
-                            history::search_diffs(&c, &q, search_mode, search_limit, &commits)
-                        } else {
-                            history::search_diffs_filtered(
-                                &c,
-                                &q,
-                                search_mode,
-                                search_limit,
-                                &commits,
-                                &include_diff,
-                            )
-                        }
-                    };
-                diff_results = match mode {
-                    "exact" => search_diff_results(history::DiffSearchMode::Exact, usize::MAX)?,
-                    "semantic" => search_diff_results(history::DiffSearchMode::Semantic, limit)?,
-                    "combined" => {
-                        let semantic =
-                            search_diff_results(history::DiffSearchMode::Semantic, limit)?;
-                        let exact =
-                            search_diff_results(history::DiffSearchMode::Exact, usize::MAX)?;
-                        let mut seen = std::collections::HashSet::new();
-                        let mut hits = Vec::new();
-                        for hit in semantic.into_iter().chain(exact) {
-                            let reference = &hit.reference;
-                            let identity = (
-                                reference.parent_commit_id.clone(),
-                                reference.child_commit_id.clone(),
-                                reference.hunk_id,
-                                reference.unit_id,
-                            );
-                            if seen.insert(identity) {
-                                hits.push(hit);
-                            }
-                        }
-                        hits
+                    if type_set_selected || diff_flag {
+                        return Err("diff search is not indexed; run `repodb refresh`".into());
                     }
-                    _ => Vec::new(),
-                };
+                    include_diffs = false;
+                }
+                if include_diffs {
+                    let search_diff_results =
+                        |search_mode, search_limit| -> Result<Vec<history::DiffSearchResult>> {
+                            if matches!(result_scope, SearchScope::All)
+                                && history_path_filter.is_none()
+                            {
+                                history::search_diffs(&c, &q, search_mode, search_limit, &commits)
+                            } else {
+                                history::search_diffs_filtered(
+                                    &c,
+                                    &q,
+                                    search_mode,
+                                    search_limit,
+                                    &commits,
+                                    &include_diff,
+                                )
+                            }
+                        };
+                    diff_results = match mode {
+                        "exact" => search_diff_results(history::DiffSearchMode::Exact, usize::MAX)?,
+                        "semantic" => {
+                            search_diff_results(history::DiffSearchMode::Semantic, limit)?
+                        }
+                        "combined" => {
+                            let semantic =
+                                search_diff_results(history::DiffSearchMode::Semantic, limit)?;
+                            let exact =
+                                search_diff_results(history::DiffSearchMode::Exact, usize::MAX)?;
+                            let mut seen = std::collections::HashSet::new();
+                            let mut hits = Vec::new();
+                            for hit in semantic.into_iter().chain(exact) {
+                                let reference = &hit.reference;
+                                let identity = (
+                                    reference.parent_commit_id.clone(),
+                                    reference.child_commit_id.clone(),
+                                    reference.hunk_id,
+                                    reference.unit_id,
+                                );
+                                if seen.insert(identity) {
+                                    hits.push(hit);
+                                }
+                            }
+                            history::score_diff_results(&c, &q, &mut hits)?;
+                            hits
+                        }
+                        _ => Vec::new(),
+                    };
+                }
             }
             let mut diff_metadata_cache = DiffMetadataCache::default();
-            if json {
-                let mut values = result
-                    .iter()
-                    .map(serde_json::to_value)
-                    .collect::<std::result::Result<Vec<_>, _>>()?;
-                for hit in &diff_results {
-                    values.push(diff_search_json(&c, hit, &mut diff_metadata_cache)?);
-                }
-                for (value, result) in values.iter_mut().zip(&result) {
-                    if let Some(commit_id) = result.commit_id.as_ref() {
-                        if let Some(links) =
-                            history_path_links.get(&(commit_id.clone(), result.path.clone()))
-                        {
-                            value["history_path_links"] = serde_json::Value::Array(
-                                links.iter().map(history_path_link_json).collect(),
-                            );
-                        }
+            let mut displays = HashMap::<String, EvidenceDisplay>::new();
+            let mut candidates = Vec::new();
+            for (order, item) in result.iter().enumerate() {
+                let candidate = search_evidence(item, &q, mode, order)?;
+                displays.insert(
+                    candidate.reference_id.clone(),
+                    EvidenceDisplay::Search(item.clone()),
+                );
+                candidates.push(candidate);
+            }
+            for hit in &diff_results {
+                let reference = &hit.reference;
+                let side = match reference.side {
+                    history::DiffSide::Added => "added",
+                    history::DiffSide::Removed => "removed",
+                };
+                let path = match reference.side {
+                    history::DiffSide::Added => reference.new_path.as_deref(),
+                    history::DiffSide::Removed => reference.old_path.as_deref(),
+                };
+                let commit_id = match reference.side {
+                    history::DiffSide::Added => &reference.child_commit_id,
+                    history::DiffSide::Removed => &reference.parent_commit_id,
+                };
+                let reference_id = serde_json::to_string(&(
+                    &reference.parent_commit_id,
+                    &reference.child_commit_id,
+                    reference.hunk_id,
+                    reference.unit_id,
+                    side,
+                ))?;
+                let payload = diff_search_json(&c, hit, &mut diff_metadata_cache)?;
+                candidates.push(EvidenceCandidate {
+                    component: EvidenceComponent::Diff,
+                    source_id: "local".to_owned(),
+                    reference_id: reference_id.clone(),
+                    commit_id: Some(commit_id.clone()),
+                    change_commit_id: Some(reference.child_commit_id.clone()),
+                    parent_commit_id: Some(reference.parent_commit_id.clone()),
+                    path: path.map(<[u8]>::to_vec),
+                    side: Some(side.to_owned()),
+                    line_start: Some(reference.line_start),
+                    line_end: Some(reference.line_end),
+                    exact: mode == "exact" || hit.text.to_lowercase().contains(&q.to_lowercase()),
+                    distance: hit.distance,
+                    payload,
+                });
+                displays.insert(reference_id, EvidenceDisplay::Diff(hit.clone()));
+            }
+            let mut related_diffs = HashMap::new();
+            if selected_types == TypeSet::All && include_diffs {
+                let mut seen_messages = HashSet::new();
+                for item in result.iter().filter(|item| item.path == "[commit message]") {
+                    let Some(commit_id) = item.commit_id.as_ref() else {
+                        continue;
+                    };
+                    if !seen_messages.insert(commit_id.clone()) {
+                        continue;
                     }
-                    if result.path == "[commit message]" {
-                        value["kind"] = serde_json::Value::String("commit_message".to_owned());
-                        if let Some(commit) = &result.commit_id {
-                            value["source_reference"] = serde_json::Value::String(format!(
-                                "git show --no-patch --format=%B {commit}"
-                            ));
-                        }
-                    } else if let Some(hex) = decoded_git_path_hex(&result.path) {
-                        value["path"] = serde_json::Value::String(format!("bytes:{hex}"));
-                        value["path_bytes_hex"] = serde_json::Value::String(hex.to_owned());
-                    }
+                    let references = history::diff_references(&c, None, Some(commit_id))?
+                        .into_iter()
+                        .filter(&include_diff)
+                        .map(|reference| diff_reference_json(&reference))
+                        .collect();
+                    related_diffs.insert(("local".to_owned(), commit_id.clone()), references);
                 }
-                println!("{}", serde_json::to_string_pretty(&values)?)
+            }
+            let search_mode = match mode {
+                "exact" => SearchMode::Exact,
+                "semantic" => SearchMode::Semantic,
+                "combined" => SearchMode::Combined,
+                _ => unreachable!(),
+            };
+            // `--semantic-limit` bounds semantic candidate retrieval; exact-mode
+            // references remain uncapped, and combined mode retains all exact hits.
+            let ranking_limit = if mode == "semantic" {
+                limit
             } else {
-                for x in result {
-                    let mut reference = String::new();
-                    if let Some(commit) = x.commit_id.as_deref() {
-                        reference.push_str(&format!(" [commit {commit}]"));
-                        if let Some(links) =
-                            history_path_links.get(&(commit.to_owned(), x.path.clone()))
-                        {
-                            for link in links {
-                                let similarity = link.similarity_percent.map_or_else(
-                                    || "similarity estimate unavailable".to_owned(),
-                                    |score| format!("similarity estimate {score}%"),
-                                );
-                                reference.push_str(&format!(
-                                    " [heuristic rename link {}:{} -> {}:{}; {similarity}]",
-                                    link.parent_commit_id,
-                                    diff_path_display(&link.old_path).escape_debug(),
-                                    link.child_commit_id,
-                                    diff_path_display(&link.new_path).escape_debug(),
-                                ));
-                            }
-                        }
-                    }
-                    if let Some(blob) = x.blob_id {
-                        reference.push_str(&format!(" [blob {blob}]"));
-                    }
-                    if let Some(repo_id) = x.repo_id {
-                        reference.push_str(&format!(" [repo {repo_id}]"));
-                    }
-                    if let Some(first) = x.first_retrieved_at {
-                        reference.push_str(&format!(" [first retrieved {first}]"));
-                    }
-                    if let Some(last) = x.last_retrieved_at {
-                        reference.push_str(&format!(" [last retrieved {last}]"));
-                    }
-                    let path = readable_path(&x.path);
-                    if x.path == "[commit message]" {
-                        if let Some(commit) = x.commit_id.as_deref() {
-                            reference.push_str(&format!(
-                                " [source: git show --no-patch --format=%B {commit}]"
-                            ));
-                        }
-                    }
-                    if let Some(page) = x.page {
-                        println!("{}:page {}{}: {}", path, page, reference, x.text);
-                    } else {
-                        println!(
-                            "{}:{}-{}{}: {}",
-                            path, x.line_start, x.line_end, reference, x.text
-                        );
-                    }
+                candidates.len().max(1)
+            };
+            let ranked = rank_evidence(
+                candidates,
+                search_mode,
+                selected_types,
+                ranking_limit,
+                &related_diffs,
+            )
+            .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidInput, error))?;
+            if json {
+                let mut values = Vec::new();
+                for (group_id, group) in ranked.iter().enumerate() {
+                    values.extend(group.components.iter().map(|candidate| {
+                        annotated_ranked_payload(candidate, group, group_id, &history_path_links)
+                    }));
                 }
-                for hit in diff_results {
-                    let reference = &hit.reference;
-                    let (side, matching) = match reference.side {
-                        history::DiffSide::Added => (
-                            "added",
-                            diff_endpoint(
-                                reference.new_path.as_deref(),
-                                Some(reference.line_start),
-                                Some(reference.line_end),
-                            ),
-                        ),
-                        history::DiffSide::Removed => (
-                            "removed",
-                            diff_endpoint(
-                                reference.old_path.as_deref(),
-                                Some(reference.line_start),
-                                Some(reference.line_end),
-                            ),
-                        ),
-                    };
-                    let old = diff_endpoint(
-                        reference.old_path.as_deref(),
-                        reference.old_line_start,
-                        reference.old_line_end,
-                    );
-                    let new = diff_endpoint(
-                        reference.new_path.as_deref(),
-                        reference.new_line_start,
-                        reference.new_line_end,
-                    );
-                    let distance = hit
-                        .distance
-                        .map(|distance| format!(" [embedding distance {distance}]"))
-                        .unwrap_or_default();
-                    let file_change =
-                        diff_file_change_json(&c, reference, &mut diff_metadata_cache)?;
-                    let change_kind = file_change["kind"].as_str().unwrap_or("unavailable");
-                    let heuristic = file_change["heuristic"].as_bool().unwrap_or(false);
-                    let similarity = file_change["similarity_percent"]
-                        .as_u64()
-                        .map(|score| format!("{score}%"))
-                        .unwrap_or_else(|| "n/a".to_owned());
-                    let settings = &file_change["detection_settings"];
-                    let detection = if file_change["refresh_required"] == true {
-                        "refresh required".to_owned()
-                    } else {
-                        format!(
-                            "rename={}%,copy={}%,copies-harder={},algorithm={},git={}",
-                            settings["rename_threshold_percent"],
-                            settings["copy_threshold_percent"],
-                            settings["find_copies_harder"],
-                            settings["diff_algorithm"],
-                            settings["git_version"],
-                        )
-                    };
-                    let parent_command = reference
-                        .old_path
-                        .as_deref()
-                        .map(|path| git_show_command(&reference.parent_commit_id, path))
-                        .unwrap_or_else(|| "<absent>".to_owned());
-                    let child_command = reference
-                        .new_path
-                        .as_deref()
-                        .map(|path| git_show_command(&reference.child_commit_id, path))
-                        .unwrap_or_else(|| "<absent>".to_owned());
-                    println!(
-                        "diff {side} match={matching} [parent {} child {} hunk {}] old={old} new={new} file_change={change_kind} heuristic={heuristic} similarity={similarity} detection={detection} parent-file-command={parent_command} child-file-command={child_command}{distance}: {}",
-                        reference.parent_commit_id,
-                        reference.child_commit_id,
-                        reference.hunk_id,
-                        hit.text,
-                    );
-                }
+                println!("{}", serde_json::to_string_pretty(&values)?);
+            } else {
+                print_ranked_human(
+                    &ranked,
+                    &displays,
+                    &c,
+                    &history_path_links,
+                    &mut diff_metadata_cache,
+                )?;
             }
         }
         _ => return Err(format!("unknown command: {cmd}").into()),
