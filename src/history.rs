@@ -935,6 +935,91 @@ mod tests {
     }
 
     #[test]
+    fn full_refresh_indexes_root_and_each_merge_parent() {
+        use std::{fs, os::unix::fs::PermissionsExt, process::Command};
+
+        let _cwd_lock = CWD_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+        let original_cwd = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let repo = tempfile::tempdir().unwrap();
+        let git = |args: &[&str]| {
+            let output = Command::new("git")
+                .args(args)
+                .current_dir(repo.path())
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            String::from_utf8(output.stdout).unwrap().trim().to_owned()
+        };
+        git(&["init", "-q"]);
+        git(&["config", "user.email", "test@example.com"]);
+        git(&["config", "user.name", "Test"]);
+        fs::write(repo.path().join("root.txt"), "root content\n").unwrap();
+        git(&["add", "."]);
+        git(&["commit", "-qm", "root"]);
+        let root = git(&["rev-parse", "HEAD"]);
+        git(&["branch", "side"]);
+        fs::write(repo.path().join("main.txt"), "main addition\n").unwrap();
+        git(&["add", "."]);
+        git(&["commit", "-qm", "main side"]);
+        let first_parent = git(&["rev-parse", "HEAD"]);
+        git(&["checkout", "-q", "side"]);
+        fs::write(repo.path().join("other.txt"), "other addition\n").unwrap();
+        git(&["add", "."]);
+        git(&["commit", "-qm", "other side"]);
+        let second_parent = git(&["rev-parse", "HEAD"]);
+        git(&["checkout", "-q", "--detach", &first_parent]);
+        git(&["merge", "--no-ff", "-qm", "merge", &second_parent]);
+        let merge = git(&["rev-parse", "HEAD"]);
+
+        let embedder = repo.path().join("embedder");
+        fs::write(&embedder, "#!/bin/sh\ncat >/dev/null\nprintf '[1,0]'\n").unwrap();
+        fs::set_permissions(&embedder, fs::Permissions::from_mode(0o755)).unwrap();
+        let db = Connection::open_in_memory().unwrap();
+        db.execute_batch("CREATE TABLE embedding_config(key TEXT PRIMARY KEY,value TEXT NOT NULL); CREATE TEMP TABLE import_refresh_dimension(value INTEGER);").unwrap();
+        for (key, value) in [
+            ("command", embedder.to_str().unwrap()),
+            ("model", "test"),
+            ("dimension", "0"),
+        ] {
+            db.execute(
+                "INSERT INTO embedding_config VALUES(?1,?2)",
+                params![key, value],
+            )
+            .unwrap();
+        }
+        std::env::set_current_dir(repo.path()).unwrap();
+        prepare_refresh(&db).unwrap();
+        let tx = db.unchecked_transaction().unwrap();
+        publish_refresh(&tx).unwrap();
+        tx.commit().unwrap();
+
+        let root_refs = diff_references(&db, None, Some(&root)).unwrap();
+        assert!(
+            root_refs
+                .iter()
+                .any(|reference| reference.new_path.as_deref() == Some(b"root.txt".as_slice()))
+        );
+        let merge_refs = diff_references(&db, None, Some(&merge)).unwrap();
+        assert!(
+            merge_refs
+                .iter()
+                .any(|reference| reference.parent_commit_id == first_parent
+                    && reference.new_path.as_deref() == Some(b"other.txt".as_slice()))
+        );
+        assert!(
+            merge_refs
+                .iter()
+                .any(|reference| reference.parent_commit_id == second_parent
+                    && reference.new_path.as_deref() == Some(b"main.txt".as_slice()))
+        );
+        std::env::set_current_dir(original_cwd).unwrap();
+    }
+
+    #[test]
     fn commit_message_search_hydrates_exact_and_semantic_hits_from_git() {
         use std::{fs, os::unix::fs::PermissionsExt, process::Command};
 
