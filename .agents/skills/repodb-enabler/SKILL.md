@@ -22,11 +22,11 @@ When RepoDB is available, make these helper skills discoverable by name and load
 
 - `repodb_help` — answer RepoDB usage and capability questions; load `.agents/skills/repodb-help/SKILL.md`.
 - `repodb_import` — preview and import one explicitly selected local documentation file or directory; load `.agents/skills/repodb-import/SKILL.md`.
-- `repodb_search` — combined exact and semantic discovery; definition is not included in this ticket.
-- `repodb_search_exact` — literal matching; definition is not included in this ticket.
-- `repodb_search_semantic` — conceptual search; definition is not included in this ticket.
+- `repodb_search` — combined exact and semantic discovery; load `.agents/skills/repodb-search/SKILL.md`.
+- `repodb_search_exact` — literal matching; load `.agents/skills/repodb-search-exact/SKILL.md`.
+- `repodb_search_semantic` — conceptual search; load `.agents/skills/repodb-search-semantic/SKILL.md`.
 
-For a direct question about RepoDB, load `repodb_help` and answer from that guidance. For other tasks, describe the available skills and let the agent decide whether one is useful. The `repodb_import` definition is available as a repo-local skill. Do not imply that the search skill definitions are available in this repository yet.
+For a direct question about RepoDB, load `repodb_help` and answer from that guidance. For other tasks, describe the available skills and let the agent decide whether one is useful. The `repodb_import` definition is available as a repo-local skill. The search skill definitions are available in this repository.
 
 ## Distribution limitation
 

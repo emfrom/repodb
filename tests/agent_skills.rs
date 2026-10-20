@@ -8,7 +8,7 @@ fn skill(path: &str) -> String {
 
 #[test]
 fn distributed_skills_match_the_repo_local_pi_skills() {
-    for skill_name in ["repodb-enabler", "repodb-help", "repodb-import"] {
+    for skill_name in ["repodb-enabler", "repodb-help", "repodb-import", "repodb-search", "repodb-search-exact", "repodb-search-semantic"] {
         let local = skill(&format!(".agents/skills/{skill_name}/SKILL.md"));
         let distributed = skill(&format!("skills/{skill_name}/SKILL.md"));
         assert_eq!(
@@ -38,6 +38,9 @@ fn enabler_is_project_local_and_defers_repo_db_skill_loading() {
         "global-availability",
         "preview and import one explicitly selected local documentation file or directory",
         ".agents/skills/repodb-import/SKILL.md",
+        ".agents/skills/repodb-search/SKILL.md",
+        ".agents/skills/repodb-search-exact/SKILL.md",
+        ".agents/skills/repodb-search-semantic/SKILL.md",
     ] {
         assert!(
             enabler.contains(required),
