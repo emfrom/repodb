@@ -1621,7 +1621,7 @@ Usage:
 Commands:
   init                 Initialize the index and capture the checked-out repository
   refresh              Refresh indexed repository and registered imports
-  import SOURCE        Register one local file/directory, URL page, or Git repository
+  import SOURCE        Register one local file, URL page, or Git repository
   retention latest|all Set imported-source version retention
   reembed              Rebuild vectors with an embedding command/model
   search QUERY         Search indexed content, diffs, and commit messages
@@ -1643,7 +1643,7 @@ Search defaults to checked-out HEAD and exact matching. Coarse options include:
 See `repodb search --help` for full option details.
 
 Refresh size policy is `--size-limit=error|warn|ignore` (default: error) and
-applies only to local document imports, not Git content. See `repodb refresh --help`.
+applies to local/URL document imports, not Git content. See `repodb refresh --help`.
 
 Imports are explicit and single-source: a URL import fetches only that page and
 never crawls linked pages. Search never fetches or refreshes; refreshing
@@ -1708,7 +1708,8 @@ minimal reference cannot fit, search returns a result_limit error.
 
 The default history view is HEAD. `--history=all` searches all indexed history;
 `--history=N` uses deterministic topological order. `--current-worktree` remains
-HEAD-only, while `--worktree` is opt-in and rejects stale/alternate HEADs.
+HEAD-only, while `--worktree` is opt-in and rejects stale/alternate HEADs. Semantic
+worktree similarity is based on indexed HEAD text; live text is not embedded.
 Search does not refresh, fetch URLs, or crawl links.
 
 Examples:
@@ -1731,8 +1732,8 @@ only; `--changed` indexes commits since the previous snapshot; `--update COMMIT`
 adds the selected commit. `--changed` and `--update` cannot be combined with
 --imports or --size-limit.
 
-`--size-limit` applies only to local document imports during `init`, a full
-`refresh`, or `refresh --imports`: `error` (default) aborts oversized local imports,
+`--size-limit` applies to local and URL document imports during `init`, a full
+`refresh`, or `refresh --imports`: `error` (default) aborts oversized documents,
 `warn` continues and reports them, and `ignore` skips the policy. `--changed` and
 `--update` do not accept this policy. Git repositories and Git history are not
 size-gated. `import SOURCE` only registers a source; refreshing it is explicit.
@@ -1753,18 +1754,19 @@ Usage:
   repodb [--database PATH] import --revision REF GIT_REPOSITORY
   repodb [--database PATH] import --preview FILE_OR_DIRECTORY_OR_URL
 
-SOURCE is one local file/directory, one HTTP(S) page URL, or one Git repository.
-A URL import fetches only the selected page; it does not crawl links. Search never
+SOURCE is one local file, one HTTP(S) page URL, or one Git repository. A URL
+import fetches only the selected page; it does not crawl links. Search never
 fetches. `repodb refresh` or `repodb refresh --imports` explicitly refreshes
 registered URLs and other imports.
 
 `--preview` reports local source selection or fetch size/warnings without registering
 or indexing; it accepts one local file/directory or HTTP(S) page URL, not a Git repo.
+For directory previews, register each selected local file separately.
 `--revision` pins a Git import to one resolved branch, tag, or commit. Size policy is
 selected at refresh time with `--size-limit`, not at registration.
 
 Examples:
-  repodb import ./docs
+  repodb import ./docs/guide.md
   repodb import https://example.com/guide
   repodb import --preview https://example.com/guide
   repodb import --revision v1.2.0 https://example.com/project.git

@@ -1,6 +1,6 @@
 ---
 name: repodb-enabler
-description: Discover RepoDB for repository code and documentation work when it may help, and route RepoDB questions to the help skill.
+description: Discover RepoDB when repository search may help; route status, history/explore, augmented search, imports, and errors to focused guidance.
 ---
 
 # RepoDB enabler
@@ -18,15 +18,17 @@ If the executable exists but the repository database is missing, explain that it
 
 If both are available, explain that indexed results can be stale after repository changes. Suggest `repodb refresh` when relevant, but do not refresh automatically. Availability does not establish freshness or semantic-search readiness.
 
-When RepoDB is available, make these helper skills discoverable by name and load them only when needed:
+When RepoDB is available, route only the matching task to one helper and read it on demand:
 
-- `repodb_help` — answer RepoDB usage and capability questions; read `../repodb-help/SKILL.md` relative to this skill file.
-- `repodb_import` — import one explicitly selected URL page without crawling; preview and import one explicitly selected local documentation file or directory; also supports one Git repository; read `../repodb-import/SKILL.md` relative to this skill file.
-- `repodb_search` — combined exact and semantic discovery; read `../repodb-search/SKILL.md` relative to this skill file.
-- `repodb_search_exact` — literal matching; read `../repodb-search-exact/SKILL.md` relative to this skill file.
-- `repodb_search_semantic` — conceptual search; read `../repodb-search-semantic/SKILL.md` relative to this skill file.
+- `repodb-status` — database state, freshness, and capability readiness; read `../repodb-status/SKILL.md`.
+- `repodb-history` — committed selectors, rationale, and reference-only `--explore`; read `../repodb-history/SKILL.md`.
+- `repodb-search-worktree` — staged/live exact search or mapped semantic results; read `../repodb-search-worktree/SKILL.md`.
+- `repodb-import` — preview/register one selected source and explicitly refresh it; read `../repodb-import/SKILL.md`.
+- `repodb-errors` — command failures, stale/index states, missing objects, and output limits; read `../repodb-errors/SKILL.md`.
+- `repodb-help` — general RepoDB usage/capabilities; read `../repodb-help/SKILL.md`.
+- `repodb-search`, `repodb-search-exact`, `repodb-search-semantic` — combined, literal, or conceptual discovery; read the correspondingly named sibling file.
 
-For a direct question about RepoDB, read `../repodb-help/SKILL.md` relative to this skill file and answer from that guidance. For other tasks, describe the available skills and let the agent decide whether one is useful. Read helper skills only when they apply; their sibling definitions ship with this package but only the enabler is registered as a Pi skill.
+For a direct RepoDB question, use `repodb-help`; route status, history, augmented search, imports, and failures to their focused helpers. These sibling definitions ship with the package, but only the enabler is registered globally.
 
 ## Distribution
 

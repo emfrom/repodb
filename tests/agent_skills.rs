@@ -87,11 +87,15 @@ fn search_results(repo: &Path, args: &[&str]) -> Vec<serde_json::Value> {
 fn distributed_skills_match_the_repo_local_pi_skills() {
     for name in [
         "repodb-enabler",
+        "repodb-errors",
         "repodb-help",
+        "repodb-history",
         "repodb-import",
         "repodb-search",
         "repodb-search-exact",
         "repodb-search-semantic",
+        "repodb-search-worktree",
+        "repodb-status",
     ] {
         let repo_local = skill(&format!(".agents/skills/{name}/SKILL.md"));
         let distributed = skill(&format!("skills/{name}/SKILL.md"));
@@ -113,11 +117,15 @@ fn pi_package_exposes_only_the_enabler_globally() {
     );
 
     for helper in [
+        "repodb-errors",
         "repodb-help",
+        "repodb-history",
         "repodb-import",
         "repodb-search",
         "repodb-search-exact",
         "repodb-search-semantic",
+        "repodb-search-worktree",
+        "repodb-status",
     ] {
         assert!(
             Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -127,6 +135,85 @@ fn pi_package_exposes_only_the_enabler_globally() {
             "global enabler must be able to read sibling helper {helper}"
         );
     }
+}
+
+#[test]
+fn focused_skills_match_final_cli_help_and_status_provenance() {
+    let (repo, _) = indexed_test_file();
+    let root = repo.path();
+    let general_help = run(root, &["--help"]);
+    let search_help = run(root, &["search", "--help"]);
+    let status_help = run(root, &["status", "--help"]);
+    let import_help = run(root, &["import", "--help"]);
+    let refresh_help = run(root, &["refresh", "--help"]);
+
+    let enabler = skill(".agents/skills/repodb-enabler/SKILL.md");
+    for helper in [
+        "repodb-status",
+        "repodb-history",
+        "repodb-search-worktree",
+        "repodb-import",
+        "repodb-errors",
+    ] {
+        assert!(enabler.contains(helper), "enabler must route to {helper}");
+    }
+
+    let status_skill = skill(".agents/skills/repodb-status/SKILL.md");
+    assert!(status_skill.contains("status --json"));
+    assert!(status_help.contains("readiness by capability"));
+    run(root, &["init"]);
+    let status_json: serde_json::Value =
+        serde_json::from_str(&run(root, &["status", "--json"])).expect("status JSON");
+    assert_eq!(status_json["database"]["state"], "usable");
+    assert!(
+        status_json["capabilities"]["exact"]["ready"]
+            .as_bool()
+            .is_some()
+    );
+    assert!(
+        status_json["capabilities"]["semantic"]["ready"]
+            .as_bool()
+            .is_some()
+    );
+
+    let history_skill = skill(".agents/skills/repodb-history/SKILL.md");
+    for option in ["--history=all", "--explore", "--cursor", "--byte-budget"] {
+        assert!(search_help.contains(option), "search help lacks {option}");
+        assert!(
+            history_skill.contains(option),
+            "history skill lacks {option}"
+        );
+    }
+    assert!(search_help.contains("references only"));
+
+    let worktree_skill = skill(".agents/skills/repodb-search-worktree/SKILL.md");
+    assert!(search_help.contains("--worktree"));
+    assert!(search_help.contains("no uncommitted embeddings"));
+    assert!(search_help.contains("indexed HEAD text"));
+    assert!(worktree_skill.contains("--worktree"));
+    assert!(worktree_skill.contains("does not embed or persist uncommitted text"));
+    assert!(worktree_skill.contains("indexed HEAD text"));
+    let errors_skill = skill(".agents/skills/repodb-errors/SKILL.md");
+    assert!(errors_skill.contains("result_limit"));
+    assert!(search_help.contains("result_limit"));
+    assert!(errors_skill.contains("blob ID"));
+
+    let help_skill = skill(".agents/skills/repodb-help/SKILL.md");
+    assert!(search_help.contains("--scope SCOPE"));
+    assert!(help_skill.contains("`--scope`"));
+    assert!(!help_skill.contains("not provided by the current interface"));
+
+    let import_skill = skill(".agents/skills/repodb-import/SKILL.md");
+    assert!(import_help.contains("one local file"));
+    assert!(import_help.contains("For directory previews"));
+    assert!(import_skill.contains("registration imports one file at a time"));
+    assert!(import_skill.contains("never crawls links"));
+    assert!(import_skill.contains("resolved commit SHA"));
+    assert!(import_skill.contains("blob_id`"));
+    assert!(import_skill.contains("local/URL documents"));
+    assert!(import_help.contains("pins a Git import"));
+    assert!(refresh_help.contains("local and URL document imports"));
+    assert!(general_help.contains("status [--json]"));
 }
 
 #[test]

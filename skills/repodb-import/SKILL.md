@@ -1,13 +1,13 @@
 ---
 name: repodb-import
-description: Import one explicitly selected URL page, local documentation file or directory, or Git repository into RepoDB.
+description: Import one selected URL page, local file, or Git repository; preview local directories without registering them.
 ---
 
 # RepoDB import
 
 Use this skill only when RepoDB is available for the current repository. Availability requires both an executable `repodb` command and an initialized database; do not initialize a database as part of this skill. If either is unavailable, explain what is missing and stop.
 
-Import exactly one selected source per import call: one HTTP(S) URL, one local documentation file or explicitly selected directory, or one Git repository. Do not combine source types or multiple sources in a call. A supplied HTTP(S) URL imports exactly that page. It is one source/call. Do not crawl links or follow site navigation. Bounded crawling is not supported by this workflow. Make another import call only for another independently selected source.
+Register exactly one source per call: one HTTP(S) URL, one local file, or one Git repository. A supplied HTTP(S) URL selects exactly that page; it never crawls links or follows site navigation. Local directory preview is supported, but registration imports one file at a time. Do not combine source types or multiple sources in one call.
 
 ## Local documentation preview and import
 
@@ -33,7 +33,7 @@ A Git repository is one source per invocation. Use `repodb import [--revision RE
 
 ## Local documentation import scope
 
-Local imports accept an explicitly selected file or directory; directory recursion is limited to eligible files within the selected directory according to the preview. Supported documentation formats are Markdown, plain-text, PDF, HTML, or Org formats, plus extensionless files: Markdown (`.md`, `.markdown`), plain text (`.txt`), PDF, HTML, and Org mode (`.org`). The CLI supports `.rs` files for backward compatibility, but source-code files are outside this documentation skill's scope. Use the preview as the source of truth for enumeration and CLI support; when it lists `.rs`, report it as preview-supported but out of skill scope and do not import it. Never expand selection to a parent, sibling, workspace, or another directory.
+A local import registers one explicitly selected file. `import --preview` may inspect a file or directory; for a directory, use its selected-file list and register supported files individually. Supported documentation formats are Markdown, plain-text, PDF, HTML, or Org formats, plus extensionless files: Markdown (`.md`, `.markdown`), plain text (`.txt`), PDF, HTML, and Org mode (`.org`). The CLI supports `.rs` files for backward compatibility, but source-code files are outside this documentation skill's scope. Use the preview as the source of truth for enumeration and CLI support; when it lists `.rs`, report it as preview-supported but out of skill scope and do not import it. Never expand selection to a parent, sibling, workspace, or another directory.
 
 ## Import, refresh, and report
 

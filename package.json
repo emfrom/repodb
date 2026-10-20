@@ -1,7 +1,7 @@
 {
   "name": "repodb-agent-skills",
   "version": "0.1.0",
-  "description": "Pi skills for discovering, searching, and importing RepoDB content.",
+  "description": "Pi skill routing and focused RepoDB guides for status, search, history, imports, and errors.",
   "keywords": ["pi-package"],
   "pi": {
     "skills": ["./skills/repodb-enabler"]

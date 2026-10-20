@@ -27,9 +27,9 @@ An initialized database can be stale. Search does not refresh it. Suggest an exp
 - Semantic search is appropriate for concepts, questions, code behavior, or documentation and guidance such as standards, README content, and `AGENTS.md`.
 - Combined search is useful when either literal or conceptual matches may find the answer.
 
-Search covers all indexed sources by default. It does not imply that every repository file or external source has been imported.
+Search covers all indexed sources by default; `--scope` can restrict it to source, repository-local source/docs, all docs, or all origins. It does not imply that every repository file or external source has been imported.
 
-If semantic search is unavailable, report the limitation; do not silently substitute exact search. For weak or empty results, report that and suggest rephrasing the query or trying another search mode. Scoped search options are not provided by the current interface described here.
+If semantic search is unavailable, report the limitation; do not silently substitute exact search. For weak or empty results, report that and suggest rephrasing the query or trying another search mode. Use `repodb search --help` for the current scope, type, pagination, and compatibility options; use the history or worktree helper for those specific workflows.
 
 ## Source references and missing content
 
