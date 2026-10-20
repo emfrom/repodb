@@ -2829,6 +2829,52 @@ fn url_parse_and_embedding_failures_preserve_the_published_snapshot_and_timestam
 }
 
 #[test]
+fn url_refresh_keeps_legacy_first_timestamp_unknown() {
+    use std::{
+        io::{Read, Write},
+        net::TcpListener,
+    };
+
+    let repo = repository();
+    let root = repo.path();
+    assert!(run(root, &["init"]).0);
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = std::thread::spawn(move || {
+        for _ in 0..2 {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = [0; 1024];
+            let _ = stream.read(&mut request);
+            stream
+                .write_all(
+                    b"HTTP/1.1 200 OK\r\nContent-Length: 24\r\nConnection: close\r\n\r\nlegacy timestamp marker\n",
+                )
+                .unwrap();
+        }
+    });
+    let url = format!("http://{address}/legacy.txt");
+    assert!(run(root, &["import", &url]).0);
+    assert!(run(root, &["refresh", "--imports"]).0);
+
+    let database = rusqlite::Connection::open(root.join(".git/repodb.sqlite")).unwrap();
+    database
+        .execute(
+            "UPDATE imported_versions SET first_retrieved_at=NULL,last_retrieved_at=NULL WHERE source_id=(SELECT id FROM imported_sources WHERE locator=?1)",
+            [&url],
+        )
+        .unwrap();
+    assert!(run(root, &["refresh", "--imports"]).0);
+    server.join().unwrap();
+
+    let result = search_json(root, &["legacy timestamp marker"])
+        .into_iter()
+        .find(|result| result["path"] == url)
+        .unwrap();
+    assert!(result["first_retrieved_at"].is_null());
+    assert!(result["last_retrieved_at"].as_str().unwrap().ends_with('Z'));
+}
+
+#[test]
 fn imported_url_versions_follow_latest_and_all_hash_retention() {
     use std::{
         io::{Read, Write},

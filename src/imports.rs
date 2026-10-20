@@ -692,7 +692,7 @@ pub fn refresh(c: &Connection) -> Result<()> {
         if kind == "url" {
             let observed_at = utc_rfc3339_now();
             c.execute(
-                "INSERT INTO temp.import_stage_versions(source_id,version,content,fetched_order,first_retrieved_at,last_retrieved_at) VALUES(?1,?2,?3,?4,?5,?5) ON CONFLICT(source_id,version) DO UPDATE SET content=excluded.content,fetched_order=excluded.fetched_order,first_retrieved_at=COALESCE(import_stage_versions.first_retrieved_at,excluded.first_retrieved_at),last_retrieved_at=excluded.last_retrieved_at",
+                "INSERT INTO temp.import_stage_versions(source_id,version,content,fetched_order,first_retrieved_at,last_retrieved_at) VALUES(?1,?2,?3,?4,?5,?5) ON CONFLICT(source_id,version) DO UPDATE SET content=excluded.content,fetched_order=excluded.fetched_order,first_retrieved_at=import_stage_versions.first_retrieved_at,last_retrieved_at=excluded.last_retrieved_at",
                 params![id, version, content.as_deref().unwrap_or(""), fetched_order, observed_at],
             )?;
         } else {

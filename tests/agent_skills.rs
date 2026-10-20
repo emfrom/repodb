@@ -105,6 +105,7 @@ fn import_skill_documents_preview_scope_and_policy_contract() {
         "URL is the source locator",
         "URL preview and URL growth-warning are unavailable",
         "`first_retrieved_at` and `last_retrieved_at` in UTC RFC3339",
+        "keep `first_retrieved_at` null even after a later refresh",
         "Search is offline and never fetches",
         "retention latest",
         "new retained-row lifetime",
