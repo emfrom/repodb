@@ -1491,6 +1491,162 @@ fn imported_files_refresh_with_references_and_both_retention_policies() {
 }
 
 #[test]
+fn imports_only_refresh_indexes_files_without_mutating_history_snapshot() {
+    let repo = repository();
+    let root = repo.path();
+    assert!(run(root, &["init"]).0);
+    let database_path = root.join(".git/repodb.sqlite");
+    let before = rusqlite::Connection::open(&database_path).unwrap();
+    let before_commit: String = before
+        .query_row("SELECT commit_id FROM git_commits LIMIT 1", [], |row| {
+            row.get(0)
+        })
+        .unwrap();
+    let before_vectors: i64 = before
+        .query_row("SELECT count(*) FROM unit_embeddings", [], |row| row.get(0))
+        .unwrap();
+    drop(before);
+
+    let file = root.join("isolated-import.txt");
+    fs::write(&file, "distinct import-only searchable marker\n").unwrap();
+    let locator = file.to_string_lossy().into_owned();
+    assert!(run(root, &["import", &locator]).0);
+    assert!(run(root, &["refresh", "--imports"]).0);
+    let exact = search_json(root, &["distinct import-only searchable"]);
+    assert!(
+        exact.iter().any(|result| result["path"] == locator),
+        "{exact:?}"
+    );
+    let semantic = search_json(root, &["distinct import-only searchable", "--semantic"]);
+    assert!(
+        semantic.iter().any(|result| result["path"] == locator),
+        "{semantic:?}"
+    );
+    let combined = search_json(root, &["distinct import-only searchable", "--combined"]);
+    assert!(
+        combined.iter().any(|result| result["path"] == locator),
+        "{combined:?}"
+    );
+
+    let after = rusqlite::Connection::open(&database_path).unwrap();
+    let after_commit: String = after
+        .query_row("SELECT commit_id FROM git_commits LIMIT 1", [], |row| {
+            row.get(0)
+        })
+        .unwrap();
+    let after_vectors: i64 = after
+        .query_row("SELECT count(*) FROM unit_embeddings", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(after_commit, before_commit);
+    assert_eq!(after_vectors, before_vectors);
+    assert!(run(root, &["refresh"]).0);
+    assert!(
+        search_json(root, &["distinct import-only searchable"])
+            .iter()
+            .any(|result| result["path"] == locator)
+    );
+}
+
+#[test]
+fn failed_imports_only_refresh_preserves_published_imports_and_history() {
+    let repo = repository();
+    let root = repo.path();
+    assert!(run(root, &["init"]).0);
+    let file = root.join("retry-import.txt");
+    fs::write(&file, "previously published import marker\n").unwrap();
+    let locator = file.to_string_lossy().into_owned();
+    assert!(run(root, &["import", &locator]).0);
+    assert!(run(root, &["refresh", "--imports"]).0);
+    let database_path = root.join(".git/repodb.sqlite");
+    let before = rusqlite::Connection::open(&database_path).unwrap();
+    let history_commits: Vec<String> = before
+        .prepare("SELECT commit_id FROM git_commits ORDER BY commit_id")
+        .unwrap()
+        .query_map([], |row| row.get(0))
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap();
+    let history_vectors: i64 = before
+        .query_row("SELECT count(*) FROM unit_embeddings", [], |row| row.get(0))
+        .unwrap();
+    drop(before);
+
+    fs::write(&file, "unpublished replacement import marker\n").unwrap();
+    let unavailable_url = "http://127.0.0.1:1/unreachable";
+    assert!(run(root, &["import", unavailable_url]).0);
+    assert!(!run(root, &["refresh", "--imports"]).0);
+    assert!(!search_json(root, &["previously published import marker"]).is_empty());
+    assert!(search_json(root, &["unpublished replacement import marker"]).is_empty());
+
+    let after = rusqlite::Connection::open(&database_path).unwrap();
+    let after_commits: Vec<String> = after
+        .prepare("SELECT commit_id FROM git_commits ORDER BY commit_id")
+        .unwrap()
+        .query_map([], |row| row.get(0))
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap();
+    let after_vectors: i64 = after
+        .query_row("SELECT count(*) FROM unit_embeddings", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(after_commits, history_commits);
+    assert_eq!(after_vectors, history_vectors);
+}
+
+#[test]
+fn imports_only_dimension_mismatch_preserves_published_imports_and_history() {
+    let repo = repository();
+    let root = repo.path();
+    assert!(run(root, &["init"]).0);
+    let file = root.join("dimension-import.txt");
+    fs::write(&file, "published dimension marker\n").unwrap();
+    let locator = file.to_string_lossy().into_owned();
+    assert!(run(root, &["import", &locator]).0);
+    assert!(run(root, &["refresh", "--imports"]).0);
+
+    let embedder = root.join(".git/repodb-test-embedder");
+    fs::write(&embedder, "#!/bin/sh\ncat >/dev/null\nprintf '[1,0,0]'\n").unwrap();
+    use std::os::unix::fs::PermissionsExt;
+    fs::set_permissions(&embedder, fs::Permissions::from_mode(0o755)).unwrap();
+    fs::write(&file, "rejected dimension marker\n").unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_repodb"))
+        .args(["refresh", "--imports"])
+        .current_dir(root)
+        .env("XDG_CONFIG_HOME", root.join(".test-xdg-config"))
+        .env(
+            "REPODB_SEMGREP_CORE",
+            semgrep_corpus::required_semgrep_core(),
+        )
+        .output()
+        .unwrap();
+    assert!(
+        !output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stdout)
+    );
+    assert!(!search_json(root, &["published dimension marker"]).is_empty());
+    assert!(search_json(root, &["rejected dimension marker"]).is_empty());
+
+    let database = rusqlite::Connection::open(root.join(".git/repodb.sqlite")).unwrap();
+    let dimension: String = database
+        .query_row(
+            "SELECT value FROM embedding_config WHERE key='dimension'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(dimension, "2");
+    let vector_dimension: usize = database
+        .query_row(
+            "SELECT length(vector)/4 FROM unit_embeddings LIMIT 1",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(vector_dimension, 2);
+}
+
+#[test]
 fn imported_files_keep_line_references_for_paragraph_and_bounded_units() {
     let repo = repository();
     let root = repo.path();
@@ -2069,8 +2225,8 @@ fn imported_git_repository_refreshes_with_identity_commit_path_and_line_refs() {
     git(external.path(), &["commit", "-qm", "first"]);
     let first = git_text(external.path(), &["rev-parse", "HEAD"]);
     let locator = external.path().to_string_lossy().into_owned();
-    assert!(run(root, &["import", &locator]).0);
-    assert!(run(root, &["refresh"]).0);
+    assert!(run(root, &["import", "--revision", &first, &locator]).0);
+    assert!(run(root, &["refresh", "--imports"]).0);
     let database = rusqlite::Connection::open(root.join(".git/repodb.sqlite")).unwrap();
     let columns = database
         .prepare("PRAGMA table_info(imported_git_units)")
@@ -2540,15 +2696,14 @@ fn imported_url_and_semantic_search_use_loopback_and_fake_embeddings() {
     });
     let url = format!("http://{address}/source.txt");
     assert!(run(root, &["import", &url]).0);
-    assert!(run(root, &["refresh"]).0);
+    assert!(run(root, &["refresh", "--imports"]).0);
     server.join().unwrap();
     let results = search_json(root, &["semantic", "--semantic"]);
-    assert!(
-        results
-            .iter()
-            .any(|x| x["path"] == url && x["line_start"] == 1),
-        "{results:?}"
-    );
+    let imported = results
+        .iter()
+        .find(|result| result["path"] == url && result["line_start"] == 1)
+        .unwrap_or_else(|| panic!("{results:?}"));
+    assert_eq!(imported["blob_id"].as_str().unwrap().len(), 64);
 }
 
 #[test]

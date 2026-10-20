@@ -777,13 +777,22 @@ pub fn validate_dimensions(c: &Connection) -> Result<()> {
             |row| row.get(0),
         )
         .optional()?;
-    let history: Option<i64> = c
-        .query_row(
+    let history_dimension_table: bool = c.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_temp_master WHERE type='table' AND name='refresh_dimension')",
+        [],
+        |row| row.get(0),
+    )?;
+    let history: Option<i64> = if history_dimension_table {
+        c.query_row(
             "SELECT value FROM temp.refresh_dimension LIMIT 1",
             [],
             |row| row.get(0),
         )
-        .optional()?;
+        .optional()?
+    } else {
+        let configured_dimension = crate::history::configuration(c)?.2;
+        (configured_dimension != 0).then_some(configured_dimension as i64)
+    };
     if imported.zip(history).is_some_and(|(a, b)| a != b) {
         return Err("embedding dimension mismatch".into());
     }

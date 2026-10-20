@@ -490,7 +490,7 @@ fn semantic(
 }
 fn execute() -> Result<()> {
     let mut a = env::args().skip(1);
-    let first = a.next().ok_or("usage: repodb [--database <path>] <init|refresh [--changed|--update COMMIT]|import|retention|reembed|search> (default database: <git-dir>/repodb.sqlite)")?;
+    let first = a.next().ok_or("usage: repodb [--database <path>] <init|refresh [--imports|--changed|--update COMMIT]|import|retention|reembed|search> (default database: <git-dir>/repodb.sqlite)")?;
     let (option, cmd) = if first == "--database" {
         let path = a.next().ok_or("--database requires a path")?;
         (Some(path), a.next().ok_or("--database requires a command")?)
@@ -501,20 +501,31 @@ fn execute() -> Result<()> {
     match cmd.as_str() {
         "init" | "refresh" => {
             let arguments: Vec<_> = a.collect();
+            let imports_only = arguments.len() == 1 && arguments[0] == "--imports";
             let changed = arguments.len() == 1 && arguments[0] == "--changed";
             let update = if arguments.len() == 2 && arguments[0] == "--update" {
                 Some(history::resolve_update_commit(&arguments[1])?)
             } else {
                 None
             };
-            if (!arguments.is_empty() && !changed && update.is_none())
-                || (cmd == "init" && (changed || update.is_some()))
+            if (!arguments.is_empty() && !imports_only && !changed && update.is_none())
+                || (cmd == "init" && (imports_only || changed || update.is_some()))
                 || (changed && update.is_some())
+                || (imports_only && (changed || update.is_some()))
             {
-                return Err("usage: repodb refresh [--changed | --update COMMIT]".into());
+                return Err(
+                    "usage: repodb refresh [--imports | --changed | --update COMMIT]".into(),
+                );
             }
             let mut db = open_db(&db_path)?;
-            if changed {
+            if imports_only {
+                let version = history::snapshot_version(&db)?;
+                imports::refresh(&db)?;
+                imports::validate_dimensions(&db)?;
+                let tx = history::publish_transaction(&mut db, version)?;
+                imports::publish(&tx)?;
+                tx.commit()?;
+            } else if changed {
                 history::refresh_changed(&mut db)?;
             } else if let Some(commit_id) = update {
                 history::refresh_update(&mut db, &commit_id)?;
