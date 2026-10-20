@@ -62,6 +62,28 @@ fn git_output(
     Ok(output.stdout)
 }
 
+fn commit_message(commit_id: &str, budget: &mut Budget) -> Result<(String, usize, usize)> {
+    let size: usize = String::from_utf8(git_output(&["cat-file", "-s", commit_id], 64, budget)?)?
+        .trim()
+        .parse()?;
+    let object = git_output(&["cat-file", "commit", commit_id], size, budget)?;
+    let separator = object
+        .windows(2)
+        .position(|pair| pair == b"\n\n")
+        .ok_or("Git commit has no message separator")?;
+    let start = separator + 2;
+    let message = std::str::from_utf8(&object[start..])?.to_owned();
+    Ok((
+        message,
+        start,
+        object[..start]
+            .iter()
+            .filter(|byte| **byte == b'\n')
+            .count()
+            + 1,
+    ))
+}
+
 fn for_each_tree_record(
     commit_id: &str,
     preparation_bytes: &mut Budget,
@@ -645,6 +667,198 @@ impl StagedUnitWriter<'_, '_> {
 mod tests {
     use super::*;
 
+    static CWD_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    fn enable_vector_extension() {
+        unsafe {
+            rusqlite::ffi::sqlite3_auto_extension(Some(std::mem::transmute::<
+                *const (),
+                unsafe extern "C" fn(
+                    *mut rusqlite::ffi::sqlite3,
+                    *mut *mut i8,
+                    *const rusqlite::ffi::sqlite3_api_routines,
+                ) -> i32,
+            >(
+                sqlite_vec::sqlite3_vec_init as *const ()
+            )))
+        };
+    }
+
+    #[test]
+    fn commit_message_search_hydrates_exact_and_semantic_hits_from_git() {
+        use std::{fs, os::unix::fs::PermissionsExt, process::Command};
+
+        let _cwd_lock = CWD_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+        let original_cwd = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let repo = tempfile::tempdir().unwrap();
+        let git = |args: &[&str]| {
+            let output = Command::new("git")
+                .args(args)
+                .current_dir(repo.path())
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            String::from_utf8(output.stdout).unwrap().trim().to_owned()
+        };
+        git(&["init", "-q"]);
+        git(&["config", "user.email", "test@example.com"]);
+        git(&["config", "user.name", "Test"]);
+        fs::write(repo.path().join("file.txt"), "tracked content\n").unwrap();
+        git(&["add", "."]);
+        git(&[
+            "commit",
+            "-qm",
+            "Initial transaction ledger\n\nDetailed rationale body",
+        ]);
+        let commit = git(&["rev-parse", "HEAD"]);
+        let embedder = repo.path().join("embedder");
+        fs::write(&embedder, "#!/bin/sh\ncat >/dev/null\nprintf '[1,0]'\n").unwrap();
+        fs::set_permissions(&embedder, fs::Permissions::from_mode(0o755)).unwrap();
+        enable_vector_extension();
+        let db = Connection::open_in_memory().unwrap();
+        db.execute_batch(
+            "CREATE TABLE embedding_config(key TEXT PRIMARY KEY,value TEXT NOT NULL); CREATE TEMP TABLE import_refresh_dimension(value INTEGER);",
+        )
+        .unwrap();
+        for (key, value) in [
+            ("command", embedder.to_str().unwrap()),
+            ("model", "test"),
+            ("dimension", "0"),
+        ] {
+            db.execute(
+                "INSERT INTO embedding_config VALUES(?1,?2)",
+                params![key, value],
+            )
+            .unwrap();
+        }
+        std::env::set_current_dir(repo.path()).unwrap();
+        prepare_refresh(&db).unwrap();
+        let tx = db.unchecked_transaction().unwrap();
+        publish_refresh(&tx).unwrap();
+        tx.commit().unwrap();
+
+        let exact =
+            search_commit_messages(&db, "transaction ledger", "exact", 5, &[commit.clone()])
+                .unwrap();
+        assert_eq!(exact.len(), 1);
+        assert_eq!(exact[0].commit_id.as_deref(), Some(commit.as_str()));
+        assert!(exact[0].text.contains("Initial transaction ledger"));
+        let semantic = search_commit_messages(
+            &db,
+            "accounting rationale",
+            "semantic",
+            5,
+            &[commit.clone()],
+        )
+        .unwrap();
+        assert!(
+            semantic
+                .iter()
+                .any(|result| result.text.contains("Initial transaction ledger"))
+        );
+        assert!(
+            semantic
+                .iter()
+                .all(|result| result.commit_id.as_deref() == Some(commit.as_str()))
+        );
+        assert!(semantic.iter().all(|result| result.distance == Some(0.0)));
+        let stored_message: i64 = db.query_row(
+            "SELECT count(*) FROM sqlite_master WHERE type='table' AND name='commit_message_units'",
+            [], |row| row.get(0),
+        ).unwrap();
+        assert_eq!(stored_message, 1);
+        let persisted_text_columns: i64 = db
+            .query_row(
+                "SELECT count(*) FROM pragma_table_info('indexed_units') WHERE name='text'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(persisted_text_columns, 0);
+        std::env::set_current_dir(original_cwd).unwrap();
+    }
+
+    #[test]
+    fn commit_message_search_fails_when_indexed_git_object_is_missing() {
+        use std::{fs, os::unix::fs::PermissionsExt, process::Command};
+
+        let _cwd_lock = CWD_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+        let original_cwd = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let repo = tempfile::tempdir().unwrap();
+        let git = |args: &[&str]| {
+            let output = Command::new("git")
+                .args(args)
+                .current_dir(repo.path())
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            String::from_utf8(output.stdout).unwrap().trim().to_owned()
+        };
+        git(&["init", "-q"]);
+        git(&["config", "user.email", "test@example.com"]);
+        git(&["config", "user.name", "Test"]);
+        fs::write(repo.path().join("file.txt"), "content\n").unwrap();
+        git(&["add", "."]);
+        git(&["commit", "-qm", "Missing object message marker"]);
+        let commit = git(&["rev-parse", "HEAD"]);
+        enable_vector_extension();
+        let db = Connection::open_in_memory().unwrap();
+        db.execute_batch(
+            "CREATE TABLE embedding_config(key TEXT PRIMARY KEY,value TEXT NOT NULL); CREATE TEMP TABLE import_refresh_dimension(value INTEGER);"
+        )
+        .unwrap();
+        let embedder = repo.path().join("embedder");
+        fs::write(&embedder, "#!/bin/sh\ncat >/dev/null\nprintf '[1,0]'\n").unwrap();
+        fs::set_permissions(&embedder, fs::Permissions::from_mode(0o755)).unwrap();
+        for (key, value) in [
+            ("command", embedder.to_str().unwrap()),
+            ("model", "test"),
+            ("dimension", "0"),
+        ] {
+            db.execute(
+                "INSERT INTO embedding_config VALUES(?1,?2)",
+                params![key, value],
+            )
+            .unwrap();
+        }
+        std::env::set_current_dir(repo.path()).unwrap();
+        prepare_refresh(&db).unwrap();
+        let tx = db.unchecked_transaction().unwrap();
+        publish_refresh(&tx).unwrap();
+        tx.commit().unwrap();
+        git(&["update-ref", "-d", "HEAD"]);
+        let output = Command::new("git")
+            .args(["reflog", "expire", "--expire=now", "--all"])
+            .current_dir(repo.path())
+            .output()
+            .unwrap();
+        assert!(output.status.success());
+        let output = Command::new("git")
+            .args(["gc", "--prune=now"])
+            .current_dir(repo.path())
+            .output()
+            .unwrap();
+        assert!(output.status.success());
+
+        let error = match search_commit_messages(&db, "Missing object", "exact", 5, &[commit]) {
+            Ok(_) => panic!("missing commit object was silently ignored"),
+            Err(error) => error,
+        };
+        assert!(
+            error.to_string().contains("could not get object info"),
+            "{error}"
+        );
+        std::env::set_current_dir(original_cwd).unwrap();
+    }
+
     #[test]
     fn git_capture_limits_reserve_stderr_and_use_remaining_budget() {
         let (stdout, stderr) = git_capture_limits(
@@ -736,6 +950,72 @@ mod tests {
     }
 }
 
+fn stage_commit_message(
+    commit_id: &str,
+    message: &str,
+    object_byte_start: usize,
+    object_line_start: usize,
+    next_unit_id: &mut i64,
+    unit_statement: &mut rusqlite::Statement<'_>,
+    message_statement: &mut rusqlite::Statement<'_>,
+    batch: &mut EmbeddingBatch,
+    pipeline: &mut EmbeddingPipeline,
+    embedding_dimension: &mut Option<usize>,
+    embedding_statement: &mut rusqlite::Statement<'_>,
+    budget: &mut Budget,
+) -> Result<()> {
+    let mut staging_error = None;
+    segmentation::visit("fallback", message, |unit| {
+        let result = (|| -> Result<()> {
+            *next_unit_id += 1;
+            let byte_start = object_byte_start + unit.byte_start;
+            let byte_end = object_byte_start + unit.byte_end;
+            let line_start = object_line_start + unit.line_start - 1;
+            let line_end = object_line_start + unit.line_end - 1;
+            unit_statement.execute(params![
+                *next_unit_id,
+                commit_id,
+                "commit-message",
+                unit.text,
+                byte_start,
+                byte_end,
+                line_start,
+                line_end
+            ])?;
+            message_statement.execute(params![
+                commit_id,
+                *next_unit_id,
+                byte_start,
+                byte_end,
+                line_start,
+                line_end
+            ])?;
+            budget.charge(unit.text.len(), "commit message embedding text")?;
+            batch.push((*next_unit_id, unit.text.to_owned()));
+            if batch.len() == HISTORY_EMBEDDING_BATCH_SIZE {
+                flush_embedding_batch(
+                    batch,
+                    pipeline,
+                    embedding_dimension,
+                    embedding_statement,
+                    budget,
+                )?;
+            }
+            Ok(())
+        })();
+        if let Err(error) = result {
+            staging_error = Some(error);
+            false
+        } else {
+            true
+        }
+    })?;
+    if let Some(error) = staging_error {
+        return Err(error);
+    }
+    Ok(())
+}
+
 pub fn prepare_refresh(c: &Connection) -> Result<()> {
     is_current(c)?;
     let mut preparation_bytes = Budget::new(
@@ -746,11 +1026,13 @@ pub fn prepare_refresh(c: &Connection) -> Result<()> {
         DROP TABLE IF EXISTS temp.refresh_commits; DROP TABLE IF EXISTS temp.refresh_blobs;
         DROP TABLE IF EXISTS temp.refresh_occurrences; DROP TABLE IF EXISTS temp.refresh_variants;
         DROP TABLE IF EXISTS temp.refresh_units; DROP TABLE IF EXISTS temp.refresh_embeddings;
+        DROP TABLE IF EXISTS temp.refresh_commit_message_units;
         CREATE TEMP TABLE refresh_commits(commit_id TEXT PRIMARY KEY, timestamp INTEGER NOT NULL);
         CREATE TEMP TABLE refresh_blobs(blob_id TEXT PRIMARY KEY, content TEXT, status TEXT NOT NULL);
         CREATE TEMP TABLE refresh_occurrences(commit_id TEXT NOT NULL, blob_id TEXT NOT NULL, path BLOB NOT NULL, segmentation_kind TEXT NOT NULL, PRIMARY KEY(commit_id,path));
         CREATE TEMP TABLE refresh_variants(blob_id TEXT NOT NULL, segmentation_kind TEXT NOT NULL, PRIMARY KEY(blob_id,segmentation_kind));
         CREATE TEMP TABLE refresh_units(unit_id INTEGER PRIMARY KEY, blob_id TEXT NOT NULL, segmentation_kind TEXT NOT NULL, text TEXT NOT NULL, byte_start INTEGER NOT NULL, byte_end INTEGER NOT NULL, line_start INTEGER NOT NULL, line_end INTEGER NOT NULL);
+        CREATE TEMP TABLE refresh_commit_message_units(commit_id TEXT NOT NULL, unit_id INTEGER NOT NULL, byte_start INTEGER NOT NULL, byte_end INTEGER NOT NULL, line_start INTEGER NOT NULL, line_end INTEGER NOT NULL);
         CREATE TEMP TABLE refresh_embeddings(unit_id INTEGER PRIMARY KEY, vector BLOB NOT NULL);
         DROP TABLE IF EXISTS temp.refresh_dimension; CREATE TEMP TABLE refresh_dimension(value INTEGER);
         DROP TABLE IF EXISTS temp.refresh_config; CREATE TEMP TABLE refresh_config(key TEXT PRIMARY KEY,value TEXT NOT NULL);")?;
@@ -763,6 +1045,12 @@ pub fn prepare_refresh(c: &Connection) -> Result<()> {
     {
         let mut commit_stage =
             c.prepare("INSERT OR IGNORE INTO temp.refresh_commits VALUES(?1,?2)")?;
+        let mut message_unit_stage =
+            c.prepare("INSERT INTO temp.refresh_units VALUES(?1,?2,?3,?4,?5,?6,?7,?8)")?;
+        let mut message_range_stage =
+            c.prepare("INSERT INTO temp.refresh_commit_message_units VALUES(?1,?2,?3,?4,?5,?6)")?;
+        let mut message_embedding_stage =
+            c.prepare("INSERT INTO temp.refresh_embeddings VALUES(?1,?2)")?;
         let mut blob_exists = c.prepare("SELECT 1 FROM temp.refresh_blobs WHERE blob_id=?1")?;
         let mut blob_stage = c.prepare("INSERT INTO temp.refresh_blobs VALUES(?1,?2,?3)")?;
         let mut blob_content =
@@ -780,6 +1068,21 @@ pub fn prepare_refresh(c: &Connection) -> Result<()> {
             c.prepare("INSERT INTO temp.refresh_embeddings VALUES(?1,?2)")?;
         for_each_reachable_commit(&mut preparation_bytes, |commit_id, timestamp, budget| {
             commit_stage.execute(params![commit_id, timestamp])?;
+            let (message, byte_start, line_start) = commit_message(commit_id, budget)?;
+            stage_commit_message(
+                commit_id,
+                &message,
+                byte_start,
+                line_start,
+                &mut unit_count,
+                &mut message_unit_stage,
+                &mut message_range_stage,
+                &mut batch,
+                &mut pipeline,
+                &mut embedding_dimension,
+                &mut message_embedding_stage,
+                budget,
+            )?;
             for_each_tree_record(commit_id, budget, |record, budget| {
                 let tab = record
                     .iter()
@@ -865,14 +1168,22 @@ pub fn prepare_refresh(c: &Connection) -> Result<()> {
             [dimension as i64],
         )?;
     }
-    let imported_dimension = c
-        .query_row(
+    let has_import_dimension: bool = c.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_temp_master WHERE type='table' AND name='import_refresh_dimension')",
+        [],
+        |row| row.get(0),
+    )?;
+    let imported_dimension = if has_import_dimension {
+        c.query_row(
             "SELECT value FROM temp.import_refresh_dimension LIMIT 1",
             [],
             |row| row.get::<_, i64>(0),
         )
         .optional()?
-        .map(|dimension| dimension as usize);
+        .map(|dimension| dimension as usize)
+    } else {
+        None
+    };
     let dimension = embedding_dimension
         .or(imported_dimension)
         .unwrap_or(configured_dimension);
@@ -1225,12 +1536,13 @@ fn refresh_scoped(c: &mut Connection, target: Option<&str>) -> Result<()> {
 }
 
 pub fn publish_refresh(tx: &Transaction<'_>) -> Result<()> {
-    tx.execute_batch("DROP TABLE IF EXISTS unit_embeddings; DROP TABLE IF EXISTS git_blob_units; DROP TABLE IF EXISTS indexed_units; DROP TABLE IF EXISTS git_occurrences; DROP TABLE IF EXISTS blob_contents; DROP TABLE IF EXISTS git_commits;
+    tx.execute_batch("DROP TABLE IF EXISTS unit_embeddings; DROP TABLE IF EXISTS commit_message_units; DROP TABLE IF EXISTS git_blob_units; DROP TABLE IF EXISTS indexed_units; DROP TABLE IF EXISTS git_occurrences; DROP TABLE IF EXISTS blob_contents; DROP TABLE IF EXISTS git_commits;
         CREATE TABLE git_commits(commit_id TEXT PRIMARY KEY NOT NULL, timestamp INTEGER NOT NULL);
         CREATE TABLE blob_contents(blob_id TEXT PRIMARY KEY NOT NULL, status TEXT NOT NULL);
         CREATE TABLE git_occurrences(commit_id TEXT NOT NULL REFERENCES git_commits, blob_id TEXT NOT NULL REFERENCES blob_contents, path BLOB NOT NULL, segmentation_kind TEXT NOT NULL, PRIMARY KEY(commit_id,path));
         CREATE TABLE indexed_units(unit_id INTEGER PRIMARY KEY, byte_start INTEGER NOT NULL, byte_end INTEGER NOT NULL, line_start INTEGER NOT NULL, line_end INTEGER NOT NULL);
         CREATE TABLE git_blob_units(blob_id TEXT NOT NULL REFERENCES blob_contents, unit_id INTEGER NOT NULL REFERENCES indexed_units, segmentation_kind TEXT NOT NULL, PRIMARY KEY(blob_id,segmentation_kind,unit_id));
+        CREATE TABLE commit_message_units(commit_id TEXT NOT NULL REFERENCES git_commits, unit_id INTEGER NOT NULL REFERENCES indexed_units, byte_start INTEGER NOT NULL, byte_end INTEGER NOT NULL, line_start INTEGER NOT NULL, line_end INTEGER NOT NULL, PRIMARY KEY(commit_id,unit_id));
         CREATE TABLE unit_embeddings(unit_id INTEGER PRIMARY KEY REFERENCES indexed_units, vector BLOB NOT NULL);")?;
     tx.execute(
         "INSERT INTO git_commits SELECT * FROM temp.refresh_commits",
@@ -1248,7 +1560,11 @@ pub fn publish_refresh(tx: &Transaction<'_>) -> Result<()> {
         "INSERT INTO indexed_units SELECT unit_id,byte_start,byte_end,line_start,line_end FROM temp.refresh_units",
         [],
     )?;
-    tx.execute("INSERT INTO git_blob_units SELECT blob_id,unit_id,segmentation_kind FROM temp.refresh_units", [])?;
+    tx.execute("INSERT INTO git_blob_units SELECT blob_id,unit_id,segmentation_kind FROM temp.refresh_units WHERE segmentation_kind!='commit-message'", [])?;
+    tx.execute(
+        "INSERT INTO commit_message_units SELECT * FROM temp.refresh_commit_message_units",
+        [],
+    )?;
     tx.execute(
         "INSERT INTO unit_embeddings SELECT * FROM temp.refresh_embeddings",
         [],
@@ -1279,8 +1595,8 @@ pub fn reembed(c: &mut Connection, command: &str, model: &str) -> Result<()> {
         "history refresh preparation accounting",
     );
     let mut dim = 0;
+    let schema: i64 = c.query_row("PRAGMA user_version", [], |row| row.get(0))?;
     {
-        let schema: i64 = c.query_row("PRAGMA user_version", [], |row| row.get(0))?;
         let mut units = c.prepare(if schema >= 4 {
             "SELECT unit_id,blob_id,byte_start,byte_end FROM indexed_units JOIN git_blob_units USING(unit_id) ORDER BY unit_id"
         } else {
@@ -1312,6 +1628,35 @@ pub fn reembed(c: &mut Connection, command: &str, model: &str) -> Result<()> {
         }
         blob_cache.finish()?;
     }
+    let has_commit_messages: bool = c.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='commit_message_units')",
+        [],
+        |row| row.get(0),
+    )?;
+    if schema >= 4 && has_commit_messages {
+        let mut rows = c.prepare(
+            "SELECT commit_id,unit_id,byte_start,byte_end FROM commit_message_units ORDER BY commit_id,unit_id",
+        )?;
+        let mut messages = rows.query([])?;
+        let mut staged = c.prepare("INSERT INTO temp.reembed_vectors VALUES(?1,?2)")?;
+        while let Some(row) = messages.next()? {
+            let commit_id: String = row.get(0)?;
+            let unit_id: usize = row.get(1)?;
+            let start: usize = row.get(2)?;
+            let end: usize = row.get(3)?;
+            let text = hydrate_commit_message(&commit_id, start, end)?;
+            let (mut vector, dimension) = vectors(
+                std::iter::once(text.as_str()),
+                command,
+                model,
+                dim,
+                &mut preparation_bytes,
+            )?;
+            let encoded = vector.pop().ok_or("embedding produced no vector")?;
+            staged.execute(params![unit_id, encoded])?;
+            dim = dimension;
+        }
+    }
     let tx = publish_transaction(c, version)?;
     tx.execute("DELETE FROM unit_embeddings", [])?;
     tx.execute("INSERT INTO unit_embeddings SELECT unit_id,vector FROM temp.reembed_vectors ORDER BY unit_id", [])?;
@@ -1341,6 +1686,83 @@ fn hydrate_unit(
 ) -> Result<String> {
     let bytes = reader.blob(blob_id)?;
     git_ranges::slice_utf8(&bytes, blob_id, start, end, "indexed")
+}
+
+pub fn search_commit_messages(
+    c: &Connection,
+    query: &str,
+    mode: &str,
+    limit: usize,
+    commits: &[String],
+) -> Result<Vec<SearchResult>> {
+    if limit == 0 {
+        return Ok(Vec::new());
+    }
+    let query_embedding = if mode == "exact" {
+        None
+    } else {
+        Some(query_vector(c, query)?)
+    };
+    let mut statement = c.prepare(
+        "SELECT m.commit_id,m.byte_start,m.byte_end,m.line_start,m.line_end,
+         CASE WHEN ?2 IS NULL THEN NULL ELSE vec_distance_cosine(e.vector,?2) END
+         FROM commit_message_units m JOIN unit_embeddings e USING(unit_id)
+         WHERE m.commit_id IN (SELECT value FROM json_each(?1))
+         ORDER BY CASE WHEN ?2 IS NULL THEN m.commit_id END,
+                  CASE WHEN ?2 IS NOT NULL THEN vec_distance_cosine(e.vector,?2) END,
+                  m.commit_id,m.unit_id",
+    )?;
+    let mut rows = statement.query(params![
+        serde_json::to_string(commits)?,
+        query_embedding.as_ref().map(|vector| as_bytes(vector))
+    ])?;
+    let lowercase_query = query.to_lowercase();
+    let mut results = Vec::new();
+    while let Some(row) = rows.next()? {
+        let commit_id: String = row.get(0)?;
+        let start: usize = row.get(1)?;
+        let end: usize = row.get(2)?;
+        let line_start: usize = row.get(3)?;
+        let line_end: usize = row.get(4)?;
+        let distance: Option<f64> = row.get(5)?;
+        let text = hydrate_commit_message(&commit_id, start, end)?;
+        if mode == "exact" && !text.to_lowercase().contains(&lowercase_query) {
+            continue;
+        }
+        results.push(SearchResult {
+            path: "[commit message]".to_owned(),
+            line_start,
+            line_end,
+            text,
+            commit_id: Some(commit_id),
+            distance,
+            blob_id: None,
+            page: None,
+            repo_id: None,
+            first_retrieved_at: None,
+            last_retrieved_at: None,
+        });
+        if results.len() == limit {
+            break;
+        }
+    }
+    Ok(results)
+}
+
+fn hydrate_commit_message(commit_id: &str, start: usize, end: usize) -> Result<String> {
+    let mut budget = Budget::new(
+        MAX_REFRESH_ACCOUNTING_BYTES,
+        "commit message hydration limit exceeded",
+    );
+    let size: usize =
+        String::from_utf8(git_output(&["cat-file", "-s", commit_id], 64, &mut budget)?)?
+            .trim()
+            .parse()?;
+    let object = git_output(&["cat-file", "commit", commit_id], size, &mut budget)?;
+    if start > end || end > object.len() {
+        return Err(format!("invalid indexed commit message range for {commit_id}").into());
+    }
+    String::from_utf8(object[start..end].to_vec()).map_err(Into::into)
 }
 
 pub fn search(

@@ -3687,6 +3687,7 @@ Exact [literal] TARGET
 last line') printf '[0.0, 1.0]' ;;
   'fn main() { println!("Rust phrase"); }') printf '[0.9, 0.1]' ;;
   TARGET) printf '[1.0, 0.0]' ;;
+  initial) printf '[0.5, 0.5]' ;;
   '') printf '[0.5, 0.5]' ;;
   *) printf 'unexpected embedding input: <%s>\n' "$input" >&2; exit 1 ;;
 esac
@@ -4442,7 +4443,7 @@ fn assert_refresh_batches_are_bounded_and_keep_vector_associations(refresh_args:
         "oversized embedding batches: {batch_sizes:?}"
     );
     let expected_units = if refresh_args.len() == 1 {
-        prior_unit_count + 600
+        prior_unit_count + 601
     } else {
         600
     };
@@ -4817,7 +4818,7 @@ fn populated_v3_history_migrates_atomically_to_range_only_schema() {
     // Exercise the supported v3 layout with real references, searchable text, and vectors.
     let database = rusqlite::Connection::open(root.join(".git/repodb.sqlite")).unwrap();
     database.execute_batch(
-        "DROP TABLE unit_embeddings; DROP TABLE git_blob_units; DROP TABLE indexed_units; \
+        "DROP TABLE unit_embeddings; DROP TABLE commit_message_units; DROP TABLE git_blob_units; DROP TABLE indexed_units; \
          DROP TABLE git_occurrences; DROP TABLE blob_contents; DROP TABLE git_commits; \
          CREATE TABLE git_commits(commit_id TEXT PRIMARY KEY NOT NULL, timestamp INTEGER NOT NULL); \
          CREATE TABLE blob_contents(blob_id TEXT PRIMARY KEY NOT NULL, content TEXT, status TEXT NOT NULL); \
@@ -4924,7 +4925,7 @@ fn populated_v3_history_migrates_atomically_to_range_only_schema() {
         assert!(!columns.iter().any(|column| column == forbidden));
     }
     let (invalid_ranges, units): (i64, i64) = database.query_row(
-        "SELECT sum(byte_start < 0 OR byte_end <= byte_start OR byte_end > ?1), count(*) FROM indexed_units",
+        "SELECT sum(byte_start < 0 OR byte_end <= byte_start OR byte_end > ?1), count(*) FROM indexed_units JOIN git_blob_units USING(unit_id)",
         ["First line\nExact [literal] TARGET\nlast line\n".len() as i64],
         |row| Ok((row.get(0)?, row.get(1)?)),
     ).unwrap();
