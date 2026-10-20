@@ -7013,6 +7013,96 @@ fn imported_git_units_reject_mixed_embedding_dimensions_atomically() {
 }
 
 #[test]
+fn help_documents_shipped_commands_options_and_no_crawl_behavior_without_initializing() {
+    let repo = repository();
+    let root = repo.path();
+    let database = root.join("not-created.sqlite");
+    let database_arg = database.to_str().unwrap();
+
+    let (ok, help) = run(root, &["--help"]);
+    assert!(ok, "{help}");
+    for option in [
+        "search",
+        "--history=off|all|N|PATH",
+        "--explore",
+        "--limit N",
+        "--byte-budget N",
+        "--cursor CURSOR",
+        "--fetch-reference ID",
+        "--worktree",
+        "--current-worktree",
+        "--size-limit=error|warn|ignore",
+        "never crawls linked pages",
+    ] {
+        assert!(
+            help.contains(option),
+            "missing {option:?} from help:\n{help}"
+        );
+    }
+    assert!(!database.exists());
+
+    for (command, expected) in [
+        ("search", "--fetch-reference ID"),
+        ("refresh", "--size-limit=error|warn|ignore"),
+        ("import", "does not crawl links"),
+        ("status", "--json"),
+        ("retention", "latest|all"),
+        ("reembed", "--model ID"),
+        ("init", "checked-out repository"),
+    ] {
+        let (ok, output) = run(root, &[command, "--help"]);
+        assert!(ok, "{command} --help: {output}");
+        assert!(
+            output.contains(expected),
+            "{command}: missing {expected:?}: {output}"
+        );
+        assert!(!database.exists(), "{command} --help created the database");
+    }
+
+    let (ok, output) = run(root, &["--database", database_arg, "search", "--help"]);
+    assert!(ok, "{output}");
+    assert!(output.contains("--explore"));
+    assert!(!database.exists());
+    let (ok, output) = run(root, &["help", "search"]);
+    assert!(ok, "{output}");
+    assert!(output.contains("--byte-budget N"));
+    let (ok, output) = run(root, &["search", "--help"]);
+    assert!(ok, "{output}");
+    for option in [
+        "--type SET",
+        "--scope SCOPE",
+        "--semantic-limit N",
+        "--all-history",
+        "--current-worktree",
+        "text_omitted_for_size",
+    ] {
+        assert!(output.contains(option), "missing {option:?}: {output}");
+    }
+
+    assert!(run(root, &["init"]).0);
+    for example in [
+        vec!["search", "literal text", "--json"],
+        vec![
+            "search",
+            "why is this implemented?",
+            "--semantic",
+            "--history=all",
+        ],
+        vec![
+            "search",
+            "literal text",
+            "--explore",
+            "--history=all",
+            "--json",
+        ],
+        vec!["status", "--json"],
+    ] {
+        let (ok, output) = run(root, &example);
+        assert!(ok, "help example {example:?}: {output}");
+    }
+}
+
+#[test]
 fn search_response_defaults_to_five_results_and_pages_with_stable_cursors() {
     let repo = repository();
     let root = repo.path();

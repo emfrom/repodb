@@ -1612,15 +1612,257 @@ fn semantic(
 ) -> Result<Vec<SearchResult>> {
     semantic_with_vector(c, &query_vector(c, q)?, limit, commits, include)
 }
-fn execute() -> Result<()> {
-    let mut a = env::args().skip(1);
-    let first = a.next().ok_or("usage: repodb [--database <path>] <init|refresh [--imports|--changed|--update COMMIT]|import|retention|reembed|search|status --json> (default database: <git-dir>/repodb.sqlite)")?;
-    let (option, cmd) = if first == "--database" {
-        let path = a.next().ok_or("--database requires a path")?;
-        (Some(path), a.next().ok_or("--database requires a command")?)
-    } else {
-        (None, first)
+const GENERAL_HELP: &str = r#"RepoDB — local repository and source search
+
+Usage:
+  repodb [--database PATH] <COMMAND> [OPTIONS]
+  repodb [--database PATH] help [COMMAND]
+
+Commands:
+  init                 Initialize the index and capture the checked-out repository
+  refresh              Refresh indexed repository and registered imports
+  import SOURCE        Register one local file/directory, URL page, or Git repository
+  retention latest|all Set imported-source version retention
+  reembed              Rebuild vectors with an embedding command/model
+  search QUERY         Search indexed content, diffs, and commit messages
+  status [--json]      Report index freshness and capability readiness
+
+Global options:
+  --database PATH      Use a separate database (default: <git-dir>/repodb.sqlite)
+  -h, --help           Show this help or help for a command
+
+Search defaults to checked-out HEAD and exact matching. Coarse options include:
+  --history=off|all|N|PATH   Select the committed view (default: off; bare --history means all)
+  --semantic | --combined    Choose semantic or mixed matching; --type and --scope select evidence
+  --worktree                 Opt into live inspection at the active indexed HEAD
+  --current-worktree         Compatibility name; remains HEAD-only
+  --explore                  Page through all eligible references without text
+  --limit N                  Results per page (default: 5; 50 with --explore)
+  --byte-budget N            Serialized response budget (default: 5000)
+  --cursor CURSOR            Continue a snapshot; --fetch-reference ID retrieves omitted text
+See `repodb search --help` for full option details.
+
+Refresh size policy is `--size-limit=error|warn|ignore` (default: error) and
+applies only to local document imports, not Git content. See `repodb refresh --help`.
+
+Imports are explicit and single-source: a URL import fetches only that page and
+never crawls linked pages. Search never fetches or refreshes; refreshing
+registered URLs is explicit. See `repodb import --help` and `repodb refresh --help`.
+
+Examples:
+  repodb init
+  repodb search 'literal text' --json
+  repodb search 'why is this implemented?' --semantic --history=all
+  repodb search 'literal text' --explore --history=all --json
+  repodb import --preview https://example.com/page
+  repodb status --json
+"#;
+
+const SEARCH_HELP: &str = r#"Search indexed content, historical diffs, commit messages, and imported sources.
+
+Usage:
+  repodb [--database PATH] search QUERY [OPTIONS]
+
+Matching and evidence:
+  --semantic                 Rank by embedding similarity
+  --combined                 Combine semantic candidates with exact matches
+  --semantic-limit N         Semantic candidate limit (default: 20)
+  --type SET                 all|content|cmdiffs|diffs|cmcommits|commits (default: all)
+                             all=content+diffs+messages; content=content+diffs;
+                             cmdiffs=messages+diffs; cmcommits=messages+content;
+                             diffs=diffs only; commits=messages only
+  --scope SCOPE              source|repo-local-source|repo-local-docs|all-docs|all
+                             (default: all; source includes imported Git sources;
+                             repo-local-* restricts to this repository; all-docs
+                             includes indexed docs from all origins)
+
+History selection:
+  --history=off|all|N|PATH   Select HEAD, all indexed history, N topological commits,
+                             or one path and its detected rename history (default: off)
+  --history                  Alias for --history=all
+  --commit ID                Starting commit for history traversal
+  --include-commit ID        Add one exact commit ID
+  --exclude-commit ID        Exclude one exact commit ID (exclusion wins)
+  --all-history              Compatibility alias for --history=all
+  --current-worktree         Compatibility name for HEAD-only; it does not inspect
+                             staged or live file contents
+
+Worktree and result budgets:
+  --worktree                 Opt into best-effort exact/semantic inspection against
+                             the active indexed HEAD; no uncommitted embeddings
+  --explore                  Enumerate every eligible occurrence as references only
+  --limit N                  Results per page (default: 5, or 50 with --explore)
+  --byte-budget N            Maximum serialized response bytes (default: 5000)
+  --cursor CURSOR            Continue the same result snapshot
+  --fetch-reference ID       Fetch one full result by its returned reference_id;
+                             repeat the same query/options and raise byte budget if needed
+  --json                     Emit machine-readable results and pagination metadata
+  -h, --help                 Show this help
+
+A complete untruncated ordinary JSON response retains the legacy results-array shape.
+Paginated, explore, and worktree responses include results, snapshot_id, cursor,
+truncated, total_count when known, and worktree coverage when applicable. Text is
+never cut mid-result: an oversized result returns its reference with
+text_omitted_for_size; use --fetch-reference ID to retrieve it separately. If a
+minimal reference cannot fit, search returns a result_limit error.
+
+The default history view is HEAD. `--history=all` searches all indexed history;
+`--history=N` uses deterministic topological order. `--current-worktree` remains
+HEAD-only, while `--worktree` is opt-in and rejects stale/alternate HEADs.
+Search does not refresh, fetch URLs, or crawl links.
+
+Examples:
+  repodb search 'literal text' --history=all --json
+  repodb search 'why does this retry?' --semantic --scope source
+  repodb search 'literal text' --explore --history=all --limit 50 --json
+  repodb search 'literal text' --json --cursor SNAPSHOT:OFFSET
+"#;
+
+const REFRESH_HELP: &str = r#"Initialize or refresh the local index.
+
+Usage:
+  repodb init [--size-limit=error|warn|ignore]
+  repodb refresh [--imports | --changed | --update COMMIT]
+                 [--size-limit=error|warn|ignore]
+
+`init` creates the index and captures the checked-out repository plus registered imports.
+`refresh` performs a full refresh. `--imports` refreshes registered external sources
+only; `--changed` indexes commits since the previous snapshot; `--update COMMIT`
+adds the selected commit. `--changed` and `--update` cannot be combined with
+--imports or --size-limit.
+
+`--size-limit` applies only to local document imports during `init`, a full
+`refresh`, or `refresh --imports`: `error` (default) aborts oversized local imports,
+`warn` continues and reports them, and `ignore` skips the policy. `--changed` and
+`--update` do not accept this policy. Git repositories and Git history are not
+size-gated. `import SOURCE` only registers a source; refreshing it is explicit.
+Search never refreshes or fetches.
+
+Examples:
+  repodb init --size-limit=warn
+  repodb refresh --size-limit=warn
+  repodb refresh --imports --size-limit=ignore
+  repodb refresh --changed
+  repodb refresh --update COMMIT_ID
+"#;
+
+const IMPORT_HELP: &str = r#"Register one source, previewing it without side effects, or refresh registered sources.
+
+Usage:
+  repodb [--database PATH] import SOURCE
+  repodb [--database PATH] import --revision REF GIT_REPOSITORY
+  repodb [--database PATH] import --preview FILE_OR_DIRECTORY_OR_URL
+
+SOURCE is one local file/directory, one HTTP(S) page URL, or one Git repository.
+A URL import fetches only the selected page; it does not crawl links. Search never
+fetches. `repodb refresh` or `repodb refresh --imports` explicitly refreshes
+registered URLs and other imports.
+
+`--preview` reports local source selection or fetch size/warnings without registering
+or indexing; it accepts one local file/directory or HTTP(S) page URL, not a Git repo.
+`--revision` pins a Git import to one resolved branch, tag, or commit. Size policy is
+selected at refresh time with `--size-limit`, not at registration.
+
+Examples:
+  repodb import ./docs
+  repodb import https://example.com/guide
+  repodb import --preview https://example.com/guide
+  repodb import --revision v1.2.0 https://example.com/project.git
+  repodb refresh --imports
+"#;
+
+const STATUS_HELP: &str = r#"Report database, indexed/live HEAD, freshness, and readiness by capability.
+
+Usage:
+  repodb [--database PATH] status [--json]
+
+Status does not initialize, refresh, fetch, or mutate the index. JSON distinguishes
+missing database/index state from an empty searchable snapshot.
+"#;
+
+const RETENTION_HELP: &str = r#"Choose retention for imported source versions.
+
+Usage:
+  repodb [--database PATH] retention latest|all
+
+`latest` is the default and keeps the newest distinct published version per source;
+`all` retains distinct versions. This affects imported sources, not repository Git
+history. It does not fetch sources; use an explicit refresh.
+"#;
+
+const REEMBED_HELP: &str = r#"Rebuild stored vectors using the configured or supplied embedding command/model.
+
+Usage:
+  repodb [--database PATH] reembed [--command PATH] [--model ID]
+
+Reembedding does not fetch or refresh external sources.
+"#;
+
+fn print_help(command: Option<&str>) -> Result<()> {
+    let help = match command {
+        None => GENERAL_HELP,
+        Some("search") => SEARCH_HELP,
+        Some("init" | "refresh") => REFRESH_HELP,
+        Some("import") => IMPORT_HELP,
+        Some("status") => STATUS_HELP,
+        Some("retention") => RETENTION_HELP,
+        Some("reembed") => REEMBED_HELP,
+        Some(command) => return Err(format!("unknown help topic: {command}").into()),
     };
+    print!("{help}");
+    Ok(())
+}
+
+fn execute() -> Result<()> {
+    let mut arguments = env::args().skip(1).collect::<Vec<_>>();
+    if arguments.is_empty() {
+        return print_help(None);
+    }
+    if matches!(arguments[0].as_str(), "--help" | "-h") {
+        if arguments.len() > 2 {
+            return Err("usage: repodb --help [COMMAND]".into());
+        }
+        return print_help(arguments.get(1).map(String::as_str));
+    }
+    let option = if arguments
+        .first()
+        .is_some_and(|argument| argument == "--database")
+    {
+        if arguments.len() < 2 {
+            return Err("--database requires a path".into());
+        }
+        let path = arguments.remove(1);
+        if path.is_empty() {
+            return Err("--database requires a path".into());
+        }
+        arguments.remove(0);
+        Some(path)
+    } else {
+        None
+    };
+    if arguments.is_empty() {
+        return print_help(None);
+    }
+    let cmd = arguments.remove(0);
+    if cmd == "help" {
+        if arguments.len() > 1 {
+            return Err("usage: repodb help [COMMAND]".into());
+        }
+        return print_help(arguments.first().map(String::as_str));
+    }
+    if matches!(cmd.as_str(), "--help" | "-h") {
+        if arguments.len() > 1 {
+            return Err("usage: repodb [--database PATH] --help [COMMAND]".into());
+        }
+        return print_help(arguments.first().map(String::as_str));
+    }
+    if arguments
+        .iter()
+        .any(|argument| matches!(argument.as_str(), "--help" | "-h"))
+    {
+        return print_help(Some(&cmd));
+    }
+    let mut a = arguments.into_iter();
     let db_path = selected_database(option)?;
     match cmd.as_str() {
         "status" => {
