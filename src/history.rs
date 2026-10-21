@@ -1,6 +1,8 @@
 use crate::{
-    Result, SearchResult, as_bytes, budget::Budget, git_objects::GitBlobReader, git_ranges,
-    process, query_vector, segmentation,
+    Result, SearchResult, as_bytes,
+    budget::{Budget, MAX_REFRESH_ACCOUNTING_BYTES},
+    git_objects::GitBlobReader,
+    git_ranges, process, query_vector, segmentation,
 };
 use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
 use std::{
@@ -109,7 +111,7 @@ pub fn database_git_path(database_path: &Path) -> Result<Option<Vec<u8>>> {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(error) => return Err(error.into()),
     };
-    let mut budget = Budget::refresh("database path discovery")?;
+    let mut budget = Budget::new(MAX_REFRESH_ACCOUNTING_BYTES, "database path discovery");
     let root_bytes = git_output(&["rev-parse", "--show-toplevel"], 4096, &mut budget)?;
     let root_bytes = root_bytes.strip_suffix(b"\n").unwrap_or(&root_bytes);
     let root = Path::new(std::str::from_utf8(root_bytes)?);
@@ -1428,7 +1430,6 @@ impl StagedUnitWriter<'_, '_> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::budget::MAX_REFRESH_ACCOUNTING_BYTES;
 
     #[test]
     fn full_refresh_indexes_added_and_removed_diff_references() {
@@ -4066,7 +4067,10 @@ pub fn search_commit_messages(
 }
 
 fn hydrate_commit_message(commit_id: &str, start: usize, end: usize) -> Result<String> {
-    let mut budget = Budget::refresh("commit message hydration limit exceeded")?;
+    let mut budget = Budget::new(
+        MAX_REFRESH_ACCOUNTING_BYTES,
+        "commit message hydration limit exceeded",
+    );
     let size: usize =
         String::from_utf8(git_output(&["cat-file", "-s", commit_id], 64, &mut budget)?)?
             .trim()
@@ -4720,7 +4724,7 @@ fn select_path_history(
 /// are additive; exclusions are applied last. Branch labels and timestamp ordering
 /// are never used as ancestry.
 pub fn select_history(c: &Connection, query: &HistoryQuery) -> Result<Vec<SelectedHistoryEntry>> {
-    let mut budget = Budget::refresh("history selection accounting")?;
+    let mut budget = Budget::new(MAX_REFRESH_ACCOUNTING_BYTES, "history selection accounting");
     if query.start_commit.is_some()
         && matches!(
             query.selector,
