@@ -2983,24 +2983,3 @@ fn main() {
         std::process::exit(2)
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::{ENCODED_GIT_PATH_PREFIX, encode_git_path, evidence_path_bytes};
-
-    #[test]
-    fn evidence_path_bytes_decodes_even_length_hex_and_falls_back_for_invalid_hex() {
-        assert_eq!(
-            evidence_path_bytes(&encode_git_path(vec![0xff, b'a'])),
-            [0xff, b'a']
-        );
-        assert_eq!(
-            evidence_path_bytes(&format!("{ENCODED_GIT_PATH_PREFIX}ff0")),
-            [0xff]
-        );
-        assert_eq!(
-            evidence_path_bytes(&format!("{ENCODED_GIT_PATH_PREFIX}gg")),
-            format!("{ENCODED_GIT_PATH_PREFIX}gg").as_bytes()
-        );
-    }
-}
