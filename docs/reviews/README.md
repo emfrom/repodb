@@ -1,0 +1,8 @@
+# Reviews
+
+Review specifications and their outputs are organized by review type. Release reviews are mandatory before every release. Reviews may be performed in any order or in parallel, except security review must always run last—preferably after changes from all other reviews have been completed. If those changes alter the release candidate after security review, rerun security review against the final candidate.
+
+- [`SECURITY.md`](SECURITY.md) — mandatory security and release-readiness review instructions; output records go in `docs/reviews/security/repodb-<version>.md`.
+- [`STANDARDS.md`](STANDARDS.md) — mandatory full coding-standards release review; output records go in `docs/reviews/standards/repodb-<version>.md`.
+
+For every release, ensure the applicable GitHub review tickets exist before review work begins: use one master issue per review type and version, with review-area tickets as sub-issues; create any missing tickets, but reuse existing matching tickets rather than creating duplicates. When creating the security review ticket, make it blocked by all other applicable review tickets, so security review starts only after those reviews are complete. Keep the versioned Markdown record for each review as its authoritative output. Reviewers must append their plan, evidence, findings, and decision to that review output file; they do not create additional tickets for individual findings or copy their results into the issue tracker. The master and review-area tickets organize and track the work, while actionable findings and their dispositions are recorded in the output file.
