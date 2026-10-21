@@ -23,7 +23,27 @@ fn git(repo: &Path, args: &[&str]) {
 }
 
 fn run(repo: &Path, args: &[&str]) -> (bool, String) {
-    run_with_env(repo, args, &[])
+    let mut args = args.to_vec();
+    let command_index = if args.first() == Some(&"search") {
+        Some(0)
+    } else if args.first() == Some(&"--database") && args.get(2) == Some(&"search") {
+        Some(2)
+    } else {
+        None
+    };
+    if let Some(index) = command_index
+        && !args.iter().any(|arg| {
+            matches!(
+                *arg,
+                "--exact" | "--semantic" | "--combined" | "--help" | "-h"
+            )
+        })
+    {
+        // Legacy tests below assert exact-search behavior. New tests of the
+        // combined default use run_with_env directly so no mode is inserted.
+        args.insert(index + 1, "--exact");
+    }
+    run_with_env(repo, &args, &[])
 }
 
 fn test_config_home(repo: &Path) -> PathBuf {
@@ -846,6 +866,7 @@ fn database_option_resolves_relative_to_cwd_and_rejects_missing_paths() {
         "--database",
         "isolated.sqlite",
         "search",
+        "--exact",
         "--json",
         "Rust phrase",
     ]);
@@ -3315,6 +3336,12 @@ fn scoped_refresh_indexes_commit_changes_and_reuses_unchanged_units() {
     let invoke = |args: &[&str]| {
         let mut args = args.to_vec();
         if args.first() == Some(&"search") {
+            if !args
+                .iter()
+                .any(|arg| matches!(*arg, "--exact" | "--semantic" | "--combined"))
+            {
+                args.push("--exact");
+            }
             args.push("--type=cmcommits");
         }
         let output = Command::new(env!("CARGO_BIN_EXE_repodb"))
@@ -4048,6 +4075,21 @@ fn parse_search_results(output: &str) -> Vec<serde_json::Value> {
         .unwrap_or_else(|| response["results"].as_array().cloned().unwrap_or_default())
 }
 
+fn search_json_default(repo: &Path, args: &[&str]) -> Vec<serde_json::Value> {
+    let mut command = vec![
+        "search",
+        "--json",
+        "--limit",
+        "10000",
+        "--byte-budget",
+        "10000000",
+    ];
+    command.extend_from_slice(args);
+    let (ok, output) = run_with_env(repo, &command, &[]);
+    assert!(ok, "search {args:?}: {output}");
+    parse_search_results(&output)
+}
+
 fn search_json(repo: &Path, args: &[&str]) -> Vec<serde_json::Value> {
     let mut command = vec![
         "search",
@@ -4057,6 +4099,8 @@ fn search_json(repo: &Path, args: &[&str]) -> Vec<serde_json::Value> {
         "--byte-budget",
         "10000000",
     ];
+    // `run` adds --exact for legacy exact-only assertions; tests of the new
+    // combined default use search_json_default to leave mode flags omitted.
     command.extend_from_slice(args);
     let (ok, output) = run(repo, &command);
     assert!(ok, "search {args:?}: {output}");
@@ -4070,6 +4114,93 @@ fn search_json(repo: &Path, args: &[&str]) -> Vec<serde_json::Value> {
         results.retain(|result| result["component"] == "content");
     }
     results
+}
+
+#[test]
+fn search_and_explore_default_to_combined_and_keep_explicit_mode_selectors() {
+    let repo = repository();
+    let root = repo.path();
+    assert!(run(root, &["init"]).0);
+    let embedder = fake_embedder(
+        root,
+        "case \"$input\" in TARGET) printf '[1,0]' ;; *'Rust phrase'*) printf '[1,0]' ;; *TARGET*) printf '[0,1]' ;; *) printf '[0,1]' ;; esac",
+    );
+    assert!(run(root, &["reembed", "--command", embedder.to_str().unwrap()]).0);
+
+    let default_search = search_json_default(root, &["TARGET", "--type=content"]);
+    let combined_search = search_json_default(root, &["TARGET", "--combined", "--type=content"]);
+    assert_eq!(default_search, combined_search);
+    assert!(
+        default_search
+            .iter()
+            .any(|result| result["path"] == "notes.txt")
+    );
+    assert!(
+        default_search
+            .iter()
+            .any(|result| result["path"] == "src/main.rs")
+    );
+
+    let exact_search = search_json(root, &["TARGET", "--exact", "--type=content"]);
+    assert!(
+        exact_search
+            .iter()
+            .any(|result| result["path"] == "notes.txt")
+    );
+    assert!(
+        !exact_search
+            .iter()
+            .any(|result| result["path"] == "src/main.rs")
+    );
+    let semantic_search = search_json(
+        root,
+        &[
+            "TARGET",
+            "--semantic",
+            "--semantic-limit",
+            "1",
+            "--type=content",
+        ],
+    );
+    assert!(
+        semantic_search
+            .iter()
+            .any(|result| result["path"] == "src/main.rs")
+    );
+    assert!(
+        !semantic_search
+            .iter()
+            .any(|result| result["path"] == "notes.txt")
+    );
+
+    let default_explore = search_json_default(root, &["TARGET", "--explore", "--type=content"]);
+    let combined_explore = search_json_default(
+        root,
+        &["TARGET", "--explore", "--combined", "--type=content"],
+    );
+    assert_eq!(default_explore, combined_explore);
+    assert!(
+        default_explore
+            .iter()
+            .any(|result| result["path"] == "notes.txt")
+    );
+    assert!(
+        default_explore
+            .iter()
+            .any(|result| result["path"] == "src/main.rs")
+    );
+
+    let exact_explore = search_json(root, &["TARGET", "--explore", "--exact", "--type=content"]);
+    assert!(
+        exact_explore
+            .iter()
+            .any(|result| result["path"] == "notes.txt")
+    );
+    assert!(
+        !exact_explore
+            .iter()
+            .any(|result| result["path"] == "src/main.rs")
+    );
 }
 
 #[test]
@@ -7031,6 +7162,8 @@ fn help_documents_shipped_commands_options_and_no_crawl_behavior_without_initial
         "--fetch-reference ID",
         "--worktree",
         "--current-worktree",
+        "--exact | --semantic | --combined",
+        "combined matching",
         "--size-limit=error|warn|ignore",
         "never crawls linked pages",
     ] {
@@ -7069,6 +7202,8 @@ fn help_documents_shipped_commands_options_and_no_crawl_behavior_without_initial
     let (ok, output) = run(root, &["search", "--help"]);
     assert!(ok, "{output}");
     for option in [
+        "--exact",
+        "default: combined",
         "--type SET",
         "--scope SCOPE",
         "--semantic-limit N",

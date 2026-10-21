@@ -5,7 +5,7 @@ description: Search staged and live working-tree text or map indexed semantic re
 
 # RepoDB augmented worktree search
 
-Use `repodb search QUERY --worktree` only when the task explicitly needs staged or live working-tree content. It requires the active HEAD to be present in the index; stale, missing, or alternate HEADs fail with an error and may include `repodb refresh` guidance. Search never refreshes automatically.
+Use `repodb search QUERY --worktree` only when the task explicitly needs staged or live working-tree content. This now defaults to combined exact-plus-semantic matching when semantic search is available. Add `--exact` for exact-only live search or `--semantic` for semantic mapping only. It requires the active HEAD to be present in the index; stale, missing, or alternate HEADs fail with an error and may include `repodb refresh` guidance. Search never refreshes automatically.
 
 Exact worktree search inspects staged/live tracked changes and Git-visible untracked supported text, removes matches for deleted HEAD files, and reports best-effort coverage and provenance. Ignored, binary, unsupported, unreadable, and otherwise excluded files are not silently treated as searched.
 

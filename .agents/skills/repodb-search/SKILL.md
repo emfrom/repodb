@@ -5,7 +5,7 @@ description: Search indexed RepoDB content with combined exact and semantic matc
 
 # RepoDB combined search (`repodb_search`)
 
-Use combined search when a literal phrase and a concept may both find the answer. Use exact search for known literal identifiers, symbols, and phrases (`repodb search 'QUERY'`), and semantic search for conceptual questions about code behavior and documentation (`repodb search --semantic 'QUERY'`). Choose combined search when you are unsure whether literal or conceptual matching will find it; it runs both forms of discovery (`repodb search --combined 'QUERY'`).
+Search defaults to combined exact and semantic matching, which is useful when either a literal phrase or a concept may find the answer. Use `--combined` to state the default mode explicitly (`repodb search --combined 'QUERY'`). Select exact-only matching for known literal identifiers, symbols, and phrases with `--exact`; select semantic-only matching for conceptual questions about code behavior and documentation with `--semantic`.
 
 Searches default to scope `all`; pass a selected scope with `--scope`, for example `repodb search --combined --scope source 'QUERY'`. Valid scopes are `source`, `repo-local-source`, `repo-local-docs`, `all-docs`, and `all`.
 

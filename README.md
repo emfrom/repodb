@@ -17,8 +17,9 @@ repodb init                          # build the first history snapshot
 repodb refresh                       # full snapshot from current refs + HEAD
 repodb refresh --changed              # incrementally index current branch HEAD vs first parent
 repodb refresh --update COMMIT         # add one historical commit without pruning
-repodb search 'literal text'          # checked-out HEAD only (the default)
-repodb search 'literal text' --worktree --json  # best-effort exact live changes
+repodb search 'literal text'          # combined exact + semantic matching (default)
+repodb search 'literal text' --exact   # exact-only matching
+repodb search 'literal text' --exact --worktree --json  # exact live changes
 repodb search 'question' --semantic --worktree --json  # map indexed matches to live text
 repodb search 'literal text' --history=all --json
 repodb search 'literal text' --history=20 --commit COMMIT_ID
@@ -123,8 +124,11 @@ sources are searched independently and may still appear in results.
 A deleted ref's captured commit remains selectable until a successful explicit
 refresh removes it.
 
-All commit selectors and filters apply equally to exact, semantic, and combined search.
-Exact search remains a case-insensitive literal substring search.
+Search and `search --explore` default to combined exact and semantic matching when
+semantic search is available. `--exact` selects exact-only matching; `--semantic`
+selects semantic-only matching; `--combined` explicitly states the default. The
+same selectors, filters, and ranking rules apply to ordinary search and explore.
+Exact matching remains a case-insensitive literal substring search.
 
 Search results can also be filtered with `--scope` (default `all`):
 

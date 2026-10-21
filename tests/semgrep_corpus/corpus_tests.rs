@@ -154,6 +154,7 @@ fn search(root: &Path, database: &str, marker: &str) -> Vec<serde_json::Value> {
             "--database",
             database,
             "search",
+            "--exact",
             "--json",
             marker,
             "--all-history",

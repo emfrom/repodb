@@ -1631,9 +1631,10 @@ Global options:
   --database PATH      Use a separate database (default: <git-dir>/repodb.sqlite)
   -h, --help           Show this help or help for a command
 
-Search defaults to checked-out HEAD and exact matching. Coarse options include:
+Search defaults to checked-out HEAD and combined matching. Coarse options include:
   --history=off|all|N|PATH   Select the committed view (default: off; bare --history means all)
-  --semantic | --combined    Choose semantic or mixed matching; --type and --scope select evidence
+  --exact | --semantic | --combined  Choose exact-only, semantic-only, or combined matching (default: combined)
+  --type and --scope          Select evidence components and source origins
   --worktree                 Opt into live inspection at the active indexed HEAD
   --current-worktree         Compatibility name; remains HEAD-only
   --explore                  Page through all eligible references without text
@@ -1652,6 +1653,7 @@ registered URLs is explicit. See `repodb import --help` and `repodb refresh --he
 Examples:
   repodb init
   repodb search 'literal text' --json
+  repodb search 'literal text' --exact --json
   repodb search 'why is this implemented?' --semantic --history=all
   repodb search 'literal text' --explore --history=all --json
   repodb import --preview https://example.com/page
@@ -1663,8 +1665,9 @@ const SEARCH_HELP: &str = r#"Search indexed content, historical diffs, commit me
 Usage:
   repodb [--database PATH] search QUERY [OPTIONS]
 
-Matching and evidence:
-  --semantic                 Rank by embedding similarity
+Matching and evidence (default: combined):
+  --exact                    Exact-only matching
+  --semantic                 Semantic-only matching by embedding similarity
   --combined                 Combine semantic candidates with exact matches
   --semantic-limit N         Semantic candidate limit (default: 20)
   --type SET                 all|content|cmdiffs|diffs|cmcommits|commits (default: all)
@@ -1706,9 +1709,11 @@ never cut mid-result: an oversized result returns its reference with
 text_omitted_for_size; use --fetch-reference ID to retrieve it separately. If a
 minimal reference cannot fit, search returns a result_limit error.
 
-The default history view is HEAD. `--history=all` searches all indexed history;
-`--history=N` uses deterministic topological order. `--current-worktree` remains
-HEAD-only, while `--worktree` is opt-in and rejects stale/alternate HEADs. Semantic
+The default history view is HEAD. Matching defaults to combined exact and
+semantic evidence; `--exact` and `--semantic` select one mode explicitly, while
+`--combined` may be used to state the default. `--history=all` searches all indexed
+history; `--history=N` uses deterministic topological order. `--current-worktree`
+remains HEAD-only, while `--worktree` is opt-in and rejects stale/alternate HEADs. Semantic
 worktree similarity is based on indexed HEAD text; live text is not embedded.
 Search does not refresh, fetch URLs, or crawl links.
 
@@ -2068,7 +2073,7 @@ fn execute() -> Result<()> {
             let mut byte_budget = 5_000usize;
             let mut cursor = None;
             let mut fetch_reference = None;
-            let (mut json, mut mode, mut semantic_limit) = (false, "exact", 20usize);
+            let (mut json, mut mode, mut semantic_limit) = (false, "combined", 20usize);
             while let Some(x) = a.next() {
                 match x.as_str() {
                     "--json" => json = true,
@@ -2132,6 +2137,7 @@ fn execute() -> Result<()> {
                         }
                         history_selector = Some(parse_history_selector(&x[10..])?);
                     }
+                    "--exact" => mode = "exact",
                     "--semantic" => mode = "semantic",
                     "--combined" => mode = "combined",
                     "--diffs" => diff_flag = true,

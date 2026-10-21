@@ -23,9 +23,9 @@ An initialized database can be stale. Search does not refresh it. Suggest an exp
 
 ## Choosing a search
 
-- Exact search is appropriate for a known identifier or literal phrase.
-- Semantic search is appropriate for concepts, questions, code behavior, or documentation and guidance such as standards, README content, and `AGENTS.md`.
-- Combined search is useful when either literal or conceptual matches may find the answer.
+- Combined exact-plus-semantic matching is the default for search and explore; use it when either a literal phrase or a concept may find the answer. `--combined` states this mode explicitly.
+- Exact-only search (`--exact`) is appropriate for a known identifier or literal phrase.
+- Semantic-only search (`--semantic`) is appropriate for concepts, questions, code behavior, or documentation and guidance such as standards, README content, and `AGENTS.md`.
 
 Search covers all indexed sources by default; `--scope` can restrict it to source, repository-local source/docs, all docs, or all origins. It does not imply that every repository file or external source has been imported.
 

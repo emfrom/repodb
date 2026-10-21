@@ -79,6 +79,12 @@ fn indexed_test_file() -> (tempfile::TempDir, PathBuf) {
 
 fn search_results(repo: &Path, args: &[&str]) -> Vec<serde_json::Value> {
     let mut command = vec!["search", "--json"];
+    if !args
+        .iter()
+        .any(|arg| matches!(*arg, "--exact" | "--semantic" | "--combined"))
+    {
+        command.push("--exact");
+    }
     command.extend_from_slice(args);
     serde_json::from_str(&run(repo, &command)).expect("valid JSON search results")
 }
@@ -199,6 +205,12 @@ fn focused_skills_match_final_cli_help_and_status_provenance() {
     assert!(errors_skill.contains("blob ID"));
 
     let help_skill = skill(".agents/skills/repodb-help/SKILL.md");
+    let exact_skill = skill(".agents/skills/repodb-search-exact/SKILL.md");
+    let combined_skill = skill(".agents/skills/repodb-search/SKILL.md");
+    assert!(search_help.contains("--exact"));
+    assert!(search_help.contains("default: combined"));
+    assert!(exact_skill.contains("repodb search --exact 'QUERY'"));
+    assert!(combined_skill.contains("defaults to combined exact and semantic matching"));
     assert!(search_help.contains("--scope SCOPE"));
     assert!(help_skill.contains("`--scope`"));
     assert!(!help_skill.contains("not provided by the current interface"));
