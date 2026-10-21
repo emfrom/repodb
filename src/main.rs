@@ -1615,6 +1615,7 @@ fn semantic(
 const GENERAL_HELP: &str = r#"RepoDB — local repository and source search
 
 Usage:
+  repodb --version
   repodb [--database PATH] <COMMAND> [OPTIONS]
   repodb [--database PATH] help [COMMAND]
 
@@ -1629,6 +1630,7 @@ Commands:
 
 Global options:
   --database PATH      Use a separate database (default: <git-dir>/repodb.sqlite)
+  --version            Print the application version and exit
   -h, --help           Show this help or help for a command
 
 Search defaults to checked-out HEAD and combined matching. Coarse options include:
@@ -1822,6 +1824,17 @@ fn print_help(command: Option<&str>) -> Result<()> {
 
 fn execute() -> Result<()> {
     let mut arguments = env::args().skip(1).collect::<Vec<_>>();
+    let version_requested = match arguments.as_slice() {
+        [flag] => flag == "--version",
+        [database_flag, _, version_flag] => {
+            database_flag == "--database" && version_flag == "--version"
+        }
+        _ => false,
+    };
+    if version_requested {
+        println!("repodb {}", env!("CARGO_PKG_VERSION"));
+        return Ok(());
+    }
     if arguments.is_empty() {
         return print_help(None);
     }

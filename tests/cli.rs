@@ -160,6 +160,37 @@ fn repository() -> tempfile::TempDir {
 }
 
 #[test]
+fn version_flag_prints_package_version_without_database_side_effects() {
+    let repo = repository();
+    let selected_database = repo.path().join(".git/alternate.sqlite");
+    let selected_database = selected_database.to_str().unwrap();
+    let invocations = [
+        vec!["--version"],
+        vec!["--database", selected_database, "--version"],
+    ];
+
+    for args in invocations {
+        let output = Command::new(env!("CARGO_BIN_EXE_repodb"))
+            .args(&args)
+            .current_dir(repo.path())
+            .output()
+            .unwrap();
+
+        assert!(
+            output.status.success(),
+            "repodb {args:?} failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert_eq!(
+            String::from_utf8(output.stdout).unwrap(),
+            format!("repodb {}\n", env!("CARGO_PKG_VERSION"))
+        );
+    }
+    assert!(!repo.path().join(".git/repodb.sqlite").exists());
+    assert!(!repo.path().join(".git/alternate.sqlite").exists());
+}
+
+#[test]
 fn git_import_accepts_one_optional_revision_and_pins_it_to_the_resolved_commit() {
     let repo = repository();
     let root = repo.path();
