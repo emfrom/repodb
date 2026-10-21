@@ -238,7 +238,7 @@ struct ChangedLines {
 
 fn parse_diff_line_range(value: &str) -> Result<(usize, usize)> {
     let value = value.get(1..).ok_or("invalid Git hunk range")?;
-    let (start, count) = value.split_once(',').map_or((value, "1"), |parts| parts);
+    let (start, count) = value.split_once(',').unwrap_or((value, "1"));
     let start: usize = start.parse()?;
     let count: usize = count.parse()?;
     Ok((start, count))
@@ -372,9 +372,9 @@ fn line_byte_range(text: &str, first: usize, last: usize) -> Result<(usize, usiz
     }
     let mut start = None;
     let mut end = None;
-    let mut line_number = 1usize;
     let mut offset = 0usize;
-    for line in text.split_inclusive('\n') {
+    for (line_index, line) in text.split_inclusive('\n').enumerate() {
+        let line_number = line_index + 1;
         if line_number == first {
             start = Some(offset);
         }
@@ -383,7 +383,6 @@ fn line_byte_range(text: &str, first: usize, last: usize) -> Result<(usize, usiz
             end = Some(offset);
             break;
         }
-        line_number += 1;
     }
     let start = start.ok_or("changed line is outside Git blob")?;
     let mut end = end.ok_or("changed line is outside Git blob")?;
@@ -396,27 +395,56 @@ fn line_byte_range(text: &str, first: usize, last: usize) -> Result<(usize, usiz
     Ok((start, end))
 }
 
-fn stage_diff_range(
-    c: &Connection,
-    parent: &str,
-    child: &str,
+struct StageContext<'a, 'connection> {
+    c: &'a Connection,
+    next_unit_id: &'a mut i64,
+    batch: &'a mut EmbeddingBatch,
+    pipeline: &'a mut EmbeddingPipeline,
+    embedding_dimension: &'a mut Option<usize>,
+    embedding_statement: &'a mut rusqlite::Statement<'connection>,
+    budget: &'a mut Budget,
+}
+
+struct DiffRange<'a> {
+    parent: &'a str,
+    child: &'a str,
     side: DiffSide,
     hunk_id: i64,
-    old_path: &[u8],
-    new_path: &[u8],
-    blob_id: &str,
-    blob_text: &str,
+    old_path: &'a [u8],
+    new_path: &'a [u8],
+    blob_id: &'a str,
+    blob_text: &'a str,
     first: usize,
     last: usize,
     old_anchor: Option<(usize, usize)>,
     new_anchor: Option<(usize, usize)>,
-    next_unit_id: &mut i64,
-    batch: &mut Vec<(i64, String)>,
-    pipeline: &mut EmbeddingPipeline,
-    embedding_dimension: &mut Option<usize>,
-    embedding_statement: &mut rusqlite::Statement<'_>,
-    budget: &mut Budget,
-) -> Result<()> {
+}
+
+fn stage_diff_range(context: &mut StageContext<'_, '_>, range: DiffRange<'_>) -> Result<()> {
+    let DiffRange {
+        parent,
+        child,
+        side,
+        hunk_id,
+        old_path,
+        new_path,
+        blob_id,
+        blob_text,
+        first,
+        last,
+        old_anchor,
+        new_anchor,
+    } = range;
+    let StageContext {
+        c,
+        next_unit_id,
+        batch,
+        pipeline,
+        embedding_dimension,
+        embedding_statement,
+        budget,
+    } = context;
+    let next_unit_id = &mut **next_unit_id;
     let (range_start, range_end) = line_byte_range(blob_text, first, last)?;
     let changed_text = &blob_text[range_start..range_end];
     let mut unit_statement =
@@ -483,17 +511,21 @@ fn stage_diff_range(
 }
 
 fn stage_diff_pair(
-    c: &Connection,
+    context: &mut StageContext<'_, '_>,
     parent: Option<&str>,
     child: &str,
     excluded_database_path: Option<&[u8]>,
-    next_unit_id: &mut i64,
-    batch: &mut Vec<(i64, String)>,
-    pipeline: &mut EmbeddingPipeline,
-    embedding_dimension: &mut Option<usize>,
-    embedding_statement: &mut rusqlite::Statement<'_>,
-    budget: &mut Budget,
 ) -> Result<()> {
+    let StageContext {
+        c,
+        next_unit_id,
+        batch,
+        pipeline,
+        embedding_dimension,
+        embedding_statement,
+        budget,
+    } = context;
+    let next_unit_id = &mut **next_unit_id;
     const EMPTY_TREE: &str = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
     let args = if let Some(parent) = parent {
         vec![
@@ -644,25 +676,29 @@ fn stage_diff_pair(
                     DiffSide::Removed => (old_blob_id, old_text),
                 };
                 stage_diff_range(
-                    c,
-                    parent,
-                    child,
-                    change.side,
-                    change.hunk_id,
-                    old_path,
-                    new_path,
-                    blob_id,
-                    text,
-                    change.first,
-                    change.last,
-                    change.old_anchor,
-                    change.new_anchor,
-                    next_unit_id,
-                    batch,
-                    pipeline,
-                    embedding_dimension,
-                    embedding_statement,
-                    budget,
+                    &mut StageContext {
+                        c,
+                        next_unit_id,
+                        batch,
+                        pipeline,
+                        embedding_dimension,
+                        embedding_statement,
+                        budget,
+                    },
+                    DiffRange {
+                        parent,
+                        child,
+                        side: change.side,
+                        hunk_id: change.hunk_id,
+                        old_path,
+                        new_path,
+                        blob_id,
+                        blob_text: text,
+                        first: change.first,
+                        last: change.last,
+                        old_anchor: change.old_anchor,
+                        new_anchor: change.new_anchor,
+                    },
                 )?;
             }
             hunk_id = next_hunk_id;
@@ -2622,9 +2658,14 @@ mod tests {
         publish_refresh(&tx).unwrap();
         tx.commit().unwrap();
 
-        let exact =
-            search_commit_messages(&db, "transaction ledger", "exact", 5, &[commit.clone()])
-                .unwrap();
+        let exact = search_commit_messages(
+            &db,
+            "transaction ledger",
+            "exact",
+            5,
+            std::slice::from_ref(&commit),
+        )
+        .unwrap();
         assert_eq!(exact.len(), 1);
         assert_eq!(exact[0].commit_id.as_deref(), Some(commit.as_str()));
         assert!(exact[0].text.contains("Initial transaction ledger"));
@@ -2633,7 +2674,7 @@ mod tests {
             "accounting rationale",
             "semantic",
             5,
-            &[commit.clone()],
+            std::slice::from_ref(&commit),
         )
         .unwrap();
         assert!(
@@ -2832,19 +2873,24 @@ mod tests {
 }
 
 fn stage_commit_message(
+    context: &mut StageContext<'_, '_>,
     commit_id: &str,
     message: &str,
     object_byte_start: usize,
     object_line_start: usize,
-    next_unit_id: &mut i64,
     unit_statement: &mut rusqlite::Statement<'_>,
     message_statement: &mut rusqlite::Statement<'_>,
-    batch: &mut EmbeddingBatch,
-    pipeline: &mut EmbeddingPipeline,
-    embedding_dimension: &mut Option<usize>,
-    embedding_statement: &mut rusqlite::Statement<'_>,
-    budget: &mut Budget,
 ) -> Result<()> {
+    let StageContext {
+        next_unit_id,
+        batch,
+        pipeline,
+        embedding_dimension,
+        embedding_statement,
+        budget,
+        ..
+    } = context;
+    let next_unit_id = &mut **next_unit_id;
     let mut staging_error = None;
     segmentation::visit("fallback", message, |unit| {
         let result = (|| -> Result<()> {
@@ -2977,18 +3023,21 @@ pub fn prepare_refresh_excluding(
             commit_stage.execute(params![commit_id, timestamp])?;
             let (message, byte_start, line_start) = commit_message(commit_id, budget)?;
             stage_commit_message(
+                &mut StageContext {
+                    c,
+                    next_unit_id: &mut unit_count,
+                    batch: &mut batch,
+                    pipeline: &mut pipeline,
+                    embedding_dimension: &mut embedding_dimension,
+                    embedding_statement: &mut message_embedding_stage,
+                    budget,
+                },
                 commit_id,
                 &message,
                 byte_start,
                 line_start,
-                &mut unit_count,
                 &mut message_unit_stage,
                 &mut message_range_stage,
-                &mut batch,
-                &mut pipeline,
-                &mut embedding_dimension,
-                &mut message_embedding_stage,
-                budget,
             )?;
             for_each_tree_record(commit_id, budget, |record, budget| {
                 let tab = record
@@ -3077,32 +3126,24 @@ pub fn prepare_refresh_excluding(
                 return Err("invalid Git parent record".into());
             }
             let parents: Vec<String> = fields.map(str::to_owned).collect();
+            let mut stage_context = StageContext {
+                c,
+                next_unit_id: &mut unit_count,
+                batch: &mut batch,
+                pipeline: &mut pipeline,
+                embedding_dimension: &mut embedding_dimension,
+                embedding_statement: &mut embedding_statement,
+                budget: &mut preparation_bytes,
+            };
             if parents.is_empty() {
-                stage_diff_pair(
-                    c,
-                    None,
-                    &child,
-                    excluded_database_path,
-                    &mut unit_count,
-                    &mut batch,
-                    &mut pipeline,
-                    &mut embedding_dimension,
-                    &mut embedding_statement,
-                    &mut preparation_bytes,
-                )?;
+                stage_diff_pair(&mut stage_context, None, &child, excluded_database_path)?;
             } else {
                 for parent in parents {
                     stage_diff_pair(
-                        c,
+                        &mut stage_context,
                         Some(&parent),
                         &child,
                         excluded_database_path,
-                        &mut unit_count,
-                        &mut batch,
-                        &mut pipeline,
-                        &mut embedding_dimension,
-                        &mut embedding_statement,
-                        &mut preparation_bytes,
                     )?;
                 }
             }
@@ -3752,9 +3793,9 @@ pub(crate) fn search_diffs_filtered(
                  WHERE r.child_commit_id IN (SELECT value FROM json_each(?1))
                  ORDER BY r.child_commit_id,r.parent_commit_id,r.hunk_id,r.side,r.byte_start"
             ))?;
-            let mut rows = statement.query_map([commits], read_diff_reference)?;
+            let rows = statement.query_map([commits], read_diff_reference)?;
             let mut reader = GitBlobReader::new(None)?;
-            while let Some(row) = rows.next() {
+            for row in rows {
                 let reference = row?;
                 if !include(&reference) {
                     continue;
@@ -3786,11 +3827,11 @@ pub(crate) fn search_diffs_filtered(
                  WHERE r.child_commit_id IN (SELECT value FROM json_each(?2))
                  ORDER BY 17,r.child_commit_id,r.parent_commit_id,r.hunk_id,r.side,r.byte_start,r.unit_id"
             ))?;
-            let mut rows = statement.query_map(params![as_bytes(&vector), commits], |row| {
+            let rows = statement.query_map(params![as_bytes(&vector), commits], |row| {
                 Ok((read_diff_reference(row)?, row.get::<_, f64>(16)?))
             })?;
             let mut reader = GitBlobReader::new(None)?;
-            while let Some(row) = rows.next() {
+            for row in rows {
                 let (reference, distance) = row?;
                 if !include(&reference) {
                     continue;
@@ -4313,10 +4354,9 @@ fn start_commit_for_history(
     Ok(known.contains(&head).then_some(head))
 }
 
-fn topological_graph(
-    start: &str,
-    budget: &mut Budget,
-) -> Result<(Vec<String>, HashMap<String, Vec<String>>)> {
+type TopologicalGraph = (Vec<String>, HashMap<String, Vec<String>>);
+
+fn topological_graph(start: &str, budget: &mut Budget) -> Result<TopologicalGraph> {
     use std::collections::BTreeSet;
 
     let output = git_output(
