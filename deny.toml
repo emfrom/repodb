@@ -1,0 +1,54 @@
+# RepoDB dependency policy (cargo-deny 0.20.2).
+# Keep this config aligned with the supported platform and reviewed lockfile.
+
+[graph]
+# Match the currently declared verification scope. Add targets before claiming
+# support for additional platforms.
+targets = ["x86_64-unknown-linux-gnu"]
+# Review optional dependencies too, not only the default feature graph.
+all-features = true
+
+[advisories]
+# No advisories are silently suppressed. Any exception needs a reason, owner,
+# mitigation, and expiry/revisit date in the release review.
+ignore = []
+
+[licenses]
+# GPL-2.0-only is RepoDB's declared project license (Cargo.toml / LICENSE).
+# MIT is an available choice in the current dependency license expressions;
+# Unicode-3.0 is additionally required by an observed AND expression. Apache,
+# BSD-2-Clause, and Unlicense alternatives are not blanket-allowed. This is an
+# allowlist, not a legal-compatibility check; review any new expression.
+allow = [
+    "GPL-2.0-only",
+    "MIT",
+    "Unicode-3.0",
+]
+confidence-threshold = 0.8
+exceptions = []
+
+[licenses.private]
+ignore = false
+
+[bans]
+# Duplicate versions are surfaced for review; current lockfile contains two
+# hashbrown versions. Wildcard requirements undermine reproducibility.
+multiple-versions = "warn"
+wildcards = "deny"
+allow = []
+deny = []
+skip = []
+skip-tree = []
+
+[sources]
+# Dependencies must come from the canonical crates.io registry unless reviewed
+# policy explicitly adds another source.
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []
+
+[sources.allow-org]
+github = []
+gitlab = []
+bitbucket = []
