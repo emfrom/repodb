@@ -2070,6 +2070,55 @@ fn failed_imports_only_refresh_preserves_published_imports_and_history() {
 }
 
 #[test]
+fn import_publication_sql_failure_preserves_the_previous_snapshot() {
+    let repo = repository();
+    let root = repo.path();
+    assert!(run(root, &["init"]).0);
+    let source_dir = tempfile::tempdir().unwrap();
+    let source = source_dir.path().join("document.txt");
+    fs::write(&source, "previous SQL publication marker\n").unwrap();
+    let locator = source.to_string_lossy().into_owned();
+    assert!(run(root, &["import", &locator]).0);
+    assert!(run(root, &["refresh", "--imports"]).0);
+    assert_eq!(
+        search_json(root, &["previous SQL publication marker"]).len(),
+        1
+    );
+
+    let database_path = root.join(".git/repodb.sqlite");
+    Connection::open(&database_path)
+        .unwrap()
+        .execute_batch(
+            "CREATE TRIGGER injected_import_publish_failure
+             BEFORE INSERT ON imported_units
+             BEGIN SELECT RAISE(ABORT, 'injected publication failure'); END;",
+        )
+        .unwrap();
+    fs::write(&source, "unpublished SQL publication marker\n").unwrap();
+
+    let (success, _) = run(root, &["refresh", "--imports"]);
+    assert!(
+        !success,
+        "the injected SQL publication failure must surface"
+    );
+    assert_eq!(
+        search_json(root, &["previous SQL publication marker"]).len(),
+        1
+    );
+    assert!(search_json(root, &["unpublished SQL publication marker"]).is_empty());
+
+    let database = Connection::open(&database_path).unwrap();
+    let published: i64 = database
+        .query_row(
+            "SELECT count(*) FROM imported_units WHERE text LIKE '%previous SQL publication marker%'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(published, 1);
+}
+
+#[test]
 fn failed_import_refresh_does_not_publish_resolved_git_pin_or_content() {
     let repo = repository();
     let root = repo.path();
