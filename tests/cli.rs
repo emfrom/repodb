@@ -2347,7 +2347,13 @@ fn timed_out_history_git_process_preserves_the_published_snapshot() {
     fs::create_dir(&bin).unwrap();
     let fake_git = bin.join("git");
     let marker = root.join("git-was-started");
-    fs::write(&fake_git, "#!/bin/sh\ntouch $MARKER\nsleep 5\n").unwrap();
+    let real_git = Command::new("which").arg("git").output().unwrap();
+    let real_git = String::from_utf8(real_git.stdout).unwrap();
+    let real_git = real_git.trim();
+    let shim = format!(
+        "#!/bin/sh\ncase $* in *ls-tree*) touch $MARKER; sleep 5;; *) exec {real_git} \"$@\";; esac\n"
+    );
+    fs::write(&fake_git, shim).unwrap();
     fs::set_permissions(&fake_git, fs::Permissions::from_mode(0o755)).unwrap();
     let path = format!("{}:{}", bin.display(), std::env::var("PATH").unwrap());
     let (invalid_config_success, _) = run_with_env(

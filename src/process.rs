@@ -1,7 +1,15 @@
 #[cfg(test)]
 use std::io::{BufRead, BufReader};
-use std::io::{Read, Write};
-use std::process::{Child, Command, ExitStatus};
+use std::{
+    io::{Read, Write},
+    process::{Child, Command, ExitStatus},
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+        mpsc,
+    },
+    thread::JoinHandle,
+};
 
 const DEFAULT_REFRESH_SUBPROCESS_TIMEOUT_SECS: u64 = 300;
 const MAX_REFRESH_SUBPROCESS_TIMEOUT_SECS: u64 = 3600;
@@ -18,6 +26,61 @@ pub(crate) fn refresh_subprocess_timeout() -> crate::Result<std::time::Duration>
         return Err("REPODB_REFRESH_TIMEOUT_SECS must be an integer from 1 through 3600".into());
     }
     Ok(std::time::Duration::from_secs(seconds))
+}
+
+pub(crate) struct ProcessDeadline {
+    cancelled: mpsc::Sender<()>,
+    timed_out: Arc<AtomicBool>,
+    worker: Option<JoinHandle<()>>,
+}
+
+impl ProcessDeadline {
+    pub(crate) fn start(process_id: u32, timeout: std::time::Duration) -> Self {
+        let (cancelled, receiver) = mpsc::channel();
+        let timed_out = Arc::new(AtomicBool::new(false));
+        let worker_timed_out = Arc::clone(&timed_out);
+        let worker = std::thread::spawn(move || {
+            if matches!(
+                receiver.recv_timeout(timeout),
+                Err(mpsc::RecvTimeoutError::Timeout)
+            ) {
+                worker_timed_out.store(true, Ordering::Release);
+                kill_process_group(process_id);
+            }
+        });
+        Self {
+            cancelled,
+            timed_out,
+            worker: Some(worker),
+        }
+    }
+
+    pub(crate) fn finish(mut self) -> bool {
+        let _ = self.cancelled.send(());
+        if let Some(worker) = self.worker.take() {
+            let _ = worker.join();
+        }
+        self.timed_out.load(Ordering::Acquire)
+    }
+}
+
+impl Drop for ProcessDeadline {
+    fn drop(&mut self) {
+        let _ = self.cancelled.send(());
+        if let Some(worker) = self.worker.take() {
+            let _ = worker.join();
+        }
+    }
+}
+
+fn kill_process_group(process_id: u32) {
+    #[cfg(unix)]
+    // SAFETY: refresh children are started in a process group whose id is their pid.
+    unsafe {
+        libc::kill(-(process_id as i32), libc::SIGKILL);
+    }
+    #[cfg(not(unix))]
+    let _ = process_id;
 }
 
 pub(crate) fn spawn_in_process_group(command: &mut Command) -> std::io::Result<Child> {
@@ -310,12 +373,8 @@ pub(crate) fn capture_with_input_timeout(
     })
 }
 
-fn terminate_process_group(child: &mut Child, group_id: u32) {
-    #[cfg(unix)]
-    // SAFETY: the segmenter is spawned into a process group whose id is its pid.
-    unsafe {
-        libc::kill(-(group_id as i32), libc::SIGKILL);
-    }
+pub(crate) fn terminate_process_group(child: &mut Child, group_id: u32) {
+    kill_process_group(group_id);
     let _ = child.kill();
 }
 

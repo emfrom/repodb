@@ -853,11 +853,15 @@ fn for_each_tree_record(
     // cannot consume memory needed by stderr or the buffered stdout reader.
     preparation_bytes.charge(MAX_GIT_STDERR_BYTES, "Git stderr capture")?;
     preparation_bytes.charge(TREE_READ_BUFFER_BYTES, "Git stdout read buffer")?;
-    let mut child = Command::new("git")
+    let mut command = Command::new("git");
+    command
         .args(["ls-tree", "-r", "-z", "--full-tree", commit_id])
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()?;
+        .stderr(Stdio::piped());
+    let mut child = process::spawn_in_process_group(&mut command)?;
+    let process_id = child.id();
+    let deadline =
+        process::ProcessDeadline::start(process_id, process::refresh_subprocess_timeout()?);
     let mut stdout = BufReader::with_capacity(TREE_READ_BUFFER_BYTES, child.stdout.take().unwrap());
     let stderr = child.stderr.take().unwrap();
     let stderr =
@@ -903,13 +907,19 @@ fn for_each_tree_record(
         Ok(())
     })();
     if result.is_err() {
-        let _ = child.kill();
+        process::terminate_process_group(&mut child, process_id);
     }
     let status = child.wait()?;
     let (stderr, _stderr_exceeded) = stderr.join().map_err(|_| "git stderr reader panicked")??;
     let stderr_capacity = stderr.capacity();
+    let timed_out = deadline.finish();
     preparation_bytes.release(MAX_GIT_STDERR_BYTES - stderr_capacity);
     preparation_bytes.release(TREE_READ_BUFFER_BYTES);
+    if timed_out {
+        drop(stderr);
+        preparation_bytes.release(stderr_capacity);
+        return Err("process timed out".into());
+    }
     if let Err(error) = result {
         drop(stderr);
         preparation_bytes.release(stderr_capacity);

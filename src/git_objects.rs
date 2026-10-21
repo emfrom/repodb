@@ -1,4 +1,7 @@
-use crate::Result;
+use crate::{
+    Result,
+    process::{self, ProcessDeadline},
+};
 use std::{
     collections::HashMap,
     io::{BufRead, BufReader, Read, Write},
@@ -32,6 +35,7 @@ pub struct GitBlobReader {
     stdin: Option<ChildStdin>,
     stdout: BufReader<ChildStdout>,
     stderr: Option<thread::JoinHandle<Vec<u8>>>,
+    deadline: Option<ProcessDeadline>,
     cache: HashMap<String, Vec<u8>>,
     cached_bytes: usize,
     large_blob: Option<(String, Vec<u8>)>,
@@ -44,12 +48,13 @@ impl GitBlobReader {
         if let Some(repository) = repository {
             command.args(["-C", repository]);
         }
-        let mut child = command
+        command
             .args(["cat-file", "--batch"])
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()?;
+            .stderr(Stdio::piped());
+        let mut child = process::spawn_in_process_group(&mut command)?;
+        let deadline = ProcessDeadline::start(child.id(), process::refresh_subprocess_timeout()?);
         let stdin = child.stdin.take().ok_or("missing git batch stdin")?;
         let stdout = BufReader::new(child.stdout.take().ok_or("missing git batch stdout")?);
         let stderr = child
@@ -61,6 +66,7 @@ impl GitBlobReader {
             stdin: Some(stdin),
             stdout,
             stderr,
+            deadline: Some(deadline),
             cache: HashMap::new(),
             cached_bytes: 0,
             large_blob: None,
@@ -70,10 +76,17 @@ impl GitBlobReader {
 
     fn terminate(&mut self) {
         drop(self.stdin.take());
-        let _ = self.child.kill();
+        let process_id = self.child.id();
+        process::terminate_process_group(&mut self.child, process_id);
         let _ = self.child.wait();
+        if let Some(deadline) = self.deadline.take() {
+            let _ = deadline.finish();
+        }
         if let Some(stderr) = self.stderr.take() {
             let _ = stderr.join();
+        }
+        if let Some(deadline) = self.deadline.take() {
+            let _ = deadline.finish();
         }
         self.finished = true;
     }
@@ -90,6 +103,10 @@ impl GitBlobReader {
             .map(|reader| reader.join().unwrap_or_default())
             .unwrap_or_default();
         self.finished = true;
+        let timed_out = self.deadline.take().is_some_and(ProcessDeadline::finish);
+        if timed_out {
+            return Err("process timed out".into());
+        }
         if !status.success() {
             return Err(format!(
                 "git cat-file --batch failed: {}",
@@ -177,10 +194,12 @@ impl Drop for GitBlobReader {
 
 #[cfg(test)]
 mod tests {
-    use super::{GitBlobReader, MAX_STDERR_EXCERPT_BYTES};
+    use super::{GitBlobReader, MAX_STDERR_EXCERPT_BYTES, ProcessDeadline, drain_stderr, thread};
     use std::{
+        collections::HashMap,
         fs,
-        process::Command,
+        io::BufReader,
+        process::{Command, Stdio},
         time::{Duration, Instant},
     };
 
@@ -236,6 +255,43 @@ mod tests {
         assert_eq!(reader.large_blob.as_ref().unwrap().1.len(), payload.len());
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn persistent_reader_timeout_kills_the_process_group() {
+        use std::os::unix::process::CommandExt;
+
+        let mut command = Command::new("sh");
+        command
+            .arg("-c")
+            .arg("sleep 5")
+            .process_group(0)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        let mut child = command.spawn().unwrap();
+        let deadline = ProcessDeadline::start(child.id(), std::time::Duration::from_millis(50));
+        let stderr = child
+            .stderr
+            .take()
+            .map(|stderr| thread::spawn(move || drain_stderr(stderr)));
+        let mut reader = GitBlobReader {
+            stdin: child.stdin.take(),
+            stdout: BufReader::new(child.stdout.take().unwrap()),
+            child,
+            stderr,
+            deadline: Some(deadline),
+            cache: HashMap::new(),
+            cached_bytes: 0,
+            large_blob: None,
+            finished: false,
+        };
+
+        let started = std::time::Instant::now();
+        let error = reader.finish().unwrap_err().to_string();
+        assert!(error.contains("process timed out"));
+        assert!(started.elapsed() < std::time::Duration::from_secs(2));
+    }
+
     #[test]
     fn stderr_drainer_retains_only_a_bounded_excerpt_while_draining() {
         let input = vec![b'x'; MAX_STDERR_EXCERPT_BYTES * 128];
@@ -280,6 +336,7 @@ mod tests {
             stdin,
             stdout,
             stderr,
+            deadline: None,
             cache: std::collections::HashMap::new(),
             cached_bytes: 0,
             large_blob: None,
