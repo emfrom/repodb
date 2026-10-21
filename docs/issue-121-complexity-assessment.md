@@ -2,9 +2,9 @@
 
 ## Scope and baseline
 
-Measurements are against integration commit `c0bfcde8e5249c87269b45448367edc4dbeba994` (the `integration/repodb-spec` tip when this isolated worktree was created); the current integration tip `27c3f80fd403dec642691937773df62aca31d88d` was subsequently merged into this isolated branch before reporting. Intervening integration changes stage Git pins as part of refresh publication, add focused tests, and correct recorded strict-Clippy findings; the operation measurement remains explicitly pinned to the earlier baseline rather than implying exact post-merge LOC. The issue #90 review's nine largest-operation candidates were measured at function-body level rather than by approximate next-function spans. Criteria are the soft gates in `docs/CODING_STANDARDS_FULL.md`: ≤60 logical lines, cyclomatic ≤10, cognitive ≤15, direct fan-out ≤5, parameters ≤5, nesting ≤3, and call depth ≤3. These are review triggers, not automatic refactoring targets.
+The original lexical screen was prepared against integration commits `c0bfcde8e5249c87269b45448367edc4dbeba994` and `27c3f80fd403dec642691937773df62aca31d88d`; it is retained below as historical context. The actual analyzer run is pinned to integration commit `12b00d2ffbc2697158e8477808d211de523f252c`, with source-file hashes in its retained artifact. The issue #90 review's nine largest-operation candidates are measured at function-body scope. Criteria are the soft gates in `docs/CODING_STANDARDS_FULL.md`: ≤60 logical lines, cyclomatic ≤10, cognitive ≤15, direct fan-out ≤5, parameters ≤5, nesting ≤3, and call depth ≤3. These are review triggers, not automatic refactoring targets.
 
-## Method
+## Initial lexical method (historical only)
 
 - Logical lines: count nonblank, noncomment source lines from the function signature through its closing brace; omit lines consisting only of `{` or `}`. Embedded SQL/string contents count as one physical source line when written on one line. This is a simple, reproducible source-line convention, not a claim about executable statements.
 - Branch/complexity screen: a lexical scan counts `if`/`for`/`while`/`loop`, `match` occurrences, `=>` arms, and `&&`/`||` tokens as decision points; the displayed `CC*` is `1 + those counts`. This intentionally conservative proxy overcounts match patterns/closures and is not a canonical Rust cyclomatic or cognitive analyzer. It identifies review hotspots, not a passed threshold. Nesting is a lexical control-block estimate; nested expressions and formatting can affect it.
@@ -13,7 +13,7 @@ Measurements are against integration commit `c0bfcde8e5249c87269b45448367edc4dbe
 
 The source measurements were made with a one-off Python lexical brace scan over the checked-out Rust files; no complexity package or dependency was installed. Function line ranges below are the declaration start lines at the measured commit.
 
-## Measurements
+## Initial lexical screening (historical; superseded by the pinned analyzer results below)
 
 | Operation (file:line) | Logical lines | CC* | internal call candidates | max control nesting* | Parameters |
 |---|---:|---:|---:|---:|---:|
@@ -27,7 +27,35 @@ The source measurements were made with a one-off Python lexical brace scan over 
 | `map_semantic_ranges` (`worktree.rs:398`) | 161 | 34 | 13 | 2 | 3 |
 | `rank_evidence` (`ranking.rs:122`) | 156 | 38 | 5 | 4 | 5 |
 
-`CC*`, internal-call candidates, and nesting are screening estimates as defined above; they must not be reported as exact canonical complexity scores. Several trigger deviations are nevertheless not borderline: every listed function is over 60 logical lines, and the top-level dispatcher and import refresh function are especially broad. Exact cognitive complexity was not measured with an analyzer.
+The preceding table is retained only to preserve the original screening record. Its logical-line counts, `CC*`, internal-call candidates, and nesting are lexical estimates and are not the actual measurements used for the disposition.
+
+## Actual pinned measurements
+
+Measured against integration commit `12b00d2ffbc2697158e8477808d211de523f252c` (the source commit recorded by the artifact) on 2026-10-21. The measurement script hash and source hashes for the five analyzed Rust files are embedded in [`issue-121-measurement-artifact.json`](issue-121-measurement-artifact.json), along with each derived result. The full per-file `rust-code-analysis-cli` JSON output is retained in the companion compressed [`issue-121-measurement-artifact-raw-metrics.json.gz`](issue-121-measurement-artifact-raw-metrics.json.gz). Toolchain: `rust-code-analysis-cli 0.0.25`, `rustc 1.99.0 (b940084d7 2026-09-28)`, `cargo 1.99.0`, Clippy `0.1.99 (b940084d7e 2026-09-28)`.
+
+| Operation (file:line) | Rust LLOC | Rust cyclomatic | Clippy cognitive | AST call sites | Distinct syntax callees | Max control nesting |
+|---|---:|---:|---:|---:|---:|---:|
+| `execute` (`main.rs:1876`) | 403 | 352 | 98 | 498 | 133 | 7 |
+| `refresh_with_size_limit` (`imports.rs:644`) | 101 | 88 | 24 | 118 | 68 | 5 |
+| `refresh_scoped` (`history.rs:3243`) | 70 | 59 | 8 | 72 | 36 | 3 |
+| `prepare_refresh_excluding` (`history.rs:2951`) | 46 | 41 | 7 | 55 | 33 | 3 |
+| `stage_diff_pair` (`history.rs:513`) | 76 | 46 | 14 | 74 | 35 | 4 |
+| `search_impl` (`history.rs:4081`) | 36 | 23 | 12 | 24 | 22 | 3 |
+| `search_exact` (`worktree.rs:166`) | 94 | 41 | 14 | 74 | 44 | 3 |
+| `map_semantic_ranges` (`worktree.rs:398`) | 122 | 32 | 6 | 72 | 32 | 2 |
+| `rank_evidence` (`ranking.rs:122`) | 57 | 29 | 20 | 78 | 33 | 4 |
+
+The soft gates in `docs/CODING_STANDARDS_FULL.md` are LLOC ≤60, cyclomatic ≤10, cognitive ≤15, distinct direct callees ≤5, and nesting ≤3. The table reports tool-defined measurements, not hard release gates. Rust LLOC counts `Statement`, `EmptyStatement`, `ExpressionStatement`, `LetDeclaration`, `AssignmentExpression`, and `CompoundAssignmentExpr` AST nodes; signatures and standalone block braces do not count. The AST callee count is syntax-normalized: method calls use the final field name, scoped identifiers retain their path, and repeated names count once. It is not a type- or trait-resolved call graph; macros are excluded. Nesting counts AST ancestors among `if`, `match`, `for`, `while`, and `loop` expressions. Rust LLOC and cyclomatic values are from `rust-code-analysis-cli` 0.0.25; nested closure/function aggregates are subtracted to report the named function's own value. Cognitive values are Clippy's `cognitive_complexity` lint scores; the analyzer was configured with threshold 0 only to emit scores for all positive functions. Tool-specific score definitions are not interchangeable.
+
+Prerequisite: `rust-code-analysis-cli 0.0.25` in `PATH` (install with `cargo install rust-code-analysis-cli --version 0.0.25 --locked`).
+
+Reproduce from the pinned source checkout with:
+
+```sh
+PYTHONDONTWRITEBYTECODE=1 python3 benchmarks/issue-121/measure.py --root . --output docs/issue-121-measurement-artifact.json --clippy-log /tmp/issue121-clippy-full.log --target-dir /tmp/issue121-clippy-target
+```
+
+The run exited 0. Raw Clippy output is retained at `/tmp/issue121-clippy-full.log` (SHA-256 recorded in the artifact); the script writes the exact tool output, source hashes, method definitions, and per-operation measurements to the tracked JSON artifact. No production code was changed by measurement.
 
 ## Cohesion, dependency paths, and state ownership
 
@@ -40,13 +68,13 @@ The source measurements were made with a one-off Python lexical brace scan over 
 
 Representative dependency paths:
 
-1. CLI search: `main::execute` → `search_evidence` → history/import/worktree backend(s) → `ranking::rank_evidence` → `pagination`/JSON or human rendering. The dispatcher selects filters/scope and composes evidence; backend modules own retrieval and `ranking` owns aggregation/order.
-2. Native refresh: `main::execute` → `history::prepare_refresh_excluding` → reachable-commit/tree/diff staging → `stage_diff_pair` / segmentation / embedding-batch flush → publication transaction. This path shares the refresh snapshot and staging state; diff path transforms line/file data before it is staged.
-3. Scoped refresh: `main::execute` → `refresh_changed_excluding` or `refresh_update_excluding` → `refresh_scoped` → Git traversal and batch embedding → publish staged refresh data.
-4. Imported-source refresh: `main::execute` → `imports::refresh_with_size_limit` → source-specific fetch/clone, conversion/segmentation and embedding → staged-version pruning → caller publication transaction.
-5. Live exact search: `main::execute` → `worktree::search_exact` → validate indexed HEAD → Git path discovery → safe live-path/read/filter helpers → matches and coverage. Semantic mapping follows `map_semantic_ranges` → indexed HEAD/staged/live layer loads → hunk/range mapping; it does not embed or publish.
+1. CLI search: `main::execute` (`src/main.rs:1876`) selects indexed-content retrieval through `history::search` / `history::search_all_occurrences` when current, or local exact/semantic helpers when not (`src/main.rs:2463-2500`). Optional live evidence uses `worktree::search_exact` (`src/main.rs:2403`) or semantic range mapping (`src/main.rs:2608`). `search_evidence` (`src/main.rs:221`, called at 2803) converts returned records; `ranking::rank_evidence` (`src/ranking.rs:122`, called at `src/main.rs:2880`) owns grouping/order before pagination and rendering. The history backend owns retrieval, the adapter owns payload identity, and `ranking` owns aggregation/order.
+2. Native refresh: `main::execute` (`src/main.rs:2046`) → `history::prepare_refresh_excluding` (`src/history.rs:2951`) → reachable-commit/tree/diff staging → `stage_diff_pair` (`src/history.rs:513`, called at 3139/3142) / segmentation / embedding-batch flush → publication transaction. This path shares the refresh snapshot and staging state; diff path transforms line/file data before it is staged.
+3. Scoped refresh: `main::execute` (`src/main.rs:2036/2038`) → `refresh_changed_excluding` or `refresh_update_excluding` (`src/history.rs:3228/3235`) → `refresh_scoped` (`src/history.rs:3243`) → Git traversal and batch embedding → publish staged refresh data.
+4. Imported-source refresh: `main::execute` (`src/main.rs:2030/2045`) → `imports::refresh_with_size_limit` (`src/imports.rs:644`) → source-specific fetch/clone, conversion/segmentation and embedding → staged-version pruning → caller-owned publication transaction (`src/main.rs:2032-2034` or 2048-2051).
+5. Live exact search: `main::execute` (`src/main.rs:2403`) → `worktree::search_exact` (`src/worktree.rs:166`) → validate indexed HEAD → Git path discovery → safe live-path/read/filter helpers → matches and coverage. Semantic mapping is `main::execute` (`src/main.rs:2608`) → `worktree::map_semantic_ranges` (`src/worktree.rs:398`) → indexed HEAD/staged/live layer loads → hunk/range mapping; it does not embed or publish.
 
-The core subsystem boundaries are cohesive and own their respective state; no cross-module dependency cycle or duplicate state owner was identified in this scoped trace. The clearest locality concern is specifically the CLI dispatcher, where CLI parsing/formatting for multiple commands and backend orchestration share one 962-line body. `refresh_with_size_limit` is also above every size/branch trigger, but its current control flow is a single refresh state machine with source-kind branches and shared staging. Splitting it solely to meet line counts would create a risky migration of staging state and publication invariants without evidence that those steps are independently changing or owned elsewhere. The same applies to history and worktree operations: their responsibilities correspond to cohesive subsystems and explicit data/state boundaries.
+The core subsystem boundaries are cohesive and own their respective state; no cross-module dependency cycle or duplicate state owner was identified in this scoped trace. The clearest locality concern is the CLI dispatcher: CLI parsing/formatting for multiple commands and backend orchestration share one large operation, with actual tool scores recorded above. `refresh_with_size_limit` is also above the measured size/complexity triggers, but its current control flow is a single refresh state machine with source-kind branches and shared staging. Splitting either function solely to meet soft thresholds would create a risky migration of staging state and publication invariants without evidence that those steps are independently changing or owned elsewhere. The same applies to history and worktree operations: their responsibilities correspond to cohesive subsystems and explicit data/state boundaries.
 
 ## Disposition
 
@@ -62,4 +90,4 @@ No production refactor was made. This assessment demonstrates significant struct
 - `git merge-base --is-ancestor integration/repodb-spec HEAD` and `git rev-parse HEAD integration/repodb-spec` — passed after merging; both resolve to `27c3f80fd403dec642691937773df62aca31d88d`, so the isolated branch includes the current integration tip.
 - `git diff --check` — passed.
 
-Residual limitations: complexity values are lexical screens, not canonical analyzer results; indirect dispatch, trait implementations, macro expansion, and external dependency internals are not covered. This is source structure evidence, not a claim of a runtime defect or a full duplication/cycle analysis.
+Residual limitations: the old table is lexical screening only. The new values are reproducible, tool-defined AST/Clippy metrics; syntax-level callee names are not type/trait-resolved, macros are excluded, and the source-traced paths are not a whole-program call graph. External library internals, runtime behavior, and a full duplication/cycle analysis are not covered. No runtime defect is asserted.
