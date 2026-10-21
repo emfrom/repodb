@@ -50,6 +50,9 @@ pub(crate) fn preview(path: &Path, database: &Path) -> Result<Preview> {
     }
     let mut files = Vec::new();
     if metadata.is_file() {
+        if super::same_file(path, database)? {
+            return Err("cannot preview RepoDB's own database file".into());
+        }
         files.push(path.to_path_buf());
     } else {
         collect_preview_files(path, &mut files)?;
@@ -59,6 +62,9 @@ pub(crate) fn preview(path: &Path, database: &Path) -> Result<Preview> {
     let mut unsupported = Vec::new();
     let mut total = 0u64;
     for file in files {
+        if super::same_file(&file, database)? {
+            continue;
+        }
         let metadata = fs::symlink_metadata(&file)?;
         if !metadata.is_file() || metadata.file_type().is_symlink() {
             continue;
@@ -329,6 +335,9 @@ pub(crate) fn register(c: &Connection, locator: &str, revision: Option<&str>) ->
         return Err(
             "imports must name an individual local file, HTTP(S) URL, or Git repository".into(),
         );
+    }
+    if !is_url && !is_git && super::is_database_file(c, path)? {
+        return Err("cannot import RepoDB's own database file".into());
     }
     if !is_url && !is_git {
         let supported = path.extension().is_none()

@@ -1,3 +1,4 @@
+use rusqlite::Connection;
 use std::{
     fs,
     path::{Path, PathBuf},
@@ -157,6 +158,123 @@ fn repository() -> tempfile::TempDir {
     git(dir.path(), &["add", "."]);
     git(dir.path(), &["commit", "-qm", "initial"]);
     dir
+}
+
+#[test]
+fn indexed_git_snapshot_excludes_a_tracked_selected_database_file() {
+    let repo = repository();
+    let root = repo.path();
+    let database = root.join("tracked.db");
+    let database_arg = database.to_str().unwrap();
+
+    assert!(run_with_env(root, &["--database", database_arg, "init"], &[]).0);
+    git(root, &["add", "tracked.db"]);
+    git(root, &["commit", "-qm", "track the RepoDB database"]);
+    assert!(run_with_env(root, &["--database", database_arg, "refresh"], &[]).0);
+
+    let connection = Connection::open(&database).unwrap();
+    let occurrences: i64 = connection
+        .query_row(
+            "SELECT count(*) FROM git_occurrences WHERE path=?1",
+            [b"tracked.db".as_slice()],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let diff_changes: i64 = connection
+        .query_row(
+            "SELECT count(*) FROM diff_file_changes WHERE old_path=?1 OR new_path=?1",
+            [b"tracked.db".as_slice()],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!((occurrences, diff_changes), (0, 0));
+    drop(connection);
+
+    let (ok, output) = run(
+        root,
+        &[
+            "--database",
+            database_arg,
+            "search",
+            "Exact [literal] TARGET",
+            "--json",
+        ],
+    );
+    assert!(ok, "{output}");
+    assert!(output.contains("notes.txt"), "{output}");
+
+    fs::write(root.join("later.txt"), "scoped refresh content\n").unwrap();
+    git(root, &["add", "later.txt"]);
+    git(root, &["commit", "-qm", "advance history"]);
+    assert!(
+        run_with_env(
+            root,
+            &["--database", database_arg, "refresh", "--changed"],
+            &[],
+        )
+        .0
+    );
+    let connection = Connection::open(&database).unwrap();
+    let occurrences: i64 = connection
+        .query_row(
+            "SELECT count(*) FROM git_occurrences WHERE path=?1",
+            [b"tracked.db".as_slice()],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(occurrences, 0);
+}
+
+#[test]
+fn explicit_import_rejects_the_selected_database_but_accepts_other_local_files() {
+    let repo = repository();
+    let root = repo.path();
+    let database = root.join("self-database.txt");
+    let database_arg = database.to_str().unwrap();
+    let connection = Connection::open(&database).unwrap();
+    connection
+        .execute_batch(
+            "CREATE TABLE payload(value TEXT); INSERT INTO payload VALUES('not an import');",
+        )
+        .unwrap();
+    drop(connection);
+
+    let (ok, _) = run_with_env(
+        root,
+        &["--database", database_arg, "import", database_arg],
+        &[],
+    );
+    assert!(
+        !ok,
+        "RepoDB must reject importing its own selected database"
+    );
+    let connection = Connection::open(&database).unwrap();
+    let sources: i64 = connection
+        .query_row("SELECT count(*) FROM imported_sources", [], |row| {
+            row.get(0)
+        })
+        .unwrap_or(0);
+    assert_eq!(sources, 0);
+    drop(connection);
+
+    let normal_file = root.join("normal-import.txt");
+    fs::write(&normal_file, "ordinary import remains available\n").unwrap();
+    let normal_arg = normal_file.to_str().unwrap();
+    assert!(
+        run_with_env(
+            root,
+            &["--database", database_arg, "import", normal_arg],
+            &[],
+        )
+        .0
+    );
+    let connection = Connection::open(&database).unwrap();
+    let sources: i64 = connection
+        .query_row("SELECT count(*) FROM imported_sources", [], |row| {
+            row.get(0)
+        })
+        .unwrap();
+    assert_eq!(sources, 1);
 }
 
 #[test]

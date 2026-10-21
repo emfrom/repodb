@@ -18,6 +18,39 @@ mod sources;
 use cache::{checksum, visit_cache_pages, write_cache};
 use sources::{column_exists, init};
 pub(crate) use sources::{preview, preview_url, register, set_retention};
+
+pub(crate) fn same_file(left: &Path, right: &Path) -> Result<bool> {
+    let left = match fs::canonicalize(left) {
+        Ok(path) => path,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(error) => return Err(error.into()),
+    };
+    let right = match fs::canonicalize(right) {
+        Ok(path) => path,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(error) => return Err(error.into()),
+    };
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        let left = fs::metadata(left)?;
+        let right = fs::metadata(right)?;
+        Ok(left.dev() == right.dev() && left.ino() == right.ino())
+    }
+    #[cfg(not(unix))]
+    {
+        Ok(left == right)
+    }
+}
+
+pub(crate) fn is_database_file(c: &Connection, path: &Path) -> Result<bool> {
+    let database_path: String = c.query_row("PRAGMA database_list", [], |row| row.get(2))?;
+    if database_path.is_empty() {
+        return Ok(false);
+    }
+    same_file(path, Path::new(&database_path))
+}
+
 const MAX_COMMAND_STDERR_BYTES: usize = 64 * 1024;
 const LARGE_IMPORT_WARNING_THRESHOLD_BYTES: u64 = 50_000_000;
 
@@ -648,6 +681,11 @@ pub fn refresh_with_size_limit(
             continue;
         }
         if kind == "file" {
+            if is_database_file(c, Path::new(&locator))? {
+                return Err(
+                    "cannot refresh an import that points to RepoDB's own database file".into(),
+                );
+            }
             let size = fs::metadata(&locator)?.len();
             refresh_memory_bytes.charge(size as usize, "local import input")?;
         }

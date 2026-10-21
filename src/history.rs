@@ -8,6 +8,7 @@ use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, 
 use std::{
     collections::{HashMap, HashSet},
     io::{BufRead, BufReader},
+    path::Path,
     process::{Command, Stdio},
     sync::mpsc::{self, Receiver, SyncSender, TrySendError},
     thread::JoinHandle,
@@ -102,6 +103,23 @@ pub(crate) struct DiffSearchResult {
     pub text: String,
     pub reference: DiffReference,
     pub distance: Option<f64>,
+}
+
+pub fn database_git_path(database_path: &Path) -> Result<Option<Vec<u8>>> {
+    let database_path = match std::fs::canonicalize(database_path) {
+        Ok(path) => path,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error.into()),
+    };
+    let mut budget = Budget::new(16 * 1024, "database path discovery");
+    let root_bytes = git_output(&["rev-parse", "--show-toplevel"], 4096, &mut budget)?;
+    let root_bytes = root_bytes.strip_suffix(b"\n").unwrap_or(&root_bytes);
+    let root = Path::new(std::str::from_utf8(root_bytes)?);
+    let root = std::fs::canonicalize(root)?;
+    let Ok(relative_path) = database_path.strip_prefix(root) else {
+        return Ok(None);
+    };
+    Ok(Some(relative_path.as_os_str().as_encoded_bytes().to_vec()))
 }
 
 fn git_capture_limits(requested_stdout: usize, preparation_bytes: usize) -> Result<(usize, usize)> {
@@ -468,6 +486,7 @@ fn stage_diff_pair(
     c: &Connection,
     parent: Option<&str>,
     child: &str,
+    excluded_database_path: Option<&[u8]>,
     next_unit_id: &mut i64,
     batch: &mut Vec<(i64, String)>,
     pipeline: &mut EmbeddingPipeline,
@@ -552,6 +571,11 @@ fn stage_diff_pair(
         };
         if fields[0].trim_start_matches(':') == "160000" || fields[1] == "160000" {
             // Gitlinks reference commits, not blobs; the tracked tree walker skips them too.
+            continue;
+        }
+        if excluded_database_path
+            .is_some_and(|excluded| old_path == Some(excluded) || new_path == Some(excluded))
+        {
             continue;
         }
         let similarity_percent = if status == b'R' || status == b'C' {
@@ -2873,7 +2897,15 @@ fn stage_commit_message(
     Ok(())
 }
 
-pub fn prepare_refresh(c: &Connection) -> Result<()> {
+#[cfg(test)]
+fn prepare_refresh(c: &Connection) -> Result<()> {
+    prepare_refresh_excluding(c, None)
+}
+
+pub fn prepare_refresh_excluding(
+    c: &Connection,
+    excluded_database_path: Option<&[u8]>,
+) -> Result<()> {
     is_current(c)?;
     let mut preparation_bytes = Budget::new(
         MAX_REFRESH_ACCOUNTING_BYTES,
@@ -2975,6 +3007,9 @@ pub fn prepare_refresh(c: &Connection) -> Result<()> {
                     return Ok(());
                 }
                 let path = &record[tab + 1..];
+                if excluded_database_path.is_some_and(|excluded| path == excluded) {
+                    return Ok(());
+                }
                 let kind = segmentation::kind(path);
                 let content = if blob_exists.exists([blob_id])? {
                     occurrence_stage.execute(params![commit_id, blob_id, path, kind])?;
@@ -3047,6 +3082,7 @@ pub fn prepare_refresh(c: &Connection) -> Result<()> {
                     c,
                     None,
                     &child,
+                    excluded_database_path,
                     &mut unit_count,
                     &mut batch,
                     &mut pipeline,
@@ -3060,6 +3096,7 @@ pub fn prepare_refresh(c: &Connection) -> Result<()> {
                         c,
                         Some(&parent),
                         &child,
+                        excluded_database_path,
                         &mut unit_count,
                         &mut batch,
                         &mut pipeline,
@@ -3147,15 +3184,26 @@ pub fn resolve_update_commit(commit_id: &str) -> Result<String> {
     Ok(canonical.to_owned())
 }
 
-pub fn refresh_changed(c: &mut Connection) -> Result<()> {
-    refresh_scoped(c, None)
+pub fn refresh_changed_excluding(
+    c: &mut Connection,
+    excluded_database_path: Option<&[u8]>,
+) -> Result<()> {
+    refresh_scoped(c, None, excluded_database_path)
 }
 
-pub fn refresh_update(c: &mut Connection, commit_id: &str) -> Result<()> {
-    refresh_scoped(c, Some(commit_id))
+pub fn refresh_update_excluding(
+    c: &mut Connection,
+    commit_id: &str,
+    excluded_database_path: Option<&[u8]>,
+) -> Result<()> {
+    refresh_scoped(c, Some(commit_id), excluded_database_path)
 }
 
-fn refresh_scoped(c: &mut Connection, target: Option<&str>) -> Result<()> {
+fn refresh_scoped(
+    c: &mut Connection,
+    target: Option<&str>,
+    excluded_database_path: Option<&[u8]>,
+) -> Result<()> {
     let version = snapshot_version(c)?;
     let schema: i64 = c.query_row("PRAGMA user_version", [], |row| row.get(0))?;
     if !matches!(schema, 4 | 5) {
@@ -3300,6 +3348,9 @@ fn refresh_scoped(c: &mut Connection, target: Option<&str>) -> Result<()> {
                 return Ok(());
             }
             let path = &record[tab + 1..];
+            if excluded_database_path.is_some_and(|excluded| path == excluded) {
+                return Ok(());
+            }
             let kind = segmentation::kind(path);
             let unchanged = if let Some(parent) = parent.as_deref() {
                 parent_occurrence

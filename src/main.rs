@@ -1969,6 +1969,11 @@ fn execute() -> Result<()> {
             }
             let mut db = open_db(&db_path)?;
             let mut size_assessments = Vec::new();
+            let excluded_database_path = if imports_only {
+                None
+            } else {
+                history::database_git_path(&db_path)?
+            };
             if imports_only {
                 let version = history::snapshot_version(&db)?;
                 size_assessments = imports::refresh_with_size_limit(&db, size_limit)?;
@@ -1977,13 +1982,17 @@ fn execute() -> Result<()> {
                 imports::publish(&tx)?;
                 tx.commit()?;
             } else if changed {
-                history::refresh_changed(&mut db)?;
+                history::refresh_changed_excluding(&mut db, excluded_database_path.as_deref())?;
             } else if let Some(commit_id) = update {
-                history::refresh_update(&mut db, &commit_id)?;
+                history::refresh_update_excluding(
+                    &mut db,
+                    &commit_id,
+                    excluded_database_path.as_deref(),
+                )?;
             } else {
                 let version = history::snapshot_version(&db)?;
                 size_assessments = imports::refresh_with_size_limit(&db, size_limit)?;
-                history::prepare_refresh(&db)?;
+                history::prepare_refresh_excluding(&db, excluded_database_path.as_deref())?;
                 imports::validate_dimensions(&db)?;
                 let tx = history::publish_transaction(&mut db, version)?;
                 imports::publish(&tx)?;
