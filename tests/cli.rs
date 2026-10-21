@@ -3230,6 +3230,73 @@ fn url_snapshot_uses_extracted_text_hash_and_retains_redirect_provenance() {
 }
 
 #[test]
+fn url_refresh_fetches_only_the_selected_page_and_search_stays_offline() {
+    use std::{
+        io::{Read, Write},
+        net::TcpListener,
+        sync::{
+            Arc,
+            atomic::{AtomicUsize, Ordering},
+            mpsc,
+        },
+        time::Duration,
+    };
+
+    let repo = repository();
+    let root = repo.path();
+    assert!(run(root, &["init"]).0);
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    let (stop_tx, stop_rx) = mpsc::channel();
+    let unexpected_requests = Arc::new(AtomicUsize::new(0));
+    let server_requests = Arc::clone(&unexpected_requests);
+    let server = std::thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        let mut request = [0; 1024];
+        let count = stream.read(&mut request).unwrap();
+        assert!(String::from_utf8_lossy(&request[..count]).starts_with("GET /page "));
+        let body = b"<p>selected page snapshot marker</p><a href=\"/linked\">link label</a>";
+        write!(stream, "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", body.len()).unwrap();
+        stream.write_all(body).unwrap();
+
+        listener.set_nonblocking(true).unwrap();
+        loop {
+            match stop_rx.try_recv() {
+                Ok(()) | Err(mpsc::TryRecvError::Disconnected) => break,
+                Err(mpsc::TryRecvError::Empty) => {}
+            }
+            match listener.accept() {
+                Ok((mut stream, _)) => {
+                    server_requests.fetch_add(1, Ordering::SeqCst);
+                    let mut request = [0; 1024];
+                    let _ = stream.read(&mut request);
+                    let body = b"unexpected extra fetch marker\\n";
+                    write!(stream, "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", body.len()).unwrap();
+                    stream.write_all(body).unwrap();
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                    std::thread::sleep(Duration::from_millis(5));
+                }
+                Err(error) => panic!("local HTTP fixture failed: {error}"),
+            }
+        }
+    });
+
+    let url = format!("http://{address}/page");
+    assert!(run(root, &["import", &url]).0);
+    assert!(run(root, &["refresh", "--imports"]).0);
+    let results = search_json(root, &["selected page snapshot marker"]);
+    assert!(
+        results.iter().any(|result| result["path"] == url),
+        "{results:?}"
+    );
+    assert!(search_json(root, &["unexpected extra fetch marker"]).is_empty());
+    stop_tx.send(()).unwrap();
+    server.join().unwrap();
+    assert_eq!(unexpected_requests.load(Ordering::SeqCst), 0);
+}
+
+#[test]
 fn imported_url_and_semantic_search_use_loopback_and_fake_embeddings() {
     use std::{
         io::{Read, Write},
