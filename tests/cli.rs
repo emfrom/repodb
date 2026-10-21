@@ -7773,7 +7773,7 @@ fn search_response_defaults_to_five_results_and_pages_with_stable_cursors() {
 
     let (ok, output) = run(root, &["search", "--json", "--type=cmcommits", "needle"]);
     assert!(ok, "{output}");
-    assert!(output.len() + 1 <= 5_000, "{} bytes", output.len() + 1);
+    assert!(output.len() < 5_000, "{} bytes", output.len() + 1);
     let first: serde_json::Value = serde_json::from_str(&output).unwrap();
     assert_eq!(first["results"].as_array().unwrap().len(), 5);
     assert_eq!(first["total_count"], 7);
@@ -7792,7 +7792,7 @@ fn search_response_defaults_to_five_results_and_pages_with_stable_cursors() {
         ],
     );
     assert!(ok, "{output}");
-    assert!(output.len() + 1 <= 5_000, "{} bytes", output.len() + 1);
+    assert!(output.len() < 5_000, "{} bytes", output.len() + 1);
     let second: serde_json::Value = serde_json::from_str(&output).unwrap();
     assert_eq!(second["results"].as_array().unwrap().len(), 2);
     assert_eq!(second["total_count"], 7);
@@ -7839,7 +7839,7 @@ fn search_byte_budget_omits_whole_text_and_rejects_impossible_references() {
         ],
     );
     assert!(ok, "{output}");
-    assert!(output.len() + 1 <= 2_500, "{} bytes", output.len() + 1);
+    assert!(output.len() < 2_500, "{} bytes", output.len() + 1);
     let page: serde_json::Value = serde_json::from_str(&output).unwrap();
     assert_eq!(page["results"][0]["text_omitted_for_size"], true);
     assert!(page["results"][0].get("text").is_none());
@@ -7859,7 +7859,7 @@ fn search_byte_budget_omits_whole_text_and_rejects_impossible_references() {
         ],
     );
     assert!(ok, "{fetched_output}");
-    assert!(fetched_output.len() + 1 <= 10_000);
+    assert!(fetched_output.len() < 10_000);
     let fetched = parse_search_results(&fetched_output);
     assert_eq!(fetched.len(), 1);
     assert_eq!(fetched[0]["reference_id"], reference_id);
@@ -7884,7 +7884,7 @@ fn search_byte_budget_omits_whole_text_and_rejects_impossible_references() {
         ],
     );
     assert!(ok, "{human}");
-    assert!(human.len() + 1 <= 2_500, "{} bytes", human.len() + 1);
+    assert!(human.len() < 2_500, "{} bytes", human.len() + 1);
     assert!(human.contains("text omitted for size"), "{human}");
 
     let (ok, output) = run(
@@ -8003,7 +8003,7 @@ fn explore_pages_every_historical_occurrence_as_references_only() {
         args.push("occurrence needle");
         let (ok, output) = run(root, &args);
         assert!(ok, "{output}");
-        assert!(output.len() + 1 <= 1_500, "{} bytes", output.len() + 1);
+        assert!(output.len() < 1_500, "{} bytes", output.len() + 1);
         let page: serde_json::Value = serde_json::from_str(&output).unwrap();
         assert_eq!(page["total_count"], 3);
         for result in page["results"].as_array().unwrap() {
@@ -8088,7 +8088,7 @@ fn worktree_semantic_search_counts_mapped_text_and_metadata_in_the_response_budg
         ],
     );
     assert!(ok, "{output}");
-    assert!(output.len() + 1 <= 2_500, "{} bytes", output.len() + 1);
+    assert!(output.len() < 2_500, "{} bytes", output.len() + 1);
     let page: serde_json::Value = serde_json::from_str(&output).unwrap();
     assert!(page["worktree"]["enabled"] == true);
     assert_eq!(page["results"][0]["text_omitted_for_size"], true);
