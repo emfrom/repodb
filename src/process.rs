@@ -288,88 +288,89 @@ pub(crate) fn capture_with_input_timeout(
     let stderr_thread = std::thread::spawn(move || {
         let _ = stderr_sender.send(Event::Stderr(drain_bounded(stderr, stderr_limit)));
     });
-    let mut status = None;
-    let mut stdout = None;
-    let mut stderr = None;
-    let mut stdin = None;
-    let mut stdin_thread = child.stdin.take().map(|mut stdin_pipe| {
-        let input = input.to_vec();
-        std::thread::spawn(move || {
-            let _ = sender.send(Event::Stdin(stdin_pipe.write_all(&input)));
-        })
-    });
-    if stdin_thread.is_none() {
-        stdin = Some(Ok(()));
-    }
-    while status.is_none() || stdout.is_none() || stderr.is_none() || stdin.is_none() {
-        if status.is_none() {
-            match child.try_wait() {
-                Ok(result) => status = result,
-                Err(error) => {
-                    terminate_process_group(child, group_id);
-                    let _ = child.wait();
-                    let _ = stdout_thread.join();
-                    let _ = stderr_thread.join();
-                    if let Some(thread) = stdin_thread.take() {
-                        let _ = thread.join();
+    std::thread::scope(|scope| -> std::io::Result<Output> {
+        let mut status = None;
+        let mut stdout = None;
+        let mut stderr = None;
+        let mut stdin = None;
+        let mut stdin_thread = child.stdin.take().map(|mut stdin_pipe| {
+            scope.spawn(move || {
+                let _ = sender.send(Event::Stdin(stdin_pipe.write_all(input)));
+            })
+        });
+        if stdin_thread.is_none() {
+            stdin = Some(Ok(()));
+        }
+        while status.is_none() || stdout.is_none() || stderr.is_none() || stdin.is_none() {
+            if status.is_none() {
+                match child.try_wait() {
+                    Ok(result) => status = result,
+                    Err(error) => {
+                        terminate_process_group(child, group_id);
+                        let _ = child.wait();
+                        let _ = stdout_thread.join();
+                        let _ = stderr_thread.join();
+                        if let Some(thread) = stdin_thread.take() {
+                            let _ = thread.join();
+                        }
+                        return Err(error);
                     }
-                    return Err(error);
+                }
+            }
+            let remaining = timeout.saturating_sub(started.elapsed());
+            if remaining.is_zero() {
+                terminate_process_group(child, group_id);
+                let _ = child.wait();
+                let _ = stdout_thread.join();
+                let _ = stderr_thread.join();
+                if let Some(thread) = stdin_thread.take() {
+                    let _ = thread.join();
+                }
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::TimedOut,
+                    "process timed out",
+                ));
+            }
+            if status.is_some() && stdout.is_some() && stderr.is_some() && stdin.is_some() {
+                break;
+            }
+            match receiver.recv_timeout(remaining.min(std::time::Duration::from_millis(10))) {
+                Ok(Event::Stdin(result)) => stdin = Some(result),
+                Ok(Event::Stdout(result)) => stdout = Some(result),
+                Ok(Event::Stderr(result)) => stderr = Some(result),
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                    std::thread::sleep(std::time::Duration::from_millis(10));
                 }
             }
         }
-        let remaining = timeout.saturating_sub(started.elapsed());
-        if remaining.is_zero() {
-            terminate_process_group(child, group_id);
-            let _ = child.wait();
-            let _ = stdout_thread.join();
-            let _ = stderr_thread.join();
-            if let Some(thread) = stdin_thread.take() {
-                let _ = thread.join();
-            }
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::TimedOut,
-                "process timed out",
-            ));
-        }
-        if status.is_some() && stdout.is_some() && stderr.is_some() && stdin.is_some() {
-            break;
-        }
-        match receiver.recv_timeout(remaining.min(std::time::Duration::from_millis(10))) {
-            Ok(Event::Stdin(result)) => stdin = Some(result),
-            Ok(Event::Stdout(result)) => stdout = Some(result),
-            Ok(Event::Stderr(result)) => stderr = Some(result),
-            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
-            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
-                std::thread::sleep(std::time::Duration::from_millis(10));
-            }
-        }
-    }
 
-    if let Some(thread) = stdin_thread.take() {
-        thread
+        if let Some(thread) = stdin_thread.take() {
+            thread
+                .join()
+                .map_err(|_| std::io::Error::other("stdin writer panicked"))?;
+        }
+        stdout_thread
             .join()
-            .map_err(|_| std::io::Error::other("stdin writer panicked"))?;
-    }
-    stdout_thread
-        .join()
-        .map_err(|_| std::io::Error::other("stdout reader panicked"))?;
-    stderr_thread
-        .join()
-        .map_err(|_| std::io::Error::other("stderr reader panicked"))?;
-    let (stdout, stdout_exceeded) = stdout
-        .expect("stdout result received")
-        .map_err(|_| std::io::Error::other("stdout reader failed"))?;
-    let (stderr, _) = stderr
-        .expect("stderr result received")
-        .map_err(|_| std::io::Error::other("stderr reader failed"))?;
-    stdin
-        .expect("stdin result received")
-        .map_err(|_| std::io::Error::other("stdin writer failed"))?;
-    Ok(Output {
-        status: status.expect("child status received"),
-        stdout,
-        stderr,
-        exceeded: stdout_exceeded,
+            .map_err(|_| std::io::Error::other("stdout reader panicked"))?;
+        stderr_thread
+            .join()
+            .map_err(|_| std::io::Error::other("stderr reader panicked"))?;
+        let (stdout, stdout_exceeded) = stdout
+            .expect("stdout result received")
+            .map_err(|_| std::io::Error::other("stdout reader failed"))?;
+        let (stderr, _) = stderr
+            .expect("stderr result received")
+            .map_err(|_| std::io::Error::other("stderr reader failed"))?;
+        stdin
+            .expect("stdin result received")
+            .map_err(|_| std::io::Error::other("stdin writer failed"))?;
+        Ok(Output {
+            status: status.expect("child status received"),
+            stdout,
+            stderr,
+            exceeded: stdout_exceeded,
+        })
     })
 }
 

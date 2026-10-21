@@ -2346,12 +2346,13 @@ fn timed_out_history_git_process_preserves_the_published_snapshot() {
     let bin = root.join("hanging-git-bin");
     fs::create_dir(&bin).unwrap();
     let fake_git = bin.join("git");
-    let marker = root.join("git-was-started");
+    let rev_list_marker = root.join("git-rev-list-was-started");
+    let tree_marker = root.join("git-ls-tree-was-started");
     let real_git = Command::new("which").arg("git").output().unwrap();
     let real_git = String::from_utf8(real_git.stdout).unwrap();
     let real_git = real_git.trim();
     let shim = format!(
-        "#!/bin/sh\ncase $* in *ls-tree*) touch $MARKER; sleep 5;; *) exec {real_git} \"$@\";; esac\n"
+        "#!/bin/sh\ncase $* in *$HANG_CMD*) touch $MARKER; sleep 5;; *) exec {real_git} \"$@\";; esac\n"
     );
     fs::write(&fake_git, shim).unwrap();
     fs::set_permissions(&fake_git, fs::Permissions::from_mode(0o755)).unwrap();
@@ -2361,13 +2362,14 @@ fn timed_out_history_git_process_preserves_the_published_snapshot() {
         &["refresh"],
         &[
             ("PATH", &path),
-            ("MARKER", marker.to_str().unwrap()),
+            ("MARKER", rev_list_marker.to_str().unwrap()),
+            ("HANG_CMD", "rev-list"),
             ("REPODB_REFRESH_TIMEOUT_SECS", "invalid"),
         ],
     );
     assert!(!invalid_config_success);
     assert!(
-        !marker.exists(),
+        !rev_list_marker.exists(),
         "invalid timeout policy fails before spawn"
     );
 
@@ -2376,11 +2378,33 @@ fn timed_out_history_git_process_preserves_the_published_snapshot() {
         &["refresh"],
         &[
             ("PATH", &path),
-            ("MARKER", marker.to_str().unwrap()),
+            ("MARKER", rev_list_marker.to_str().unwrap()),
+            ("HANG_CMD", "rev-list"),
             ("REPODB_REFRESH_TIMEOUT_SECS", "1"),
         ],
     );
     assert!(!success, "a hung Git command is terminated at the deadline");
+    assert!(
+        rev_list_marker.exists(),
+        "the rev-list process was exercised"
+    );
+    assert_eq!(search_json(root, &["Exact [literal] TARGET"]).len(), 1);
+
+    let (tree_success, _) = run_with_env(
+        root,
+        &["refresh"],
+        &[
+            ("PATH", &path),
+            ("MARKER", tree_marker.to_str().unwrap()),
+            ("HANG_CMD", "ls-tree"),
+            ("REPODB_REFRESH_TIMEOUT_SECS", "1"),
+        ],
+    );
+    assert!(
+        !tree_success,
+        "a hung ls-tree process is terminated at the deadline"
+    );
+    assert!(tree_marker.exists(), "the ls-tree process was exercised");
     assert_eq!(search_json(root, &["Exact [literal] TARGET"]).len(), 1);
 }
 

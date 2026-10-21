@@ -1012,11 +1012,15 @@ fn for_each_reachable_commit(
     if let Some(id) = head_id.as_deref() {
         args.push(id);
     }
-    let mut child = Command::new("git")
+    let mut command = Command::new("git");
+    command
         .args(args)
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()?;
+        .stderr(Stdio::piped());
+    let mut child = process::spawn_in_process_group(&mut command)?;
+    let process_id = child.id();
+    let deadline =
+        process::ProcessDeadline::start(process_id, process::refresh_subprocess_timeout()?);
     let mut stdout = BufReader::with_capacity(READ_BUFFER_BYTES, child.stdout.take().unwrap());
     let stderr = child.stderr.take().unwrap();
     let stderr =
@@ -1044,13 +1048,22 @@ fn for_each_reachable_commit(
         Ok(())
     })();
     if result.is_err() {
-        let _ = child.kill();
+        process::terminate_process_group(&mut child, process_id);
     }
     let status = child.wait()?;
     let (stderr, _) = stderr.join().map_err(|_| "git stderr reader panicked")??;
-    preparation_bytes.release(READ_BUFFER_BYTES);
-    preparation_bytes.release(MAX_GIT_STDERR_BYTES - stderr.capacity());
     let stderr_capacity = stderr.capacity();
+    let timed_out = deadline.finish();
+    preparation_bytes.release(READ_BUFFER_BYTES);
+    preparation_bytes.release(MAX_GIT_STDERR_BYTES - stderr_capacity);
+    if timed_out {
+        drop(stderr);
+        preparation_bytes.release(stderr_capacity);
+        if let Some(id) = head_id {
+            preparation_bytes.release(id.len());
+        }
+        return Err("process timed out".into());
+    }
     if let Err(error) = result {
         drop(stderr);
         preparation_bytes.release(stderr_capacity);
