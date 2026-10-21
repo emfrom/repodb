@@ -1,9 +1,6 @@
 use crate::{
-    Result, SearchResult, as_bytes,
-    budget::{Budget, MAX_REFRESH_ACCOUNTING_BYTES},
-    embed,
-    git_objects::GitBlobReader,
-    git_ranges, process, segmentation,
+    Result, SearchResult, as_bytes, budget::Budget, embed, git_objects::GitBlobReader, git_ranges,
+    process, segmentation,
 };
 use rusqlite::{Connection, OptionalExtension, params};
 use std::{
@@ -83,6 +80,22 @@ fn create_temporary_file(label: &str) -> Result<(TemporaryFile, fs::File)> {
 }
 
 const MAX_COMMAND_STDERR_BYTES: usize = 64 * 1024;
+const DEFAULT_REFRESH_SUBPROCESS_TIMEOUT_SECS: u64 = 300;
+const MAX_REFRESH_SUBPROCESS_TIMEOUT_SECS: u64 = 3600;
+
+fn refresh_subprocess_timeout() -> Result<std::time::Duration> {
+    let seconds = match std::env::var("REPODB_REFRESH_TIMEOUT_SECS") {
+        Ok(value) => value
+            .parse::<u64>()
+            .map_err(|_| "REPODB_REFRESH_TIMEOUT_SECS must be an integer from 1 through 3600")?,
+        Err(std::env::VarError::NotPresent) => DEFAULT_REFRESH_SUBPROCESS_TIMEOUT_SECS,
+        Err(error) => return Err(error.into()),
+    };
+    if !(1..=MAX_REFRESH_SUBPROCESS_TIMEOUT_SECS).contains(&seconds) {
+        return Err("REPODB_REFRESH_TIMEOUT_SECS must be an integer from 1 through 3600".into());
+    }
+    Ok(std::time::Duration::from_secs(seconds))
+}
 const MAX_URL_HEADER_BYTES: u64 = 1024 * 1024;
 const DEFAULT_URL_MAX_REDIRECTS: usize = 5;
 const HARD_MAX_URL_REDIRECTS: usize = 20;
@@ -103,7 +116,8 @@ fn fetch_url(locator: &str, max_redirects: usize, used: &mut Budget) -> Result<F
     let write_out = format!(
         "\\n{marker}%{{url_effective}}\\n%{{content_type}}\\n%{{num_redirects}}\\n%{{http_code}}\\n"
     );
-    let mut child = Command::new("curl")
+    let mut command = Command::new("curl");
+    command
         .args([
             "--fail",
             "--location",
@@ -119,8 +133,8 @@ fn fetch_url(locator: &str, max_redirects: usize, used: &mut Budget) -> Result<F
         .args(["--write-out", &write_out])
         .arg(locator)
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()?;
+        .stderr(Stdio::piped());
+    let mut child = spawn_refresh_command(&mut command)?;
     let (status, mut output, stderr) = bounded_command_output(
         &mut child,
         used.remaining().saturating_sub(MAX_COMMAND_STDERR_BYTES),
@@ -338,10 +352,13 @@ fn table_exists(c: &Connection, table: &str) -> Result<bool> {
     )?)
 }
 
-fn read_all(reader: impl Read) -> Result<Vec<u8>> {
+fn read_all(reader: impl Read, byte_limit: u64) -> Result<Vec<u8>> {
+    let read_limit = byte_limit.saturating_add(1);
     let mut bytes = Vec::new();
-    let mut reader = reader;
-    reader.read_to_end(&mut bytes)?;
+    reader.take(read_limit).read_to_end(&mut bytes)?;
+    if bytes.len() as u64 > byte_limit {
+        return Err(format!("local import exceeded its {byte_limit}-byte read limit").into());
+    }
     Ok(bytes)
 }
 
@@ -359,6 +376,18 @@ fn configured_url_curl() -> Command {
     command.arg(DEFAULT_URL_MAX_REDIRECTS.to_string());
     command.args(["--proto-redir", "=http,https"]);
     command
+}
+
+fn spawn_refresh_command(command: &mut Command) -> std::io::Result<std::process::Child> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        command.process_group(0).spawn()
+    }
+    #[cfg(not(unix))]
+    {
+        command.spawn()
+    }
 }
 
 fn bounded_command_output(
@@ -381,7 +410,13 @@ fn bounded_command_output_with_input(
     let reservation = stdout_limit + stderr_limit;
     used.charge(reservation, "subprocess output capture")?;
 
-    let output = match process::capture_with_input(child, input, stdout_limit, stderr_limit) {
+    let output = match process::capture_with_input_timeout(
+        child,
+        input,
+        stdout_limit,
+        stderr_limit,
+        refresh_subprocess_timeout()?,
+    ) {
         Ok(output) => output,
         Err(error) => {
             used.release(reservation);
@@ -404,13 +439,14 @@ fn import_embed(command: &str, model: &str, text: &str, used: &mut Budget) -> Re
     } else {
         text
     };
-    let mut child = Command::new(command)
+    let mut child_command = Command::new(command);
+    child_command
         .env("REPODB_EMBEDDING_MODEL", model)
         .args(["--json", "-"])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()?;
+        .stderr(Stdio::piped());
+    let mut child = spawn_refresh_command(&mut child_command)?;
     // A JSON number needs at least one input byte; Vec growth can reserve up to
     // twice the element count, so budget up to 8 bytes of vector capacity per
     // captured stdout byte while stdout remains live.
@@ -445,12 +481,13 @@ fn import_embed(command: &str, model: &str, text: &str, used: &mut Budget) -> Re
 }
 
 fn git_output(repo: &str, args: &[&str], limit: usize, used: &mut Budget) -> Result<Vec<u8>> {
-    let mut child = Command::new("git")
+    let mut command = Command::new("git");
+    command
         .args(["-C", repo])
         .args(args)
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()?;
+        .stderr(Stdio::piped());
+    let mut child = spawn_refresh_command(&mut command)?;
     let (status, stdout, stderr) = bounded_command_output(&mut child, limit, used)?;
     if !status.success() {
         return Err(format!(
@@ -735,10 +772,7 @@ pub fn refresh_with_size_limit(
         .join("repodb-cache");
     c.execute_batch("DROP TABLE IF EXISTS temp.import_pdf_pages; CREATE TEMP TABLE import_pdf_pages(page INTEGER PRIMARY KEY,text TEXT NOT NULL);")?;
     // This conservative cumulative accounting includes buffers and representations materialized during preparation.
-    let mut refresh_memory_bytes = Budget::new(
-        MAX_REFRESH_ACCOUNTING_BYTES,
-        "import refresh preparation accounting",
-    );
+    let mut refresh_memory_bytes = Budget::refresh("import refresh preparation accounting")?;
     for (id, locator, kind) in source_rows {
         if kind == "git" {
             let repository = if Path::new(&locator).is_dir() {
@@ -747,12 +781,26 @@ pub fn refresh_with_size_limit(
                 let mirror = cache_dir.join(format!("git-{}", checksum(locator.as_bytes())));
                 fs::create_dir_all(&cache_dir)?;
                 if !mirror.exists() {
-                    let status = Command::new("git")
+                    let mut command = Command::new("git");
+                    command
                         .args(["clone", "--mirror", &locator])
                         .arg(&mirror)
-                        .status()?;
+                        .stdout(Stdio::piped())
+                        .stderr(Stdio::piped());
+                    let mut child = spawn_refresh_command(&mut command)?;
+                    let (status, _, stderr) = bounded_command_output(
+                        &mut child,
+                        refresh_memory_bytes
+                            .remaining()
+                            .saturating_sub(MAX_COMMAND_STDERR_BYTES),
+                        &mut refresh_memory_bytes,
+                    )?;
                     if !status.success() {
-                        return Err(format!("git clone failed for {locator}").into());
+                        return Err(format!(
+                            "git clone failed for {locator}: {}",
+                            String::from_utf8_lossy(&stderr)
+                        )
+                        .into());
                     }
                 }
                 mirror.to_string_lossy().into_owned()
@@ -914,7 +962,7 @@ pub fn refresh_with_size_limit(
             continue;
         }
         let source_result = (|| -> Result<()> {
-            if kind == "file" {
+            let local_file_size = if kind == "file" {
                 if is_database_file(c, Path::new(&locator))? {
                     return Err(
                         "cannot refresh an import that points to RepoDB's own database file".into(),
@@ -922,9 +970,17 @@ pub fn refresh_with_size_limit(
                 }
                 let size = fs::metadata(&locator)?.len();
                 refresh_memory_bytes.charge(size as usize, "local import input")?;
-            }
+                Some(size)
+            } else {
+                None
+            };
             let (source_bytes, final_url, content_type, redirect_chain) = if kind == "file" {
-                (read_all(fs::File::open(&locator)?)?, None, None, Vec::new())
+                (
+                    read_all(fs::File::open(&locator)?, local_file_size.unwrap_or(0))?,
+                    None,
+                    None,
+                    Vec::new(),
+                )
             } else {
                 let response = fetch_url(&locator, url_max_redirects, &mut refresh_memory_bytes)?;
                 (
@@ -982,15 +1038,15 @@ pub fn refresh_with_size_limit(
                 })?;
                 if cached.is_none() {
                     c.execute("DELETE FROM temp.import_pdf_pages", [])?;
-                    let mut child = Command::new("pdftotext")
+                    let mut command = Command::new("pdftotext");
+                    command
                         .args(["-layout", "-enc", "UTF-8", "-", "-"])
                         .stdin(Stdio::piped())
                         .stdout(Stdio::piped())
-                        .stderr(Stdio::piped())
-                        .spawn()
-                        .map_err(|error| {
-                            format!("PDF imports require pdftotext on PATH: {error}")
-                        })?;
+                        .stderr(Stdio::piped());
+                    let mut child = spawn_refresh_command(&mut command).map_err(|error| {
+                        format!("PDF imports require pdftotext on PATH: {error}")
+                    })?;
                     let output = bounded_command_output_with_input(
                         &mut child,
                         &source_bytes,

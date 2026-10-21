@@ -2243,6 +2243,98 @@ fn local_file_larger_than_previous_limit_refreshes() {
 }
 
 #[test]
+fn oversized_local_import_is_rejected_without_replacing_the_published_snapshot() {
+    let repo = repository();
+    let root = repo.path();
+    assert!(run(root, &["init"]).0);
+    let file = root.join("bounded.txt");
+    fs::write(&file, "published before oversized input\n").unwrap();
+    let locator = file.to_string_lossy().into_owned();
+    assert!(run(root, &["import", &locator]).0);
+    assert!(run(root, &["refresh"]).0);
+
+    let oversized = fs::File::create(&file).unwrap();
+    oversized.set_len(512 * 1024 * 1024 + 1).unwrap();
+    let (success, _) = run(root, &["refresh"]);
+    assert!(
+        !success,
+        "an input beyond the finite refresh budget is rejected"
+    );
+    assert_eq!(
+        search_json(root, &["published before oversized input"]).len(),
+        1
+    );
+}
+
+#[test]
+fn configured_refresh_memory_budget_rejects_inputs_and_preserves_the_snapshot() {
+    let repo = repository();
+    let root = repo.path();
+    assert!(run(root, &["init"]).0);
+    let file = root.join("budget.txt");
+    fs::write(&file, "prior budget snapshot marker\n").unwrap();
+    let locator = file.to_string_lossy().into_owned();
+    assert!(run(root, &["import", &locator]).0);
+    assert!(run(root, &["refresh"]).0);
+
+    fs::write(&file, format!("{}\n", "x".repeat(128 * 1024))).unwrap();
+    let (success, _) = run_with_env(root, &["refresh"], &[("REPODB_MAX_REFRESH_BYTES", "65536")]);
+    assert!(
+        !success,
+        "the configured aggregate memory budget is enforced"
+    );
+    assert_eq!(
+        search_json(root, &["prior budget snapshot marker"]).len(),
+        1
+    );
+}
+
+#[test]
+fn timed_out_import_subprocess_preserves_the_published_snapshot() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let repo = repository();
+    let root = repo.path();
+    assert!(run(root, &["init"]).0);
+    let pdf = root.join("timeout.pdf");
+    fs::write(&pdf, b"%PDF-first version").unwrap();
+    let locator = pdf.to_string_lossy().into_owned();
+    assert!(run(root, &["import", &locator]).0);
+
+    let bin = root.join("timeout-bin");
+    fs::create_dir(&bin).unwrap();
+    let converter = bin.join("pdftotext");
+    fs::write(
+        &converter,
+        "#!/bin/sh\ncat >/dev/null\nprintf 'previous PDF snapshot marker\\n'\n",
+    )
+    .unwrap();
+    fs::set_permissions(&converter, fs::Permissions::from_mode(0o755)).unwrap();
+    let path = format!("{}:{}", bin.display(), std::env::var("PATH").unwrap());
+    assert!(run_with_env(root, &["refresh"], &[("PATH", &path)]).0);
+    assert_eq!(
+        search_json(root, &["previous PDF snapshot marker"]).len(),
+        1
+    );
+
+    fs::write(&pdf, b"%PDF-second version").unwrap();
+    fs::write(&converter, "#!/bin/sh\ncat >/dev/null\nsleep 5\n").unwrap();
+    let (success, _) = run_with_env(
+        root,
+        &["refresh"],
+        &[("PATH", &path), ("REPODB_REFRESH_TIMEOUT_SECS", "1")],
+    );
+    assert!(
+        !success,
+        "a hung converter is terminated at the configured deadline"
+    );
+    assert_eq!(
+        search_json(root, &["previous PDF snapshot marker"]).len(),
+        1
+    );
+}
+
+#[test]
 fn pdf_conversion_larger_than_previous_limit_refreshes() {
     use std::os::unix::fs::PermissionsExt;
     let repo = repository();

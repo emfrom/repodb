@@ -1,8 +1,10 @@
 use crate::Result;
 
-// Accounts retained preparation allocations without imposing an application-level size cap.
-// This is an accounting boundary, not a configured limit.
-pub(crate) const MAX_REFRESH_ACCOUNTING_BYTES: usize = usize::MAX;
+// Maximum retained preparation memory across a refresh. Keep this finite: refresh
+// accounting is a safety limit, not merely an overflow check.
+pub(crate) const MAX_REFRESH_ACCOUNTING_BYTES: usize = 512 * 1024 * 1024;
+const MAX_CONFIGURED_REFRESH_BYTES: usize = 4 * 1024 * 1024 * 1024;
+const REFRESH_BUDGET_ENV: &str = "REPODB_MAX_REFRESH_BYTES";
 
 pub(crate) struct Budget {
     limit: usize,
@@ -17,6 +19,30 @@ impl Budget {
             used: 0,
             description,
         }
+    }
+
+    pub(crate) fn refresh(description: &'static str) -> Result<Self> {
+        let limit = match std::env::var(REFRESH_BUDGET_ENV) {
+            Ok(value) => {
+                let limit: usize = value
+                    .parse()
+                    .map_err(|_| format!("{REFRESH_BUDGET_ENV} must be a byte count"))?;
+                if !(1..=MAX_CONFIGURED_REFRESH_BYTES).contains(&limit) {
+                    return Err(format!(
+                        "{REFRESH_BUDGET_ENV} must be between 1 and {MAX_CONFIGURED_REFRESH_BYTES}"
+                    )
+                    .into());
+                }
+                limit
+            }
+            Err(std::env::VarError::NotPresent) => MAX_REFRESH_ACCOUNTING_BYTES,
+            Err(error) => return Err(error.into()),
+        };
+        Ok(Self::new(limit, description))
+    }
+
+    pub(crate) fn limit(&self) -> usize {
+        self.limit
     }
 
     pub(crate) fn charge(&mut self, bytes: usize, purpose: &str) -> Result<()> {
@@ -93,6 +119,11 @@ impl Budget {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn refresh_accounting_ceiling_is_finite() {
+        assert_eq!(MAX_REFRESH_ACCOUNTING_BYTES, 512 * 1024 * 1024);
+    }
 
     #[test]
     fn reserve_vec_charges_capacity_and_rolls_back_rejected_growth() {

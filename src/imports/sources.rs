@@ -96,12 +96,12 @@ pub(crate) fn preview(path: &Path, database: &Path) -> Result<Preview> {
 
 pub(crate) fn preview_url(url: &str, database: &Path) -> Result<Preview> {
     let mut command = super::configured_url_curl();
-    let mut child = command
+    command
         .args(["--output", "/dev/null", "--write-out", "%{size_download}"])
         .arg(url)
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()?;
+        .stderr(Stdio::piped());
+    let mut child = super::spawn_refresh_command(&mut command)?;
     let mut budget = Budget::new(
         64 + super::MAX_COMMAND_STDERR_BYTES,
         "URL preview subprocess output",

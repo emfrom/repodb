@@ -1,8 +1,6 @@
 use crate::{
-    Result, SearchResult, as_bytes,
-    budget::{Budget, MAX_REFRESH_ACCOUNTING_BYTES},
-    git_objects::GitBlobReader,
-    git_ranges, process, query_vector, segmentation,
+    Result, SearchResult, as_bytes, budget::Budget, git_objects::GitBlobReader, git_ranges,
+    process, query_vector, segmentation,
 };
 use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
 use std::{
@@ -111,7 +109,7 @@ pub fn database_git_path(database_path: &Path) -> Result<Option<Vec<u8>>> {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(error) => return Err(error.into()),
     };
-    let mut budget = Budget::new(16 * 1024, "database path discovery");
+    let mut budget = Budget::refresh("database path discovery")?;
     let root_bytes = git_output(&["rev-parse", "--show-toplevel"], 4096, &mut budget)?;
     let root_bytes = root_bytes.strip_suffix(b"\n").unwrap_or(&root_bytes);
     let root = Path::new(std::str::from_utf8(root_bytes)?);
@@ -122,11 +120,23 @@ pub fn database_git_path(database_path: &Path) -> Result<Option<Vec<u8>>> {
     Ok(Some(relative_path.as_os_str().as_encoded_bytes().to_vec()))
 }
 
-fn git_capture_limits(requested_stdout: usize, preparation_bytes: usize) -> Result<(usize, usize)> {
-    let remaining = MAX_REFRESH_ACCOUNTING_BYTES
-        .checked_sub(preparation_bytes)
-        .ok_or_else(memory_limit)?;
-    let stderr = remaining.min(MAX_GIT_STDERR_BYTES);
+fn git_capture_limits(
+    requested_stdout: usize,
+    preparation_bytes: usize,
+    total_limit: usize,
+) -> Result<(usize, usize)> {
+    let remaining = total_limit.checked_sub(preparation_bytes).ok_or_else(|| {
+        format!("history refresh accounting exceeded its configured limit ({preparation_bytes} > {total_limit})")
+    })?;
+    let stdout_reserve = if remaining > MAX_GIT_STDERR_BYTES {
+        remaining - MAX_GIT_STDERR_BYTES
+    } else {
+        remaining / 4
+    };
+    let minimum_stdout = requested_stdout.min(4096).min(stdout_reserve);
+    let stderr = remaining
+        .saturating_sub(minimum_stdout)
+        .min(MAX_GIT_STDERR_BYTES);
     let stdout = requested_stdout.min(remaining - stderr);
     Ok((stdout, stderr))
 }
@@ -136,7 +146,11 @@ fn git_output(
     stdout_limit: usize,
     preparation_bytes: &mut Budget,
 ) -> Result<Vec<u8>> {
-    let (stdout_limit, stderr_limit) = git_capture_limits(stdout_limit, preparation_bytes.used())?;
+    let (stdout_limit, stderr_limit) = git_capture_limits(
+        stdout_limit,
+        preparation_bytes.used(),
+        preparation_bytes.limit(),
+    )?;
     let mut child = Command::new("git")
         .args(args)
         .stdout(Stdio::piped())
@@ -144,7 +158,10 @@ fn git_output(
         .spawn()?;
     let output = process::capture(&mut child, stdout_limit, stderr_limit)?;
     if output.exceeded {
-        return Err(memory_limit());
+        return Err(format!(
+            "history Git output exceeded its {stdout_limit}-byte budget for {args:?}"
+        )
+        .into());
     }
     let stdout_capacity = output.stdout.capacity();
     let stderr_capacity = output.stderr.capacity();
@@ -179,6 +196,7 @@ fn git_diff_output(
             .remaining()
             .saturating_sub(MAX_GIT_STDERR_BYTES),
         preparation_bytes.used(),
+        preparation_bytes.limit(),
     )?;
     let mut command = Command::new("git");
     command
@@ -919,7 +937,8 @@ pub fn publish_transaction(c: &mut Connection, version: i64) -> Result<Transacti
 }
 
 fn head(preparation_bytes: &mut Budget) -> Result<Option<String>> {
-    let (stdout_limit, stderr_limit) = git_capture_limits(128, preparation_bytes.used())?;
+    let (stdout_limit, stderr_limit) =
+        git_capture_limits(128, preparation_bytes.used(), preparation_bytes.limit())?;
     let mut child = Command::new("git")
         .args(["rev-parse", "--verify", "--quiet", "HEAD"])
         .stdout(Stdio::piped())
@@ -1188,10 +1207,7 @@ impl EmbeddingPipeline {
                     let result = (|| -> Result<_> {
                         let texts: Vec<&str> =
                             batch.iter().map(|(_, text)| text.as_str()).collect();
-                        let mut budget = Budget::new(
-                            MAX_REFRESH_ACCOUNTING_BYTES,
-                            "history embedding accounting",
-                        );
+                        let mut budget = Budget::refresh("history embedding accounting")?;
                         let (vectors, dim) =
                             vectors_batch(&texts, &command, &model, dimension, &mut budget)?;
                         if vectors.len() != batch.len() {
@@ -1394,6 +1410,7 @@ impl StagedUnitWriter<'_, '_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::budget::MAX_REFRESH_ACCOUNTING_BYTES;
 
     #[test]
     fn full_refresh_indexes_added_and_removed_diff_references() {
@@ -2786,13 +2803,20 @@ mod tests {
         let (stdout, stderr) = git_capture_limits(
             MAX_REFRESH_ACCOUNTING_BYTES,
             MAX_REFRESH_ACCOUNTING_BYTES - 100,
+            MAX_REFRESH_ACCOUNTING_BYTES,
         )
         .unwrap();
-        assert_eq!(stdout, 0);
-        assert_eq!(stderr, 100);
+        assert!(stdout > 0);
+        assert!(stderr > 0);
+        assert_eq!(stdout + stderr, 100);
 
         let used = MAX_REFRESH_ACCOUNTING_BYTES - MAX_GIT_STDERR_BYTES - 17;
-        let (stdout, stderr) = git_capture_limits(MAX_REFRESH_ACCOUNTING_BYTES, used).unwrap();
+        let (stdout, stderr) = git_capture_limits(
+            MAX_REFRESH_ACCOUNTING_BYTES,
+            used,
+            MAX_REFRESH_ACCOUNTING_BYTES,
+        )
+        .unwrap();
         assert_eq!(stdout, 17);
         assert_eq!(stderr, MAX_GIT_STDERR_BYTES);
         assert!(stdout + stderr <= MAX_REFRESH_ACCOUNTING_BYTES - used);
@@ -2953,10 +2977,7 @@ pub fn prepare_refresh_excluding(
     excluded_database_path: Option<&[u8]>,
 ) -> Result<()> {
     is_current(c)?;
-    let mut preparation_bytes = Budget::new(
-        MAX_REFRESH_ACCOUNTING_BYTES,
-        "history refresh preparation accounting",
-    );
+    let mut preparation_bytes = Budget::refresh("history refresh preparation accounting")?;
     c.execute_batch("PRAGMA temp_store=FILE;
         DROP TABLE IF EXISTS temp.refresh_commits; DROP TABLE IF EXISTS temp.refresh_blobs;
         DROP TABLE IF EXISTS temp.refresh_occurrences; DROP TABLE IF EXISTS temp.refresh_variants;
@@ -3203,10 +3224,7 @@ pub fn resolve_update_commit(commit_id: &str) -> Result<String> {
     if commit_id.len() < 4 || !commit_id.bytes().all(|byte| byte.is_ascii_hexdigit()) {
         return Err("--update requires a full or unique hexadecimal commit ID (not a ref or revision expression)".into());
     }
-    let mut budget = Budget::new(
-        MAX_REFRESH_ACCOUNTING_BYTES,
-        "targeted history refresh preparation accounting",
-    );
+    let mut budget = Budget::refresh("targeted history refresh preparation accounting")?;
     let output = git_output(
         &[
             "rev-parse",
@@ -3254,10 +3272,7 @@ fn refresh_scoped(
         );
     }
 
-    let mut budget = Budget::new(
-        MAX_REFRESH_ACCOUNTING_BYTES,
-        "scoped history refresh preparation accounting",
-    );
+    let mut budget = Budget::refresh("scoped history refresh preparation accounting")?;
     let target_commit_id = match target {
         Some(commit_id) => commit_id.to_owned(),
         None => {
@@ -3860,10 +3875,7 @@ pub(crate) fn search_diffs_filtered(
 pub fn reembed(c: &mut Connection, command: &str, model: &str) -> Result<()> {
     let version = snapshot_version(c)?;
     c.execute_batch("PRAGMA temp_store=FILE; DROP TABLE IF EXISTS temp.reembed_vectors; CREATE TEMP TABLE reembed_vectors(unit_id INTEGER PRIMARY KEY, vector BLOB NOT NULL);")?;
-    let mut preparation_bytes = Budget::new(
-        MAX_REFRESH_ACCOUNTING_BYTES,
-        "history refresh preparation accounting",
-    );
+    let mut preparation_bytes = Budget::refresh("history refresh preparation accounting")?;
     let mut dim = 0;
     let schema: i64 = c.query_row("PRAGMA user_version", [], |row| row.get(0))?;
     {
@@ -4036,10 +4048,7 @@ pub fn search_commit_messages(
 }
 
 fn hydrate_commit_message(commit_id: &str, start: usize, end: usize) -> Result<String> {
-    let mut budget = Budget::new(
-        MAX_REFRESH_ACCOUNTING_BYTES,
-        "commit message hydration limit exceeded",
-    );
+    let mut budget = Budget::refresh("commit message hydration limit exceeded")?;
     let size: usize =
         String::from_utf8(git_output(&["cat-file", "-s", commit_id], 64, &mut budget)?)?
             .trim()
@@ -4693,7 +4702,7 @@ fn select_path_history(
 /// are additive; exclusions are applied last. Branch labels and timestamp ordering
 /// are never used as ancestry.
 pub fn select_history(c: &Connection, query: &HistoryQuery) -> Result<Vec<SelectedHistoryEntry>> {
-    let mut budget = Budget::new(MAX_REFRESH_ACCOUNTING_BYTES, "history selection accounting");
+    let mut budget = Budget::refresh("history selection accounting")?;
     if query.start_commit.is_some()
         && matches!(
             query.selector,
