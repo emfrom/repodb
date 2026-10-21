@@ -1,7 +1,48 @@
-# Issue #83: agent-task benchmark readiness
+# Issue #83: reproducible source-derived benchmark
 
-Status: **blocked; issue #83 remains open**. The current run confirmed the RepoDB candidate and historical baseline pins, materialized-content provenance instructions for the requested ProtonSync pin, and a real offline embedder smoke. It did not produce benchmark results: no approved source-verified question/reference set or second repository pin is available, and the worktree has no initialized benchmark indexes. The task truth cannot be invented.
+Status: **task set and harness prepared; measurements blocked and #83 remains open**. The earlier audit's note that no labels were supplied described that run, not a prohibition on deriving source-grounded tasks. This revision creates a deliberately small, honest suite from immutable source/test facts. It is not user-approved ground truth, does not claim representativeness, and does not claim general retrieval quality.
 
-Run-specific pin evidence, commands and limitations are recorded in [`benchmarks/issue-83/asset-audit.md`](../benchmarks/issue-83/asset-audit.md). The ProtonSync corpus is `/home/emfrom/src/projects/protonsync-ts` at `7c77aab91aff586591a00092a19760d5dc15e90a`; materialize it using `git archive` at that commit rather than copying untracked checkout files. Candidate RepoDB is `49ac71a5fd2328e93110a5369e578e4eff7a25d2`; historical baseline is `v0.2.0` at `7d183627c82f053717e9198b712764f6f6f1a95f`. The embedder smoke is not a retrieval-quality or resource benchmark.
+## Corpus pins and provenance
 
-No recall, answer/reference accuracy, coverage, latency, RSS, embedding-call/byte, refresh or storage measurements are claimed. Required stratified baseline/candidate comparisons and cold/warm runs remain outstanding. Keep #83 open and do not close #84 until reviewed task truth and reproducible measured evidence exist.
+`benchmarks/issue-83/tasks.json` contains 14 stable-ID questions across RepoDB Rust, RepoDB CLI documentation, ProtonSync TypeScript, ProtonSync tests, and license provenance. Every expected answer and reference path/line span was verified against the exact pinned files. The tasks file records the pin mapping and individual verification notes.
+
+- RepoDB corpus and candidate software: `13639d6dbfed410bfa513f95861556acdf32cb5d`.
+- ProtonSync TypeScript corpus: `7c77aab91aff586591a00092a19760d5dc15e90a`.
+- Historical baseline binary source: RepoDB `v0.2.0`, `7d183627c82f053717e9198b712764f6f6f1a95f`.
+- Embedder: `/home/emfrom/bin/generate_embeddings`, source commit `938d9ed73402249e5ac407afed6e2159bc73dc9e`, model all-MiniLM-L6-v2. Run only with `HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1`.
+- `rust-fixture-3690a8f3cf8c287f252100bbbe55a410` is inaccessible and was not used.
+
+RepoDB source is GPL-2.0 (`LICENSE`). The pinned ProtonSync source tree carries MIT (`LICENSE.md`): its copyright and permission notices must accompany copies/substantial portions. This benchmark stores questions, concise factual answers and references, not copied source code. This is a provenance/license review, not legal advice or a claim of approval to redistribute upstream material. The ProtonSync repository is cloned/materialized at its exact commit; do not copy untracked working-tree files.
+
+## Questions and scoring
+
+Each task has one natural query, concise answer, answer terms, category, one or more expected source line spans, and a verification note. Answer terms are intentionally explicit lexical checks rather than human/model judgments. For top `k=5` results, `recall@k` is the proportion of expected references whose path and line range overlap a returned source reference. `source_reference_correct` requires all listed expected references. `answer_correct` requires every task `answer_term` to occur in the combined returned result text. These are mechanical, source-grounded checks, not semantic calibration.
+
+Both systems receive the same query and `k=5`. The total serialized result budget is fixed at 5,000 bytes; the harness applies a common evaluator layer that retains complete result objects only, never partial text. Candidate accepts native `--byte-budget 5000`. Historical v0.2.0 has no native response-byte budget or global `--database`; the common evaluator applies its budget after CLI execution, and isolated Git directories isolate its default database. Therefore the baseline may spend more CLI output/memory before common truncation; this limitation is reported, not hidden. The baseline's default exact search differs from candidate combined search, so it is explicitly passed `--combined`. The baseline supports `--semantic-limit`, not the candidate result-limit flag; evaluator truncation is common.
+
+## Harness and metrics
+
+`benchmarks/issue-83/bench.py` requires two separately materialized corpus roots. Each root contains `repodb/` at the RepoDB pin and `protonsync_ts/` at the ProtonSync pin. It verifies both HEADs, creates per-variant isolated config/index locations, invokes each binary, and fails clearly when the binary, corpus pin, database, semantic capability, or embeddings are missing. With `--refresh`, it uses the configured real embedder through an instrumenting wrapper; it records embedding call count and stdin/stdout bytes, refresh time/RSS, and database bytes. It records repeat query latency, `/usr/bin/time` peak RSS, raw response bytes, common-budget response bytes, and answer/reference/recall scores.
+
+A first query is a fresh process, **not a cold filesystem/cache measurement**. Later queries are fresh processes whose OS page cache may be warm. The harness does not drop caches and makes no such claim. It does not exercise an actual dirty/stale worktree state; the stale task asks a source-backed behavior question. Stale-coverage misses are therefore not measured. Path diversity and strata beyond the two corpus/language groups are not asserted from these 14 tasks.
+
+## Execution and current blocker
+
+The runner and both corpus clones were created in `/tmp`; both clones resolved to the specified exact pins. The candidate release binary was built from the RepoDB pin. The historical baseline was built separately from its specified source pin. The actual repeatable benchmark attempt was:
+
+```sh
+python3 benchmarks/issue-83/bench.py \
+  --baseline-bin /tmp/issue83-repodb-v020 \
+  --candidate-bin /tmp/issue83-repodb-candidate \
+  --baseline-root /tmp/issue83-bench-baseline \
+  --candidate-root /tmp/issue83-bench-candidate \
+  --embedder /home/emfrom/bin/generate_embeddings \
+  --semgrep-core /home/emfrom/.local/share/uv/tools/semgrep/lib/python3.13/site-packages/semgrep/bin/semgrep-core \
+  --output /tmp/issue83-results.json --refresh --repeat 2
+```
+
+The earlier attempt was interrupted during baseline `init` after 2,544 wrapper calls; its final call had 30 input bytes and zero output bytes. This was not evidence of a NUL-delimited batch: pinned v0.2.0 calls its configured embedder once per unit with `--json -` (not `-0`). The wrapper path is not recognized by RepoDB as its built-in embedder, so RepoDB's built-in-only whitespace sentinel does not apply; the real CLI strips stdin whitespace and emits nothing for whitespace-only text. The saved call log did not retain the payload or subprocess status, so the exact content of that final 30-byte input cannot be recovered; its zero-output shape is consistent with whitespace-only input and does not indicate a malformed vector response. The harness now preserves whitespace-only stdin by forwarding it as literal text and records child return codes/stderr. A deterministic offline reproduction confirmed the failure mode: 30 spaces to `generate_embeddings --json -` exits 0 with zero stdout bytes, while literal-text mode returns an embedding. Regression tests cover this whitespace case and ordinary stdin. A second bounded baseline init was deliberately terminated at the parent orchestrator's request after 2,197 instrumented calls, without a failure or completed index. During that interval the wrapper observed 2,197 calls, 1,619,304 input bytes, 18,530,682 output bytes, 201.3 seconds summed embedder-call time, 146 whitespace-payload rewrites, and no failed/zero-output calls; over the observed roughly 6m29s this is about 5.6 calls/s. These are partial initialization diagnostics, not benchmark metrics.
+
+Two concrete serial spawn costs are visible in the pinned implementation: v0.2.0 `imports.rs::import_embed` starts the configured embedder once per unit (`--json -`), and current `segmentation.rs::segment` starts semgrep-core once for each segmentable source file (in addition to a once-only version probe). Thus a 2,197-call embedding log plus low sampled GPU utilization is consistent with spawn/CPU-side orchestration overhead, but does not prove it is the bottleneck. Competing falsifiable hypotheses: (1) per-unit embedder process startup is material—measure call elapsed distribution against total init wall time; (2) per-file semgrep process startup dominates—count successful/failed semgrep spawns and time them; (3) embedding daemon/model service wait or CPU-side preprocessing limits throughput—correlate daemon CPU/GPU and request timings; (4) the prior 238-byte, return-code-1 empty-stderr call was transient daemon/CLI failure rather than whitespace—the saved old wrapper omitted stderr, so retry with new stderr capture is required to distinguish these. No architecture changes are made or proposed here. The full index initialization did not complete; no retrieval accuracy, stale-coverage, full refresh/latency/RSS/storage comparison is claimed. Keep results unfilled rather than estimating.
+
+The prior audit's `asset-audit.md` is historical and names its earlier pins and blockers; this section supersedes its statement that no task labels can be constructed, and does not rewrite that run's results. No issue-tracker write was made. Keep #83 and #84 open pending parent review and reproducible results.

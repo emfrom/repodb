@@ -1,0 +1,150 @@
+{
+  "schema_version": 1,
+  "corpus_pins": {
+    "repodb": "13639d6dbfed410bfa513f95861556acdf32cb5d",
+    "protonsync_ts": "7c77aab91aff586591a00092a19760d5dc15e90a"
+  },
+  "provenance_note": "A small source-derived task set, not user-approved and not claimed representative. Every expected answer and source span below was checked against the named immutable commit. Tasks test retrieval of explicit source/test facts, not general model quality.",
+  "tasks": [
+    {
+      "id": "rdb-worktree-stale-head",
+      "corpus": "repodb",
+      "query": "What happens when worktree search finds that the indexed HEAD differs from the active HEAD?",
+      "answer": "It rejects the stale index, reports indexed and active HEADs, and recommends refreshing the repository.",
+      "answer_terms": ["stale", "active head", "refresh"],
+      "category": "code-behavior",
+      "expected_references": [{"path": "src/worktree.rs", "start_line": 142, "end_line": 149}],
+      "verification_note": "Display implementation directly formats the stale-index error with both IDs and refresh guidance."
+    },
+    {
+      "id": "rdb-worktree-untracked-coverage",
+      "corpus": "repodb",
+      "query": "How does RepoDB discover eligible untracked files and account for ignored files during worktree exact search?",
+      "answer": "It asks Git for untracked files with --exclude-standard, separately counts ignored files, and includes untracked paths in the updated-path set.",
+      "answer_terms": ["--exclude-standard", "ignored", "untracked"],
+      "category": "code-behavior",
+      "expected_references": [{"path": "src/worktree.rs", "start_line": 188, "end_line": 209}],
+      "verification_note": "The Git command arguments, path union, and coverage field assignments appear together in the implementation."
+    },
+    {
+      "id": "rdb-history-duplicate-compact-vs-all",
+      "corpus": "repodb",
+      "query": "What does the history test expect from ordinary versus all-occurrence search when a blob occurs repeatedly?",
+      "answer": "Ordinary search returns one compact result; all-occurrence search returns three references: a.txt in both commits and b.txt in the second.",
+      "answer_terms": ["compact", "three", "a.txt", "b.txt"],
+      "category": "history-duplicate-test",
+      "expected_references": [{"path": "src/history.rs", "start_line": 1584, "end_line": 1607}],
+      "verification_note": "Pinned regression test asserts compact length 1 and all-occurrences length 3 with the exact commit/path set."
+    },
+    {
+      "id": "rdb-commit-message-hydration",
+      "corpus": "repodb",
+      "query": "What does the commit-message search test verify for an exact hit?",
+      "answer": "It finds one exact hit, preserves the commit ID, and hydrates the commit message text from Git.",
+      "answer_terms": ["exact", "commit_id", "initial transaction ledger"],
+      "category": "history-test",
+      "expected_references": [{"path": "src/history.rs", "start_line": 2625, "end_line": 2630}],
+      "verification_note": "The assertions check result count, commit identity, and hydrated message text."
+    },
+    {
+      "id": "rdb-response-budget-doc",
+      "corpus": "repodb",
+      "query": "How does RepoDB handle a search result that does not fit the response byte budget?",
+      "answer": "It does not cut result text mid-result; it returns a reference marked text_omitted_for_size for separate fetching, or a result_limit error if even the reference cannot fit.",
+      "answer_terms": ["text_omitted_for_size", "result_limit", "mid-result"],
+      "category": "documentation",
+      "expected_references": [{"path": "src/main.rs", "start_line": 1745, "end_line": 1750}],
+      "verification_note": "Search help text specifies the complete response behavior and separate-reference fetch option."
+    },
+    {
+      "id": "rdb-search-does-not-refresh",
+      "corpus": "repodb",
+      "query": "Does ordinary RepoDB search refresh the index or fetch imported URLs?",
+      "answer": "No. Search does not refresh or fetch URLs; refreshing imports is explicit.",
+      "answer_terms": ["search does not refresh", "fetch"],
+      "category": "documentation",
+      "expected_references": [{"path": "src/main.rs", "start_line": 1752, "end_line": 1758}],
+      "verification_note": "Pinned CLI help documents HEAD default, history selection, worktree stale behavior, and that search does not refresh/fetch."
+    },
+    {
+      "id": "ps-default-direction-and-deletions",
+      "corpus": "protonsync_ts",
+      "query": "What are ProtonSync's default sync direction and deletion-propagation setting?",
+      "answer": "The default direction is two-way and deletion propagation defaults to false.",
+      "answer_terms": ["two-way", "propagatedeletions: false"],
+      "category": "configuration-code",
+      "expected_references": [{"path": "src/configuration.ts", "start_line": 48, "end_line": 61}],
+      "verification_note": "The defaults object directly assigns direction and deletion propagation."
+    },
+    {
+      "id": "ps-configuration-schedules",
+      "corpus": "protonsync_ts",
+      "query": "What remote polling, local scanning, and event debounce intervals are configured by default?",
+      "answer": "Remote polling defaults to 30 seconds, local scanning to 300 seconds, and event debounce to 500 milliseconds.",
+      "answer_terms": ["30", "300", "500"],
+      "category": "configuration-code",
+      "expected_references": [{"path": "src/configuration.ts", "start_line": 48, "end_line": 61}],
+      "verification_note": "All three interval assignments are in the pinned defaults object."
+    },
+    {
+      "id": "ps-throttle-inactive-permit",
+      "corpus": "protonsync_ts",
+      "query": "What permit does the durable throttle return when no active not-before throttle is stored?",
+      "answer": "It returns a non-probe permit: { probe: false }.",
+      "answer_terms": ["probe", "false"],
+      "category": "code-behavior",
+      "expected_references": [{"path": "src/proton-throttle.ts", "start_line": 119, "end_line": 125}],
+      "verification_note": "The wait loop returns the non-probe permit when the row is absent, inactive, or has no not-before time."
+    },
+    {
+      "id": "ps-throttle-probe-lease",
+      "corpus": "protonsync_ts",
+      "query": "How does ProtonSync avoid taking another throttle probe while an existing probe lease is unexpired?",
+      "answer": "It waits for its own probe completion or polls until the other probe's lease expires, then retries the loop; the poll is capped at one second.",
+      "answer_terms": ["probe", "expires", "1000"],
+      "category": "code-behavior",
+      "expected_references": [{"path": "src/proton-throttle.ts", "start_line": 131, "end_line": 144}],
+      "verification_note": "The branch distinguishes a local probe from another worker and bounds the latter's polling sleep by PROBE_POLL_MS."
+    },
+    {
+      "id": "ps-cli-version-test",
+      "corpus": "protonsync_ts",
+      "query": "What exact version string does the CLI identity test expect?",
+      "answer": "The test expects 0.1.0 followed by a newline.",
+      "answer_terms": ["0.1.0"],
+      "category": "test-fact",
+      "expected_references": [{"path": "test/cli.test.js", "start_line": 33, "end_line": 42}],
+      "verification_note": "The test asserts stdout is exactly '0.1.0\\n'."
+    },
+    {
+      "id": "ps-cli-init-flags-test",
+      "corpus": "protonsync_ts",
+      "query": "Which init options does the CLI discoverability test assert?",
+      "answer": "It asserts --remote-root, the three directions, and --propagate-deletions.",
+      "answer_terms": ["--remote-root", "upload-only", "--propagate-deletions"],
+      "category": "test-fact",
+      "expected_references": [{"path": "test/cli.test.js", "start_line": 68, "end_line": 85}],
+      "verification_note": "The pinned CLI test matches these exact option and direction names."
+    },
+    {
+      "id": "ps-license-provenance",
+      "corpus": "protonsync_ts",
+      "query": "What license is in the pinned ProtonSync source tree, and what notice requirement does it state?",
+      "answer": "The source is MIT-licensed; copies or substantial portions must include the copyright and permission notice.",
+      "answer_terms": ["mit license", "copyright", "permission notice"],
+      "category": "license-provenance",
+      "expected_references": [{"path": "LICENSE.md", "start_line": 1, "end_line": 13}],
+      "verification_note": "The pinned license names MIT and explicitly requires the copyright and permission notice in copies or substantial portions."
+    },
+    {
+      "id": "ps-status-json-test",
+      "corpus": "protonsync_ts",
+      "query": "Which output mode does ProtonSync's CLI discoverability test require for status?",
+      "answer": "It requires the status command to support --json.",
+      "answer_terms": ["--json"],
+      "category": "test-fact",
+      "expected_references": [{"path": "test/cli.test.js", "start_line": 68, "end_line": 88}],
+      "verification_note": "The test invokes status --help and asserts the help text contains --json."
+    }
+  ]
+}
