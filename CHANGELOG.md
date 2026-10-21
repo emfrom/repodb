@@ -1,12 +1,12 @@
 # Changelog
 
-## v0.3.0 (release pending verification)
+## v0.3.0
 
 - Index committed file content, commit messages, and both sides of historical diffs with Git-backed source references; add bounded history selection and reference-only exploration.
 - Add opt-in staged/worktree search with explicit provenance and semantic mapping to live text; expose capability and coverage status in machine-readable output.
 - Bound and paginate search responses, group related change evidence, and provide focused agent skills for search, history, status, and imports.
 - Make single-URL website snapshots explicitly refreshed, versioned and searchable offline; add import-size modes and preserve the last successful snapshot on fetch failure. Link crawling remains deferred.
-- **Release pending:** the approved 0.3.0 specification still requires a reproducible real-model baseline, numeric quality/performance thresholds and verified release gates. Closing #83/#84 as superseded did not satisfy or remove those requirements. Do not publish or tag v0.3.0 as a verified release until the contract is resolved.
+- **Release verification exception:** the operator explicitly waived the 0.3.0 baseline-derived numeric quality/performance gates for this release. #83 and #84 were closed as superseded, not passed. No baseline comparison or benchmark-backed performance/quality claim is made; see `docs/repodb-0.3.0-spec.md`. The separate v0.3.0 baseline gate for 0.3.1 remains in effect.
 
 ## v0.2.3
 
