@@ -17,4 +17,4 @@ Raw stdout/stderr and exit status are preserved outside the repository in `/tmp/
 
 ## Platform declaration and limitation
 
-Evidence directly supports testing on Linux x86_64 / Ubuntu 26.04.1 only. `.github/workflows/semgrep-core.yml` selects Ubuntu 24.04 for its Semgrep-only job; that is not full RepoDB test evidence. Windows and macOS are not claimed. The missing owner-approved deny policy/configuration is a dependency/license verification blocker requiring owner disposition; this evidence does not close Issue #120 or authorize a release decision.
+For this v0.3.0 verification, the supported platform scope is declared as Linux x86_64, verified on Ubuntu 26.04.1 LTS. No Windows, macOS, or other-architecture support is claimed. `.github/workflows/semgrep-core.yml` selects Ubuntu 24.04 for a Semgrep-only job; that is not full RepoDB build/test evidence. This is the support scope for this evidence record, not a claim about release-era platform validation. The missing owner-approved deny policy/configuration remains a dependency/license verification blocker requiring owner disposition; this evidence does not close Issue #120 or authorize a release decision.
