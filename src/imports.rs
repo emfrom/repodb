@@ -526,16 +526,21 @@ fn stage_legacy_git_units(
     Ok(())
 }
 
-fn utc_rfc3339_now() -> String {
+fn utc_rfc3339_now() -> Result<String> {
     let seconds = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .expect("system clock is before Unix epoch")
-        .as_secs() as libc::time_t;
+        .duration_since(std::time::UNIX_EPOCH)?
+        .as_secs();
+    let seconds = libc::time_t::try_from(seconds)
+        .map_err(|_| "current timestamp is outside the supported time range")?;
     let mut tm = std::mem::MaybeUninit::<libc::tm>::uninit();
-    // gmtime_r writes a complete UTC calendar value without using process-global state.
-    let tm = unsafe { libc::gmtime_r(&seconds, tm.as_mut_ptr()) };
-    let tm = unsafe { tm.as_ref().expect("gmtime_r supports current timestamp") };
-    format!(
+    // SAFETY: gmtime_r writes a complete UTC calendar value on success and does not use global state.
+    let converted = unsafe { libc::gmtime_r(&seconds, tm.as_mut_ptr()) };
+    if converted.is_null() {
+        return Err("could not convert current time to UTC".into());
+    }
+    // SAFETY: a non-null gmtime_r result guarantees that `tm` was fully initialized.
+    let tm = unsafe { tm.assume_init() };
+    Ok(format!(
         "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}Z",
         tm.tm_year + 1900,
         tm.tm_mon + 1,
@@ -543,7 +548,7 @@ fn utc_rfc3339_now() -> String {
         tm.tm_hour,
         tm.tm_min,
         tm.tm_sec
-    )
+    ))
 }
 
 pub struct PrunedVersions {
@@ -1142,7 +1147,7 @@ pub fn refresh_with_size_limit(
                 |r| r.get(0),
             )?;
             if kind == "url" {
-                let observed_at = utc_rfc3339_now();
+                let observed_at = utc_rfc3339_now()?;
                 let redirect_chain_json = serde_json::to_string(&redirect_chain)?;
                 c.execute(
                 "INSERT INTO temp.import_stage_versions(source_id,version,content,fetched_order,first_retrieved_at,last_retrieved_at,final_url,redirect_chain) VALUES(?1,?2,?3,?4,?5,?5,?6,?7) ON CONFLICT(source_id,version) DO UPDATE SET content=excluded.content,fetched_order=excluded.fetched_order,first_retrieved_at=import_stage_versions.first_retrieved_at,last_retrieved_at=excluded.last_retrieved_at,final_url=excluded.final_url,redirect_chain=excluded.redirect_chain",
@@ -1255,7 +1260,7 @@ pub fn refresh_with_size_limit(
                 let message: String = error.to_string().chars().take(1024).collect();
                 c.execute(
                     "UPDATE imported_sources SET fetch_status='stale',last_fetch_error=?1,last_fetch_attempt_at=?2 WHERE id=?3",
-                    params![message, utc_rfc3339_now(), id],
+                    params![message, utc_rfc3339_now()?, id],
                 )?;
             }
             return Err(error);
@@ -1742,7 +1747,7 @@ mod tests {
     use super::{
         SizeLimit, batch_reader, bounded_command_output_with_input, checksum,
         hydrate_git_unit_with_reader, pdf_representation, refresh_with_size_limit, register,
-        set_url_max_redirects, slice_git_unit, visit_cache_pages, write_cache,
+        set_url_max_redirects, slice_git_unit, utc_rfc3339_now, visit_cache_pages, write_cache,
     };
     use crate::budget::Budget;
     use rusqlite::Connection;
@@ -1752,6 +1757,21 @@ mod tests {
         os::unix::fs::PermissionsExt,
         process::{Command, Stdio},
     };
+
+    #[test]
+    fn timestamp_formatter_returns_a_valid_utc_rfc3339_value() {
+        let timestamp = utc_rfc3339_now().unwrap();
+        assert_eq!(timestamp.len(), 20);
+        assert_eq!(&timestamp[4..5], "-");
+        assert_eq!(&timestamp[7..8], "-");
+        assert_eq!(&timestamp[10..11], "T");
+        assert_eq!(&timestamp[13..14], ":");
+        assert_eq!(&timestamp[16..17], ":");
+        assert_eq!(&timestamp[19..20], "Z");
+        assert!(timestamp.bytes().enumerate().all(|(index, byte)| {
+            matches!(index, 4 | 7 | 10 | 13 | 16 | 19) || byte.is_ascii_digit()
+        }));
+    }
 
     fn size_policy_database(root: &std::path::Path) -> (Connection, std::path::PathBuf) {
         let database_path = root.join("repodb.sqlite");
@@ -2101,8 +2121,8 @@ mod tests {
 
     #[test]
     fn cached_pages_above_the_old_aggregate_budget_are_read() {
-        let path =
-            std::env::temp_dir().join(format!("repodb-cache-budget-{}.json", std::process::id()));
+        let temp_dir = tempfile::tempdir().unwrap();
+        let path = temp_dir.path().join("cache.json");
         let json = format!("[{}]", vec!["\"\""; 1000].join(","));
         std::fs::write(&path, &json).unwrap();
         let mut pages = 0;
@@ -2117,20 +2137,18 @@ mod tests {
         assert_eq!(count, 1000);
         assert_eq!(pages, 1000);
         assert!(path.exists(), "a valid cache should be preserved");
-        std::fs::remove_file(path).unwrap();
     }
 
     #[test]
     fn cache_writer_streams_page_iterator_as_compatible_json() {
-        let path =
-            std::env::temp_dir().join(format!("repodb-cache-write-{}.json", std::process::id()));
+        let temp_dir = tempfile::tempdir().unwrap();
+        let path = temp_dir.path().join("cache.json");
         let pages = vec!["first page".to_owned(), "second\\npage".to_owned()];
 
         write_cache(&path, pages.iter().map(String::as_str)).unwrap();
 
         let decoded: Vec<String> = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
         assert_eq!(decoded, pages);
-        std::fs::remove_file(path).unwrap();
     }
 
     #[test]

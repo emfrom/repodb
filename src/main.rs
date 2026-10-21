@@ -2,7 +2,7 @@ use repodb::ranking::{
     EvidenceCandidate, EvidenceComponent, RankedEvidence, RankingMethod, SearchMode, TypeSet,
     rank_evidence,
 };
-use rusqlite::{Connection, ffi::sqlite3_auto_extension, params};
+use rusqlite::{Connection, params};
 use serde::Serialize;
 use std::{
     collections::{HashMap, HashSet},
@@ -21,6 +21,7 @@ mod imports;
 mod process;
 mod segmentation;
 mod semgrep_languages;
+mod sqlite_vec_extension;
 
 type Result<T> = std::result::Result<T, Box<dyn Error>>;
 
@@ -1183,16 +1184,7 @@ fn selected_database(option: Option<String>) -> Result<PathBuf> {
     }
 }
 fn open_db(path: &std::path::Path) -> Result<Connection> {
-    unsafe {
-        sqlite3_auto_extension(Some(std::mem::transmute::<
-            *const (),
-            unsafe extern "C" fn(
-                *mut rusqlite::ffi::sqlite3,
-                *mut *mut i8,
-                *const rusqlite::ffi::sqlite3_api_routines,
-            ) -> i32,
-        >(sqlite_vec::sqlite3_vec_init as *const ())))
-    };
+    sqlite_vec_extension::register()?;
     let c = Connection::open(path)?;
     if !history::is_current(&c)? {
         c.execute_batch("CREATE TABLE IF NOT EXISTS indexed_files(path TEXT PRIMARY KEY NOT NULL,commit_id TEXT NOT NULL,content TEXT NOT NULL); CREATE TABLE IF NOT EXISTS embeddings(path TEXT NOT NULL,line INTEGER NOT NULL,text TEXT NOT NULL,commit_id TEXT NOT NULL,vector BLOB NOT NULL,PRIMARY KEY(path,line)); CREATE TABLE IF NOT EXISTS embedding_config(key TEXT PRIMARY KEY,value TEXT NOT NULL);")?;
