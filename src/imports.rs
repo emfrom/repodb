@@ -654,13 +654,13 @@ pub fn refresh_with_size_limit(
         DROP TABLE IF EXISTS temp.import_stage_sources; DROP TABLE IF EXISTS temp.import_stage_versions;
         DROP TABLE IF EXISTS temp.import_stage_units; DROP TABLE IF EXISTS temp.import_stage_git_units;
         CREATE TEMP TABLE import_refresh_pruned(source_id TEXT PRIMARY KEY,locator TEXT NOT NULL,versions_pruned INTEGER NOT NULL);
-        CREATE TEMP TABLE import_stage_sources(id TEXT PRIMARY KEY,locator TEXT NOT NULL,kind TEXT NOT NULL,object_store TEXT,fetch_status TEXT,last_fetch_error TEXT,last_fetch_attempt_at TEXT);
+        CREATE TEMP TABLE import_stage_sources(id TEXT PRIMARY KEY,locator TEXT NOT NULL,kind TEXT NOT NULL,object_store TEXT,fetch_status TEXT,last_fetch_error TEXT,last_fetch_attempt_at TEXT,requested_revision TEXT,pinned_commit TEXT);
         CREATE TEMP TABLE import_stage_versions(source_id TEXT NOT NULL,version TEXT NOT NULL,content TEXT NOT NULL,fetched_order INTEGER NOT NULL,first_retrieved_at TEXT,last_retrieved_at TEXT,final_url TEXT,redirect_chain TEXT,PRIMARY KEY(source_id,version));
         CREATE TEMP TABLE import_stage_units(source_id TEXT NOT NULL,version TEXT NOT NULL,line INTEGER NOT NULL,line_end INTEGER NOT NULL,text TEXT NOT NULL,vector BLOB,page INTEGER,PRIMARY KEY(source_id,version,line,text));
         CREATE TEMP TABLE import_stage_git_units(source_id TEXT NOT NULL,commit_id TEXT NOT NULL,path TEXT NOT NULL,blob_id TEXT NOT NULL,segmentation_kind TEXT NOT NULL,byte_start INTEGER NOT NULL,byte_end INTEGER NOT NULL,line INTEGER NOT NULL,line_end INTEGER NOT NULL,vector BLOB,PRIMARY KEY(source_id,commit_id,path,byte_start));")?;
     if table_exists(c, "imported_sources")? {
         c.execute(
-            "INSERT INTO temp.import_stage_sources SELECT id,locator,kind,object_store,fetch_status,last_fetch_error,last_fetch_attempt_at FROM imported_sources",
+            "INSERT INTO temp.import_stage_sources SELECT id,locator,kind,object_store,fetch_status,last_fetch_error,last_fetch_attempt_at,requested_revision,pinned_commit FROM imported_sources",
             [],
         )?;
     }
@@ -763,7 +763,7 @@ pub fn refresh_with_size_limit(
             )?;
             let (requested_revision, pinned_commit): (Option<String>, Option<String>) = c
                 .query_row(
-                    "SELECT requested_revision,pinned_commit FROM imported_sources WHERE id=?1",
+                    "SELECT requested_revision,pinned_commit FROM temp.import_stage_sources WHERE id=?1",
                     [&id],
                     |row| Ok((row.get(0)?, row.get(1)?)),
                 )?;
@@ -781,7 +781,7 @@ pub fn refresh_with_size_limit(
                     .trim()
                     .to_owned();
                     c.execute(
-                        "UPDATE imported_sources SET requested_revision=?1,pinned_commit=?2 WHERE id=?3",
+                        "UPDATE temp.import_stage_sources SET requested_revision=?1,pinned_commit=?2 WHERE id=?3",
                         params![revision, resolved, id],
                     )?;
                     resolved
@@ -1220,6 +1220,7 @@ pub fn refresh_with_size_limit(
         })();
         if let Err(error) = source_result {
             if kind == "url" {
+                // Fetch errors are attempt-state; unlike Git pins, they describe this failed attempt.
                 let message: String = error.to_string().chars().take(1024).collect();
                 c.execute(
                     "UPDATE imported_sources SET fetch_status='stale',last_fetch_error=?1,last_fetch_attempt_at=?2 WHERE id=?3",
@@ -1286,7 +1287,8 @@ pub fn publish(tx: &rusqlite::Transaction<'_>) -> Result<()> {
             [dimension.to_string()],
         )?;
     }
-    tx.execute("UPDATE imported_sources SET object_store=(SELECT object_store FROM temp.import_stage_sources s WHERE s.id=imported_sources.id),fetch_status=(SELECT fetch_status FROM temp.import_stage_sources s WHERE s.id=imported_sources.id),last_fetch_error=(SELECT last_fetch_error FROM temp.import_stage_sources s WHERE s.id=imported_sources.id),last_fetch_attempt_at=(SELECT last_fetch_attempt_at FROM temp.import_stage_sources s WHERE s.id=imported_sources.id)", [])?;
+    tx.execute("UPDATE imported_sources SET object_store=(SELECT object_store FROM temp.import_stage_sources s WHERE s.id=imported_sources.id),fetch_status=(SELECT fetch_status FROM temp.import_stage_sources s WHERE s.id=imported_sources.id),last_fetch_error=(SELECT last_fetch_error FROM temp.import_stage_sources s WHERE s.id=imported_sources.id),last_fetch_attempt_at=(SELECT last_fetch_attempt_at FROM temp.import_stage_sources s WHERE s.id=imported_sources.id),requested_revision=(SELECT requested_revision FROM temp.import_stage_sources s WHERE s.id=imported_sources.id),pinned_commit=(SELECT pinned_commit FROM temp.import_stage_sources s WHERE s.id=imported_sources.id)",
+ [])?;
     for (table, stage) in [
         ("imported_versions", "import_stage_versions"),
         ("imported_units", "import_stage_units"),

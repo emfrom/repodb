@@ -2070,6 +2070,81 @@ fn failed_imports_only_refresh_preserves_published_imports_and_history() {
 }
 
 #[test]
+fn failed_import_refresh_does_not_publish_resolved_git_pin_or_content() {
+    let repo = repository();
+    let root = repo.path();
+    assert!(run(root, &["init"]).0);
+    let external = tempfile::tempdir().unwrap();
+    git(external.path(), &["init", "-q"]);
+    git(
+        external.path(),
+        &["config", "user.email", "test@example.com"],
+    );
+    git(external.path(), &["config", "user.name", "Test"]);
+    let source = external.path().join("guide.md");
+    fs::write(&source, "published git import marker\n").unwrap();
+    git(external.path(), &["add", "guide.md"]);
+    git(external.path(), &["commit", "-qm", "initial import"]);
+    let locator = external.path().to_string_lossy().into_owned();
+    assert!(run(root, &["import", "--revision", "HEAD", &locator]).0);
+    assert!(run(root, &["refresh"]).0);
+
+    let database_path = root.join(".git/repodb.sqlite");
+    let database = rusqlite::Connection::open(&database_path).unwrap();
+    let (source_id, kind): (String, String) = database
+        .query_row(
+            "SELECT id,kind FROM imported_sources WHERE locator=?1",
+            [&locator],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(kind, "git");
+    let published_pin: Option<String> = database
+        .query_row(
+            "SELECT pinned_commit FROM imported_sources WHERE id=?1",
+            [&source_id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    drop(database);
+
+    fs::write(&source, "unpublished git import marker\n").unwrap();
+    git(external.path(), &["add", "guide.md"]);
+    git(external.path(), &["commit", "-qm", "unpublished update"]);
+    let database = rusqlite::Connection::open(&database_path).unwrap();
+    database
+        .execute(
+            "UPDATE embedding_config SET value='1' WHERE key='dimension'",
+            [],
+        )
+        .unwrap();
+    drop(database);
+    let output = Command::new(env!("CARGO_BIN_EXE_repodb"))
+        .args(["refresh", "--imports"])
+        .current_dir(root)
+        .env("XDG_CONFIG_HOME", root.join(".test-xdg-config"))
+        .env(
+            "REPODB_SEMGREP_CORE",
+            semgrep_corpus::required_semgrep_core(),
+        )
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+
+    let database = rusqlite::Connection::open(&database_path).unwrap();
+    let pin: Option<String> = database
+        .query_row(
+            "SELECT pinned_commit FROM imported_sources WHERE id=?1",
+            [&source_id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(pin, published_pin);
+    assert!(!search_json(root, &["published git import marker"]).is_empty());
+    assert!(search_json(root, &["unpublished git import marker"]).is_empty());
+}
+
+#[test]
 fn imports_only_dimension_mismatch_preserves_published_imports_and_history() {
     let repo = repository();
     let root = repo.path();
