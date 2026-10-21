@@ -1135,14 +1135,18 @@ fn diff_endpoint(path: Option<&[u8]>, start: Option<usize>, end: Option<usize>) 
 }
 
 fn git(args: &[&str]) -> Result<Vec<u8>> {
-    let output = process::capture(
-        &mut Command::new("git")
-            .args(args)
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()?,
+    let mut command = Command::new("git");
+    command
+        .args(args)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let mut child = process::spawn_in_process_group(&mut command)?;
+    let output = process::capture_with_input_timeout(
+        &mut child,
+        &[],
         256 * 1024 * 1024,
         64 * 1024,
+        process::refresh_subprocess_timeout()?,
     )?;
     if !output.status.success() {
         return Err(format!(

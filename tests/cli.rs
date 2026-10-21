@@ -2346,13 +2346,33 @@ fn timed_out_history_git_process_preserves_the_published_snapshot() {
     let bin = root.join("hanging-git-bin");
     fs::create_dir(&bin).unwrap();
     let fake_git = bin.join("git");
-    fs::write(&fake_git, "#!/bin/sh\nsleep 5\n").unwrap();
+    let marker = root.join("git-was-started");
+    fs::write(&fake_git, "#!/bin/sh\ntouch $MARKER\nsleep 5\n").unwrap();
     fs::set_permissions(&fake_git, fs::Permissions::from_mode(0o755)).unwrap();
     let path = format!("{}:{}", bin.display(), std::env::var("PATH").unwrap());
+    let (invalid_config_success, _) = run_with_env(
+        root,
+        &["refresh"],
+        &[
+            ("PATH", &path),
+            ("MARKER", marker.to_str().unwrap()),
+            ("REPODB_REFRESH_TIMEOUT_SECS", "invalid"),
+        ],
+    );
+    assert!(!invalid_config_success);
+    assert!(
+        !marker.exists(),
+        "invalid timeout policy fails before spawn"
+    );
+
     let (success, _) = run_with_env(
         root,
         &["refresh"],
-        &[("PATH", &path), ("REPODB_REFRESH_TIMEOUT_SECS", "1")],
+        &[
+            ("PATH", &path),
+            ("MARKER", marker.to_str().unwrap()),
+            ("REPODB_REFRESH_TIMEOUT_SECS", "1"),
+        ],
     );
     assert!(!success, "a hung Git command is terminated at the deadline");
     assert_eq!(search_json(root, &["Exact [literal] TARGET"]).len(), 1);

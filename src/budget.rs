@@ -126,6 +126,15 @@ mod tests {
     }
 
     #[test]
+    fn cumulative_charges_reject_growth_beyond_the_aggregate_limit() {
+        let mut budget = Budget::new(10, "test");
+        budget.charge(6, "first source").unwrap();
+        budget.charge(3, "second source").unwrap();
+        assert!(budget.charge(2, "cumulative source data").is_err());
+        assert_eq!(budget.used(), 9);
+    }
+
+    #[test]
     fn reserve_vec_charges_capacity_and_rolls_back_rejected_growth() {
         let mut budget = Budget::new(4, "test");
         let mut values = Vec::<u8>::new();

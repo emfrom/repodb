@@ -422,7 +422,9 @@ fn import_embed(command: &str, model: &str, text: &str, used: &mut Budget) -> Re
     // A JSON number needs at least one input byte; Vec growth can reserve up to
     // twice the element count, so budget up to 8 bytes of vector capacity per
     // captured stdout byte while stdout remains live.
-    let output_limit = used.remaining().saturating_sub(MAX_COMMAND_STDERR_BYTES) / 9;
+    let remaining = used.remaining();
+    let stderr_reserve = (remaining / 4).min(MAX_COMMAND_STDERR_BYTES);
+    let output_limit = remaining.saturating_sub(stderr_reserve) / 9;
     let (status, stdout, stderr) =
         bounded_command_output_with_input(&mut child, input.as_bytes(), output_limit, used)?;
     if !status.success() {

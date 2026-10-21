@@ -72,14 +72,7 @@ pub(crate) fn drain_bounded(reader: impl Read, limit: usize) -> std::io::Result<
     Ok((output, exceeded))
 }
 
-pub(crate) fn capture(
-    child: &mut Child,
-    stdout_limit: usize,
-    stderr_limit: usize,
-) -> std::io::Result<Output> {
-    capture_with_input(child, &[], stdout_limit, stderr_limit)
-}
-
+#[cfg(test)]
 pub(crate) fn capture_with_input(
     child: &mut Child,
     input: &[u8],
@@ -326,6 +319,7 @@ fn terminate_process_group(child: &mut Child, group_id: u32) {
     let _ = child.kill();
 }
 
+#[cfg(test)]
 fn capture_streams(
     child: &mut Child,
     input: &[u8],
