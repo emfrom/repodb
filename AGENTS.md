@@ -12,6 +12,10 @@ If the hook or its configuration is missing, check for it and ask the user what 
 
 Issues and specs live in GitHub Issues. See `docs/agents/issue-tracker.md`.
 
+### Release security reviews
+
+Security reviews follow the release cadence in `docs/reviews/README.md`. For review-required releases, follow `docs/reviews/SECURITY.md` and record the review plan, evidence, findings, and release decision in `docs/reviews/security/repodb-<version>.md`. Agents do not create or output tickets.
+
 ### Triage labels
 
 Use the five default triage labels. See `docs/agents/triage-labels.md`.

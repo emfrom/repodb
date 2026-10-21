@@ -6,7 +6,7 @@ I built RepoDB to help agents understand codebases and work with them more quick
 
 **Alpha-yolo software; use at your own risk.**
 
-See [CHANGELOG.md](CHANGELOG.md) for version history.
+See [CHANGELOG.md](CHANGELOG.md) for version history. Release-review cadence: before 1.0.0, reviews are mandatory for major/minor version increases; from 1.0.0 onward, they are mandatory before every release. See [docs/reviews](docs/reviews/README.md).
 
 Custom embedding commands receive each text on stdin and must print a JSON numeric vector on stdout. RepoDB invokes them as `COMMAND --json -` and sets `REPODB_EMBEDDING_MODEL` to the configured model ID for every indexing and query invocation. Commands must produce vectors consistent with that model ID. The built-in [`~/bin/generate_embeddings`](https://github.com/emfrom/generate_embeddings) supports only `all-MiniLM-L6-v2`.
 

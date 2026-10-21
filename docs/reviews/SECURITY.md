@@ -1,6 +1,6 @@
-# Security review for every release
+# Security release review
 
-This review is mandatory before every release. Ensure the matching master security-review issue and review-area sub-issues exist, creating only those that are missing; follow [`README.md`](README.md) for the ticket structure and deduplication. For each release, reviewers append the review plan, results, evidence, findings, and decision to `docs/reviews/security/repodb-<version>.md`. Do not create additional tickets for findings: record findings and dispositions in that versioned output file.
+Security reviews are mandatory on the cadence defined in [`README.md`](README.md): before RepoDB 1.0.0, for every major- or minor-version increase release (including 1.0.0), and after 1.0.0, before every release. For each release subject to review, ensure the matching master security-review issue and review-area sub-issues exist, creating only those that are missing; follow [`README.md`](README.md) for ticket structure and deduplication. Reviewers append the plan, results, evidence, findings, and decision to `docs/reviews/security/repodb-<version>.md`. Do not create additional tickets for findings; record findings and dispositions in that versioned output file.
 
 Create one master review record per version and maintain it in place as review work proceeds. Start from the template in **Versioned review record**. Record the exact version, commit range, target commit/tag, release date, supported platforms, scope, owners, and findings. Include every required review area; note conditionals that do not apply and why. The master record must make status and evidence easy to audit. Do not represent an unrun check as passed.
 
@@ -25,7 +25,7 @@ Priority guides attention; it does not substitute for severity assessment. A fai
 
 ## Required review areas
 
-Review and record these areas for every release. Collectively they must cover all eight audit areas above. Combine adjacent sections in the versioned record only if each remains independently verifiable.
+For each release subject to the review cadence, review and record these areas. Collectively they must cover all eight audit areas above. Combine adjacent sections in the versioned record only if each remains independently verifiable.
 
 ### 1. Release scope, threat changes, and security-sensitive diff
 
