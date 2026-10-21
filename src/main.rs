@@ -188,8 +188,8 @@ struct WorktreeEvidence {
 
 #[derive(Clone)]
 enum EvidenceDisplay {
-    Search(SearchResult),
-    Diff(history::DiffSearchResult),
+    Search(Box<SearchResult>),
+    Diff(Box<history::DiffSearchResult>),
 }
 
 fn component_name(component: EvidenceComponent) -> &'static str {
@@ -206,7 +206,9 @@ fn evidence_path_bytes(path: &str) -> Vec<u8> {
     };
     let decoded = hex
         .as_bytes()
-        .chunks_exact(2)
+        .as_chunks::<2>()
+        .0
+        .iter()
         .map(|pair| {
             std::str::from_utf8(pair)
                 .ok()
@@ -631,20 +633,18 @@ fn annotated_ranked_payload(
         value["related_diffs"] = serde_json::Value::Array(group.related_diffs.clone());
     } else if candidate.component == EvidenceComponent::Content {
         value["kind"] = serde_json::Value::String("content".to_owned());
-        if let Some(commit_id) = candidate.commit_id.as_ref() {
-            if let Some(path) = candidate.payload["path"].as_str() {
-                if let Some(links) = history_path_links.get(&(commit_id.clone(), path.to_owned())) {
-                    value["history_path_links"] = serde_json::Value::Array(
-                        links.iter().map(history_path_link_json).collect(),
-                    );
-                }
-            }
+        if let Some(commit_id) = candidate.commit_id.as_ref()
+            && let Some(path) = candidate.payload["path"].as_str()
+            && let Some(links) = history_path_links.get(&(commit_id.clone(), path.to_owned()))
+        {
+            value["history_path_links"] =
+                serde_json::Value::Array(links.iter().map(history_path_link_json).collect());
         }
-        if let Some(path) = candidate.payload["path"].as_str() {
-            if let Some(hex) = decoded_git_path_hex(path) {
-                value["path"] = serde_json::Value::String(format!("bytes:{hex}"));
-                value["path_bytes_hex"] = serde_json::Value::String(hex.to_owned());
-            }
+        if let Some(path) = candidate.payload["path"].as_str()
+            && let Some(hex) = decoded_git_path_hex(path)
+        {
+            value["path"] = serde_json::Value::String(format!("bytes:{hex}"));
+            value["path_bytes_hex"] = serde_json::Value::String(hex.to_owned());
         }
     }
     value
@@ -2719,7 +2719,7 @@ fn execute() -> Result<()> {
                 };
                 path.is_some_and(|path| {
                     result_scope.matches_diff(path)
-                        && history_path_filter.as_ref().map_or(true, |paths| {
+                        && history_path_filter.as_ref().is_none_or(|paths| {
                             paths.contains(&(commit_id.clone(), internal_git_path(path)))
                         })
                 })
@@ -2758,7 +2758,7 @@ fn execute() -> Result<()> {
                                     search_mode,
                                     search_limit,
                                     &commits,
-                                    &include_diff,
+                                    include_diff,
                                 )
                             }
                         };
@@ -2803,7 +2803,7 @@ fn execute() -> Result<()> {
                 let candidate = search_evidence(item, &q, mode, order)?;
                 displays.insert(
                     candidate.reference_id.clone(),
-                    EvidenceDisplay::Search(item.clone()),
+                    EvidenceDisplay::Search(Box::new(item.clone())),
                 );
                 candidates.push(candidate);
             }
@@ -2844,7 +2844,7 @@ fn execute() -> Result<()> {
                     distance: hit.distance,
                     payload,
                 });
-                displays.insert(reference_id, EvidenceDisplay::Diff(hit.clone()));
+                displays.insert(reference_id, EvidenceDisplay::Diff(Box::new(hit.clone())));
             }
             let mut related_diffs = HashMap::new();
             if selected_types == TypeSet::All && include_diffs {
@@ -2981,5 +2981,26 @@ fn main() {
     if let Err(e) = execute() {
         eprintln!("repodb: {e}");
         std::process::exit(2)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{ENCODED_GIT_PATH_PREFIX, encode_git_path, evidence_path_bytes};
+
+    #[test]
+    fn evidence_path_bytes_decodes_even_length_hex_and_falls_back_for_invalid_hex() {
+        assert_eq!(
+            evidence_path_bytes(&encode_git_path(vec![0xff, b'a'])),
+            [0xff, b'a']
+        );
+        assert_eq!(
+            evidence_path_bytes(&format!("{ENCODED_GIT_PATH_PREFIX}ff0")),
+            [0xff]
+        );
+        assert_eq!(
+            evidence_path_bytes(&format!("{ENCODED_GIT_PATH_PREFIX}gg")),
+            format!("{ENCODED_GIT_PATH_PREFIX}gg").as_bytes()
+        );
     }
 }

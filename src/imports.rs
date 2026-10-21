@@ -271,12 +271,12 @@ fn html_text(source: &str) -> String {
                 .unwrap_or("")
                 .to_ascii_lowercase();
             if closing {
-                if name == "a" {
-                    if let Some(target) = link_target.take() {
-                        text.push_str("] (");
-                        text.push_str(&target);
-                        text.push(')');
-                    }
+                if name == "a"
+                    && let Some(target) = link_target.take()
+                {
+                    text.push_str("] (");
+                    text.push_str(&target);
+                    text.push(')');
                 }
                 text.push(' ');
                 if matches!(name.as_str(), "td" | "th") {
@@ -1709,7 +1709,7 @@ pub fn search(
 #[cfg(test)]
 mod tests {
     use super::{
-        SizeLimit, batch_reader, bounded_command_output_with_input, checksum,
+        SizeLimit, batch_reader, bounded_command_output_with_input, checksum, html_text,
         hydrate_git_unit_with_reader, pdf_representation, refresh_with_size_limit, register,
         set_url_max_redirects, slice_git_unit, visit_cache_pages, write_cache,
     };
@@ -1721,6 +1721,14 @@ mod tests {
         os::unix::fs::PermissionsExt,
         process::{Command, Stdio},
     };
+
+    #[test]
+    fn html_text_preserves_link_targets_when_closing_anchor_tags() {
+        assert_eq!(
+            html_text("<a href=\"https://example.test\">example</a>"),
+            "[example] (https://example.test) "
+        );
+    }
 
     fn size_policy_database(root: &std::path::Path) -> (Connection, std::path::PathBuf) {
         let database_path = root.join("repodb.sqlite");
