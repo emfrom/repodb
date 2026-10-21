@@ -7,10 +7,11 @@ use crate::{
 };
 use rusqlite::{Connection, OptionalExtension, params};
 use std::{
-    fs,
+    fs::{self, OpenOptions},
     io::Read,
-    path::Path,
+    path::{Path, PathBuf},
     process::{Command, Stdio},
+    sync::atomic::{AtomicU64, Ordering},
 };
 
 mod cache;
@@ -51,7 +52,143 @@ pub(crate) fn is_database_file(c: &Connection, path: &Path) -> Result<bool> {
     same_file(path, Path::new(&database_path))
 }
 
+struct TemporaryFile(PathBuf);
+
+impl Drop for TemporaryFile {
+    fn drop(&mut self) {
+        let _ = fs::remove_file(&self.0);
+    }
+}
+
+fn create_temporary_file(label: &str) -> Result<(TemporaryFile, fs::File)> {
+    static NEXT_FILE_ID: AtomicU64 = AtomicU64::new(0);
+    for _ in 0..100 {
+        let id = NEXT_FILE_ID.fetch_add(1, Ordering::Relaxed);
+        let path =
+            std::env::temp_dir().join(format!("repodb-{label}-{}-{id}.tmp", std::process::id()));
+        let mut options = OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        match options.open(&path) {
+            Ok(file) => return Ok((TemporaryFile(path), file)),
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(error) => return Err(error.into()),
+        }
+    }
+    Err("could not create a unique temporary file".into())
+}
+
 const MAX_COMMAND_STDERR_BYTES: usize = 64 * 1024;
+const MAX_URL_HEADER_BYTES: u64 = 1024 * 1024;
+const DEFAULT_URL_MAX_REDIRECTS: usize = 5;
+const HARD_MAX_URL_REDIRECTS: usize = 20;
+const MAX_RETAINED_VERSIONS: usize = 100;
+const CURL_METADATA_MARKER: &str = "__REPODB_CURL_META__";
+
+struct FetchedUrl {
+    body: Vec<u8>,
+    final_url: String,
+    content_type: String,
+    redirect_chain: Vec<String>,
+}
+
+fn fetch_url(locator: &str, max_redirects: usize, used: &mut Budget) -> Result<FetchedUrl> {
+    let (headers_file, file) = create_temporary_file("url-headers")?;
+    drop(file);
+    let marker = CURL_METADATA_MARKER;
+    let write_out = format!(
+        "\\n{marker}%{{url_effective}}\\n%{{content_type}}\\n%{{num_redirects}}\\n%{{http_code}}\\n"
+    );
+    let mut child = Command::new("curl")
+        .args([
+            "--fail",
+            "--location",
+            "--silent",
+            "--show-error",
+            "--max-time",
+            "30",
+            "--max-redirs",
+        ])
+        .arg(max_redirects.to_string())
+        .args(["--proto-redir", "=http,https", "--dump-header"])
+        .arg(&headers_file.0)
+        .args(["--write-out", &write_out])
+        .arg(locator)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()?;
+    let (status, mut output, stderr) = bounded_command_output(
+        &mut child,
+        used.remaining().saturating_sub(MAX_COMMAND_STDERR_BYTES),
+        used,
+    )?;
+    if !status.success() {
+        return Err(format!(
+            "URL fetch failed for {locator}: {}",
+            String::from_utf8_lossy(&stderr)
+        )
+        .into());
+    }
+    let marker = marker.as_bytes();
+    let metadata_start = output
+        .windows(marker.len())
+        .rposition(|window| window == marker)
+        .ok_or("curl did not return URL response metadata")?;
+    let metadata = std::str::from_utf8(&output[metadata_start + marker.len()..])?;
+    let mut fields = metadata.lines();
+    let final_url = fields
+        .next()
+        .filter(|value| !value.is_empty())
+        .unwrap_or(locator)
+        .to_owned();
+    let content_type = fields.next().unwrap_or_default().to_owned();
+    let redirects: usize = fields.next().unwrap_or("0").parse()?;
+    let response_code: u16 = fields.next().unwrap_or("0").parse()?;
+    if !(200..300).contains(&response_code) {
+        return Err(format!("URL fetch returned HTTP status {response_code} for {locator}").into());
+    }
+    if redirects > max_redirects {
+        return Err("URL redirect count exceeded the configured limit".into());
+    }
+    let body_end = metadata_start
+        .checked_sub(1)
+        .ok_or("curl response is missing its metadata separator")?;
+    output.truncate(body_end);
+
+    let headers_size = fs::metadata(&headers_file.0)?.len();
+    if headers_size > MAX_URL_HEADER_BYTES {
+        return Err("URL response headers exceeded the 1 MiB limit".into());
+    }
+    let headers = fs::read(&headers_file.0)?;
+    let header_text = String::from_utf8_lossy(&headers);
+    let redirect_chain: Vec<String> = header_text
+        .lines()
+        .filter_map(|line| {
+            let (name, value) = line.split_once(':')?;
+            name.eq_ignore_ascii_case("location")
+                .then(|| value.trim().to_owned())
+        })
+        .collect();
+    if redirect_chain.len() != redirects {
+        return Err("URL redirect provenance did not match curl's redirect count".into());
+    }
+    used.charge(final_url.len(), "URL final address")?;
+    used.charge(content_type.len(), "URL content type")?;
+    for address in &redirect_chain {
+        used.charge(address.len(), "URL redirect provenance")?;
+    }
+    Ok(FetchedUrl {
+        body: output,
+        final_url,
+        content_type,
+        redirect_chain,
+    })
+}
+
 const LARGE_IMPORT_WARNING_THRESHOLD_BYTES: u64 = 50_000_000;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -217,9 +354,10 @@ fn configured_url_curl() -> Command {
         "--show-error",
         "--max-time",
         "30",
-        "--proto-redir",
-        "=http,https",
+        "--max-redirs",
     ]);
+    command.arg(DEFAULT_URL_MAX_REDIRECTS.to_string());
+    command.args(["--proto-redir", "=http,https"]);
     command
 }
 
@@ -329,13 +467,12 @@ fn stage_legacy_git_units(
     c: &Connection,
     source_id: &str,
     repository: &str,
-    retain_all: bool,
-    retained_commit: Option<&str>,
+    retention_limit: usize,
     memory: &mut Budget,
 ) -> Result<()> {
     let legacy = {
-        let mut stmt = c.prepare("SELECT commit_id,path,line,line_end,text,vector FROM imported_git_units WHERE source_id=?1 AND (?2 OR (?3 IS NOT NULL AND commit_id=?3))")?;
-        stmt.query_map(params![source_id, retain_all, retained_commit], |row| {
+        let mut stmt = c.prepare("SELECT commit_id,path,line,line_end,text,vector FROM imported_git_units WHERE source_id=?1 AND commit_id IN (SELECT version FROM temp.import_stage_versions WHERE source_id=?1 ORDER BY fetched_order DESC LIMIT ?2)")?;
+        stmt.query_map(params![source_id, retention_limit as i64], |row| {
             Ok((
                 row.get::<_, String>(0)?,
                 row.get::<_, String>(1)?,
@@ -398,22 +535,132 @@ fn utc_rfc3339_now() -> String {
     )
 }
 
+pub struct PrunedVersions {
+    pub source: String,
+    pub count: usize,
+}
+
+pub fn pruning_report(c: &Connection) -> Result<Vec<PrunedVersions>> {
+    let table_exists: bool = c.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_temp_master WHERE type='table' AND name='import_refresh_pruned')",
+        [],
+        |row| row.get(0),
+    )?;
+    if !table_exists {
+        return Ok(Vec::new());
+    }
+    let mut statement = c.prepare(
+        "SELECT locator,versions_pruned FROM temp.import_refresh_pruned WHERE versions_pruned>0 ORDER BY locator",
+    )?;
+    Ok(statement
+        .query_map([], |row| {
+            Ok(PrunedVersions {
+                source: row.get(0)?,
+                count: row.get(1)?,
+            })
+        })?
+        .collect::<std::result::Result<Vec<_>, _>>()?)
+}
+
+fn retention_limit(c: &Connection) -> Result<usize> {
+    let value: String = c.query_row(
+        "SELECT value FROM import_config WHERE key='history_limit'",
+        [],
+        |row| row.get(0),
+    )?;
+    let limit: usize = value.parse()?;
+    if !(1..=MAX_RETAINED_VERSIONS).contains(&limit) {
+        return Err("stored import history limit is invalid".into());
+    }
+    Ok(limit)
+}
+
+fn prune_staged_versions(c: &Connection, source_id: &str, limit: usize) -> Result<usize> {
+    let before: i64 = c.query_row(
+        "SELECT count(*) FROM temp.import_stage_versions WHERE source_id=?1",
+        [source_id],
+        |row| row.get(0),
+    )?;
+    c.execute(
+        "DELETE FROM temp.import_stage_versions AS older WHERE older.source_id=?1 AND EXISTS (SELECT 1 FROM temp.import_stage_versions newer WHERE newer.source_id=older.source_id AND (newer.fetched_order>older.fetched_order OR (newer.fetched_order=older.fetched_order AND newer.version>older.version)) ORDER BY newer.fetched_order DESC,newer.version DESC LIMIT 1 OFFSET ?2)",
+        params![source_id, limit.saturating_sub(1) as i64],
+    )?;
+    c.execute(
+        "DELETE FROM temp.import_stage_units WHERE source_id=?1 AND version NOT IN (SELECT version FROM temp.import_stage_versions WHERE source_id=?1)",
+        [source_id],
+    )?;
+    c.execute(
+        "DELETE FROM temp.import_stage_git_units WHERE source_id=?1 AND commit_id NOT IN (SELECT version FROM temp.import_stage_versions WHERE source_id=?1)",
+        [source_id],
+    )?;
+    let after: i64 = c.query_row(
+        "SELECT count(*) FROM temp.import_stage_versions WHERE source_id=?1",
+        [source_id],
+        |row| row.get(0),
+    )?;
+    Ok((before - after).max(0) as usize)
+}
+
+fn record_pruned_versions(
+    c: &Connection,
+    source_id: &str,
+    locator: &str,
+    count: usize,
+) -> Result<()> {
+    if count > 0 {
+        c.execute(
+            "INSERT INTO temp.import_refresh_pruned VALUES(?1,?2,?3) ON CONFLICT(source_id) DO UPDATE SET versions_pruned=versions_pruned+excluded.versions_pruned",
+            params![source_id, locator, count as i64],
+        )?;
+    }
+    Ok(())
+}
+
+pub fn set_url_max_redirects(c: &Connection, max_redirects: usize) -> Result<()> {
+    if max_redirects > HARD_MAX_URL_REDIRECTS {
+        return Err(format!("URL redirect limit must not exceed {HARD_MAX_URL_REDIRECTS}").into());
+    }
+    init(c)?;
+    c.execute(
+        "UPDATE import_config SET value=?1 WHERE key='url_max_redirects'",
+        [max_redirects.to_string()],
+    )?;
+    Ok(())
+}
+
+fn url_max_redirects(c: &Connection) -> Result<usize> {
+    let value: String = c.query_row(
+        "SELECT value FROM import_config WHERE key='url_max_redirects'",
+        [],
+        |row| row.get(0),
+    )?;
+    let max_redirects: usize = value.parse()?;
+    if max_redirects > HARD_MAX_URL_REDIRECTS {
+        return Err(format!("stored URL redirect limit exceeds {HARD_MAX_URL_REDIRECTS}").into());
+    }
+    Ok(max_redirects)
+}
+
 pub fn refresh_with_size_limit(
     c: &Connection,
     size_limit: SizeLimit,
 ) -> Result<Vec<ImportSizeAssessment>> {
     init(c)?;
+    let url_max_redirects = url_max_redirects(c)?;
+    let history_limit = retention_limit(c)?;
     let mut size_assessments = Vec::new();
     c.execute_batch("PRAGMA temp_store=FILE;
+        DROP TABLE IF EXISTS temp.import_refresh_pruned;
         DROP TABLE IF EXISTS temp.import_stage_sources; DROP TABLE IF EXISTS temp.import_stage_versions;
         DROP TABLE IF EXISTS temp.import_stage_units; DROP TABLE IF EXISTS temp.import_stage_git_units;
-        CREATE TEMP TABLE import_stage_sources(id TEXT PRIMARY KEY,locator TEXT NOT NULL,kind TEXT NOT NULL,object_store TEXT);
-        CREATE TEMP TABLE import_stage_versions(source_id TEXT NOT NULL,version TEXT NOT NULL,content TEXT NOT NULL,fetched_order INTEGER NOT NULL,first_retrieved_at TEXT,last_retrieved_at TEXT,PRIMARY KEY(source_id,version));
+        CREATE TEMP TABLE import_refresh_pruned(source_id TEXT PRIMARY KEY,locator TEXT NOT NULL,versions_pruned INTEGER NOT NULL);
+        CREATE TEMP TABLE import_stage_sources(id TEXT PRIMARY KEY,locator TEXT NOT NULL,kind TEXT NOT NULL,object_store TEXT,fetch_status TEXT,last_fetch_error TEXT,last_fetch_attempt_at TEXT);
+        CREATE TEMP TABLE import_stage_versions(source_id TEXT NOT NULL,version TEXT NOT NULL,content TEXT NOT NULL,fetched_order INTEGER NOT NULL,first_retrieved_at TEXT,last_retrieved_at TEXT,final_url TEXT,redirect_chain TEXT,PRIMARY KEY(source_id,version));
         CREATE TEMP TABLE import_stage_units(source_id TEXT NOT NULL,version TEXT NOT NULL,line INTEGER NOT NULL,line_end INTEGER NOT NULL,text TEXT NOT NULL,vector BLOB,page INTEGER,PRIMARY KEY(source_id,version,line,text));
         CREATE TEMP TABLE import_stage_git_units(source_id TEXT NOT NULL,commit_id TEXT NOT NULL,path TEXT NOT NULL,blob_id TEXT NOT NULL,segmentation_kind TEXT NOT NULL,byte_start INTEGER NOT NULL,byte_end INTEGER NOT NULL,line INTEGER NOT NULL,line_end INTEGER NOT NULL,vector BLOB,PRIMARY KEY(source_id,commit_id,path,byte_start));")?;
     if table_exists(c, "imported_sources")? {
         c.execute(
-            "INSERT INTO temp.import_stage_sources SELECT id,locator,kind,object_store FROM imported_sources",
+            "INSERT INTO temp.import_stage_sources SELECT id,locator,kind,object_store,fetch_status,last_fetch_error,last_fetch_attempt_at FROM imported_sources",
             [],
         )?;
     }
@@ -433,7 +680,7 @@ pub fn refresh_with_size_limit(
         } else {
             "NULL"
         };
-        c.execute(&format!("INSERT INTO temp.import_stage_versions SELECT source_id,version,content,{order},{first},{last} FROM imported_versions"), [])?;
+        c.execute(&format!("INSERT INTO temp.import_stage_versions SELECT source_id,version,content,{order},{first},{last},final_url,redirect_chain FROM imported_versions"), [])?;
     }
     if table_exists(c, "imported_units")? {
         let line_end = if column_exists(c, "imported_units", "line_end")? {
@@ -469,13 +716,6 @@ pub fn refresh_with_size_limit(
     let (command, model, configured_dimension) = crate::history::configuration(c)?;
     let cfg = Some((command, model));
     let configured_dimension = (configured_dimension != 0).then_some(configured_dimension);
-    let retention: String = c
-        .query_row(
-            "SELECT value FROM import_config WHERE key='retention'",
-            [],
-            |r| r.get(0),
-        )
-        .unwrap_or_else(|_| "latest".to_owned());
     let mut dimension = None;
     {
         let mut stmt = c.prepare("SELECT DISTINCT length(vector)/4 FROM temp.import_stage_units WHERE vector IS NOT NULL UNION SELECT DISTINCT length(vector)/4 FROM temp.import_stage_git_units WHERE vector IS NOT NULL")?;
@@ -556,13 +796,13 @@ pub fn refresh_with_size_limit(
                 commit_ids.push(line.to_owned());
             }
             let mut commits = commit_ids;
-            let selected = if retention == "latest" {
+            let selected = if history_limit == 1 {
                 commits.into_iter().take(1).collect()
             } else {
                 commits.reverse();
                 commits
             };
-            if retention == "latest" && selected.is_empty() {
+            if history_limit == 1 && selected.is_empty() {
                 c.execute(
                     "DELETE FROM temp.import_stage_versions WHERE source_id=?1",
                     [&id],
@@ -572,11 +812,7 @@ pub fn refresh_with_size_limit(
                     [&id],
                 )?;
             }
-            let mut retained_commit = None;
             for commit in selected {
-                if retention == "latest" {
-                    retained_commit = Some(commit.as_str().to_owned());
-                }
                 let paths = git_output(
                     &repository,
                     &["ls-tree", "-r", "--name-only", "-z", &commit],
@@ -669,201 +905,284 @@ pub fn refresh_with_size_limit(
                     c,
                     &id,
                     &repository,
-                    retention == "all",
-                    retained_commit.as_deref(),
+                    history_limit,
                     &mut refresh_memory_bytes,
                 )?;
             }
-            if retention == "latest" {
-                c.execute("DELETE FROM temp.import_stage_versions WHERE source_id=?1 AND version NOT IN (SELECT version FROM temp.import_stage_versions WHERE source_id=?1 ORDER BY fetched_order DESC LIMIT 1)", [&id])?;
-                c.execute("DELETE FROM temp.import_stage_git_units WHERE source_id=?1 AND commit_id NOT IN (SELECT version FROM temp.import_stage_versions WHERE source_id=?1)", [&id])?;
-            }
+            let pruned = prune_staged_versions(c, &id, history_limit)?;
+            record_pruned_versions(c, &id, &locator, pruned)?;
             continue;
         }
-        if kind == "file" {
-            if is_database_file(c, Path::new(&locator))? {
-                return Err(
-                    "cannot refresh an import that points to RepoDB's own database file".into(),
-                );
+        let source_result = (|| -> Result<()> {
+            if kind == "file" {
+                if is_database_file(c, Path::new(&locator))? {
+                    return Err(
+                        "cannot refresh an import that points to RepoDB's own database file".into(),
+                    );
+                }
+                let size = fs::metadata(&locator)?.len();
+                refresh_memory_bytes.charge(size as usize, "local import input")?;
             }
-            let size = fs::metadata(&locator)?.len();
-            refresh_memory_bytes.charge(size as usize, "local import input")?;
-        }
-        let source_bytes = if kind == "file" {
-            read_all(fs::File::open(&locator)?)?
-        } else {
-            let mut command = configured_url_curl();
-            let mut child = command
-                .arg(&locator)
-                .stdout(Stdio::piped())
-                .stderr(Stdio::piped())
-                .spawn()?;
-            let output = bounded_command_output(
-                &mut child,
-                refresh_memory_bytes
-                    .remaining()
-                    .saturating_sub(MAX_COMMAND_STDERR_BYTES),
-                &mut refresh_memory_bytes,
-            )?;
-            if !output.0.success() {
-                return Err(format!(
-                    "URL fetch failed for {locator}: {}",
-                    String::from_utf8_lossy(&output.2)
+            let (source_bytes, final_url, content_type, redirect_chain) = if kind == "file" {
+                (read_all(fs::File::open(&locator)?)?, None, None, Vec::new())
+            } else {
+                let response = fetch_url(&locator, url_max_redirects, &mut refresh_memory_bytes)?;
+                (
+                    response.body,
+                    Some(response.final_url),
+                    Some(response.content_type),
+                    response.redirect_chain,
                 )
-                .into());
+            };
+            let source_size = source_bytes.len() as u64;
+            if kind == "url" {
+                let media_type = content_type
+                    .as_deref()
+                    .unwrap_or_default()
+                    .split(';')
+                    .next()
+                    .unwrap_or_default()
+                    .trim()
+                    .to_ascii_lowercase();
+                let is_supported_type = media_type.is_empty()
+                    || media_type.starts_with("text/")
+                    || matches!(
+                        media_type.as_str(),
+                        "application/xhtml+xml"
+                            | "application/json"
+                            | "application/xml"
+                            | "application/pdf"
+                    )
+                    || source_bytes.starts_with(b"%PDF-");
+                if !is_supported_type {
+                    return Err(
+                        format!("unsupported URL response content type {media_type}").into(),
+                    );
+                }
             }
-            output.1
-        };
-        let source_size = source_bytes.len() as u64;
-        let source_version = checksum(&source_bytes);
-        let existing_version: bool = c.query_row(
+            let source_version = checksum(&source_bytes);
+            let is_pdf = source_bytes
+                .windows(5)
+                .take(1024)
+                .any(|window| window == b"%PDF-")
+                || Path::new(&locator)
+                    .extension()
+                    .and_then(|extension| extension.to_str())
+                    .is_some_and(|extension| extension.eq_ignore_ascii_case("pdf"));
+            let mut url_version = None;
+            let (version, content) = if is_pdf {
+                let cache = cache_dir.join(format!("{source_version}.json"));
+                c.execute("DELETE FROM temp.import_pdf_pages", [])?;
+                let cached = visit_cache_pages(&cache, |page, text| {
+                    c.execute(
+                        "INSERT INTO temp.import_pdf_pages(page,text) VALUES(?1,?2)",
+                        params![page, text],
+                    )?;
+                    Ok(())
+                })?;
+                if cached.is_none() {
+                    c.execute("DELETE FROM temp.import_pdf_pages", [])?;
+                    let mut child = Command::new("pdftotext")
+                        .args(["-layout", "-enc", "UTF-8", "-", "-"])
+                        .stdin(Stdio::piped())
+                        .stdout(Stdio::piped())
+                        .stderr(Stdio::piped())
+                        .spawn()
+                        .map_err(|error| {
+                            format!("PDF imports require pdftotext on PATH: {error}")
+                        })?;
+                    let output = bounded_command_output_with_input(
+                        &mut child,
+                        &source_bytes,
+                        refresh_memory_bytes
+                            .remaining()
+                            .saturating_sub(MAX_COMMAND_STDERR_BYTES),
+                        &mut refresh_memory_bytes,
+                    )?;
+                    if !output.0.success() {
+                        return Err(format!(
+                            "PDF conversion failed for {locator}: {}",
+                            String::from_utf8_lossy(&output.2)
+                        )
+                        .into());
+                    }
+                    let text = String::from_utf8(output.1)?;
+                    refresh_memory_bytes.charge(text.len(), "PDF conversion output")?;
+                    let pages = text.split('\u{c}');
+                    write_cache(&cache, pages.clone())?;
+                    for (page, text) in pages.enumerate() {
+                        c.execute(
+                            "INSERT INTO temp.import_pdf_pages(page,text) VALUES(?1,?2)",
+                            params![page + 1, text],
+                        )?;
+                    }
+                }
+                // Keep the converted snapshot alongside the units. The conversion cache is only
+                // an optimization; it may be deleted without losing the imported representation.
+                let pages = {
+                    let mut statement =
+                        c.prepare("SELECT text FROM temp.import_pdf_pages ORDER BY page")?;
+                    statement
+                        .query_map([], |row| row.get::<_, String>(0))?
+                        .collect::<std::result::Result<Vec<_>, _>>()?
+                };
+                if kind == "url" {
+                    let extracted_text = pages.join("\u{c}");
+                    url_version = Some(checksum(extracted_text.as_bytes()));
+                }
+                (source_version, Some(pdf_representation(&pages)?))
+            } else {
+                // Imported version identity is the original source, not its decoded representation.
+                let source_text = String::from_utf8(source_bytes)?;
+                let content_type_is_html = content_type.as_deref().is_some_and(|content_type| {
+                    let media_type = content_type.split(';').next().unwrap_or_default().trim();
+                    media_type.eq_ignore_ascii_case("text/html")
+                        || media_type.eq_ignore_ascii_case("application/xhtml+xml")
+                });
+                let path_is_html = Path::new(&locator)
+                    .extension()
+                    .and_then(|extension| extension.to_str())
+                    .is_some_and(|extension| {
+                        matches!(extension.to_ascii_lowercase().as_str(), "html" | "htm")
+                    });
+                let is_html = content_type_is_html
+                    || content_type.as_deref().is_none_or(str::is_empty) && path_is_html;
+                let content = if is_html {
+                    html_text(&source_text)
+                } else {
+                    source_text
+                };
+                if content.trim().is_empty() {
+                    return Err(
+                        format!("no searchable text found in local document {locator}").into(),
+                    );
+                }
+                refresh_memory_bytes.charge(content.len(), "decoded local import text")?;
+                if kind == "url" {
+                    url_version = Some(checksum(content.as_bytes()));
+                }
+                (source_version, Some(content))
+            };
+            let version = if kind == "url" {
+                url_version.ok_or("URL response did not produce searchable text")?
+            } else {
+                version
+            };
+            let existing_version: bool = c.query_row(
             "SELECT EXISTS(SELECT 1 FROM temp.import_stage_versions WHERE source_id=?1 AND version=?2 UNION SELECT 1 FROM imported_versions WHERE source_id=?1 AND version=?2)",
-            params![id, source_version],
+            params![id, version],
             |row| row.get(0),
         )?;
-        let estimated_growth = existing_version.then_some(0);
-        let database_path: String = c.query_row("PRAGMA database_list", [], |row| row.get(2))?;
-        let database_size = fs::metadata(database_path)
-            .ok()
-            .map(|metadata| metadata.len());
-        let warning_basis_bytes = estimated_growth.unwrap_or(source_size);
-        let warn_large = warning_basis_bytes >= LARGE_IMPORT_WARNING_THRESHOLD_BYTES
-            || database_size.is_some_and(|size| warning_basis_bytes > size.saturating_mul(2));
-        let assessment = ImportSizeAssessment {
-            source_bytes: source_size,
-            estimated_net_db_growth_bytes: estimated_growth,
-            warning_basis_bytes,
-            warning_basis: if estimated_growth.is_some() {
-                "estimated_net_db_growth"
-            } else {
-                "source_bytes_fallback"
-            },
-            warn_large,
-        };
-        if warn_large && size_limit == SizeLimit::Error {
-            return Err(format!(
+            let estimated_growth = existing_version.then_some(0);
+            let database_path: String =
+                c.query_row("PRAGMA database_list", [], |row| row.get(2))?;
+            let database_size = fs::metadata(database_path)
+                .ok()
+                .map(|metadata| metadata.len());
+            let warning_basis_bytes = estimated_growth.unwrap_or(source_size);
+            let warn_large = warning_basis_bytes >= LARGE_IMPORT_WARNING_THRESHOLD_BYTES
+                || database_size.is_some_and(|size| warning_basis_bytes > size.saturating_mul(2));
+            let assessment = ImportSizeAssessment {
+                source_bytes: source_size,
+                estimated_net_db_growth_bytes: estimated_growth,
+                warning_basis_bytes,
+                warning_basis: if estimated_growth.is_some() {
+                    "estimated_net_db_growth"
+                } else {
+                    "source_bytes_fallback"
+                },
+                warn_large,
+            };
+            if warn_large && size_limit == SizeLimit::Error {
+                return Err(format!(
                 "import size limit exceeded: source bytes={}, estimated net database growth={}, warning basis={} ({})",
                 assessment.source_bytes,
                 assessment.estimated_net_db_growth_bytes.map_or_else(|| "unknown".into(), |value| value.to_string()),
                 assessment.warning_basis_bytes,
                 assessment.warning_basis,
             ).into());
-        }
-        if size_limit != SizeLimit::Ignore {
-            size_assessments.push(assessment);
-        }
-        let is_pdf = source_bytes
-            .windows(5)
-            .take(1024)
-            .any(|window| window == b"%PDF-")
-            || Path::new(&locator)
-                .extension()
-                .and_then(|extension| extension.to_str())
-                .is_some_and(|extension| extension.eq_ignore_ascii_case("pdf"));
-        let (version, content) = if is_pdf {
-            let cache = cache_dir.join(format!("{source_version}.json"));
-            c.execute("DELETE FROM temp.import_pdf_pages", [])?;
-            let cached = visit_cache_pages(&cache, |page, text| {
-                c.execute(
-                    "INSERT INTO temp.import_pdf_pages(page,text) VALUES(?1,?2)",
-                    params![page, text],
-                )?;
-                Ok(())
-            })?;
-            if cached.is_none() {
-                c.execute("DELETE FROM temp.import_pdf_pages", [])?;
-                let mut child = Command::new("pdftotext")
-                    .args(["-layout", "-enc", "UTF-8", "-", "-"])
-                    .stdin(Stdio::piped())
-                    .stdout(Stdio::piped())
-                    .stderr(Stdio::piped())
-                    .spawn()
-                    .map_err(|error| format!("PDF imports require pdftotext on PATH: {error}"))?;
-                let output = bounded_command_output_with_input(
-                    &mut child,
-                    &source_bytes,
-                    refresh_memory_bytes
-                        .remaining()
-                        .saturating_sub(MAX_COMMAND_STDERR_BYTES),
-                    &mut refresh_memory_bytes,
-                )?;
-                if !output.0.success() {
-                    return Err(format!(
-                        "PDF conversion failed for {locator}: {}",
-                        String::from_utf8_lossy(&output.2)
-                    )
-                    .into());
-                }
-                let text = String::from_utf8(output.1)?;
-                refresh_memory_bytes.charge(text.len(), "PDF conversion output")?;
-                let pages = text.split('\u{c}');
-                write_cache(&cache, pages.clone())?;
-                for (page, text) in pages.enumerate() {
-                    c.execute(
-                        "INSERT INTO temp.import_pdf_pages(page,text) VALUES(?1,?2)",
-                        params![page + 1, text],
-                    )?;
-                }
             }
-            // Keep the converted snapshot alongside the units. The conversion cache is only
-            // an optimization; it may be deleted without losing the imported representation.
-            let pages = {
-                let mut statement =
-                    c.prepare("SELECT text FROM temp.import_pdf_pages ORDER BY page")?;
-                statement
-                    .query_map([], |row| row.get::<_, String>(0))?
-                    .collect::<std::result::Result<Vec<_>, _>>()?
-            };
-            (source_version, Some(pdf_representation(&pages)?))
-        } else {
-            // Imported version identity is the original source, not its decoded representation.
-            let source_text = String::from_utf8(source_bytes)?;
-            let is_html = Path::new(&locator)
-                .extension()
-                .and_then(|extension| extension.to_str())
-                .is_some_and(|extension| {
-                    matches!(extension.to_ascii_lowercase().as_str(), "html" | "htm")
-                });
-            let content = if is_html {
-                html_text(&source_text)
-            } else {
-                source_text
-            };
-            if content.trim().is_empty() {
-                return Err(format!("no searchable text found in local document {locator}").into());
+            if size_limit != SizeLimit::Ignore {
+                size_assessments.push(assessment);
             }
-            refresh_memory_bytes.charge(content.len(), "decoded local import text")?;
-            (source_version, Some(content))
-        };
-        let fetched_order: i64 = c.query_row(
-            "SELECT COALESCE(MAX(fetched_order),0)+1 FROM temp.import_stage_versions",
-            [],
-            |r| r.get(0),
-        )?;
-        if kind == "url" {
-            let observed_at = utc_rfc3339_now();
-            c.execute(
-                "INSERT INTO temp.import_stage_versions(source_id,version,content,fetched_order,first_retrieved_at,last_retrieved_at) VALUES(?1,?2,?3,?4,?5,?5) ON CONFLICT(source_id,version) DO UPDATE SET content=excluded.content,fetched_order=excluded.fetched_order,first_retrieved_at=import_stage_versions.first_retrieved_at,last_retrieved_at=excluded.last_retrieved_at",
-                params![id, version, content.as_deref().unwrap_or(""), fetched_order, observed_at],
+            let fetched_order: i64 = c.query_row(
+                "SELECT COALESCE(MAX(fetched_order),0)+1 FROM temp.import_stage_versions",
+                [],
+                |r| r.get(0),
             )?;
-        } else {
-            c.execute(
+            if kind == "url" {
+                let observed_at = utc_rfc3339_now();
+                let redirect_chain_json = serde_json::to_string(&redirect_chain)?;
+                c.execute(
+                "INSERT INTO temp.import_stage_versions(source_id,version,content,fetched_order,first_retrieved_at,last_retrieved_at,final_url,redirect_chain) VALUES(?1,?2,?3,?4,?5,?5,?6,?7) ON CONFLICT(source_id,version) DO UPDATE SET content=excluded.content,fetched_order=excluded.fetched_order,first_retrieved_at=import_stage_versions.first_retrieved_at,last_retrieved_at=excluded.last_retrieved_at,final_url=excluded.final_url,redirect_chain=excluded.redirect_chain",
+                params![id, version, content.as_deref().unwrap_or(""), fetched_order, observed_at, final_url.as_deref().unwrap_or(&locator), redirect_chain_json],
+            )?;
+                c.execute(
+                "UPDATE temp.import_stage_sources SET fetch_status='success',last_fetch_error=NULL,last_fetch_attempt_at=?1 WHERE id=?2",
+                params![observed_at, id],
+            )?;
+            } else {
+                c.execute(
                 "INSERT INTO temp.import_stage_versions(source_id,version,content,fetched_order) VALUES(?1,?2,?3,?4) ON CONFLICT(source_id,version) DO UPDATE SET content=excluded.content,fetched_order=excluded.fetched_order",
                 params![id, version, content.as_deref().unwrap_or(""), fetched_order],
             )?;
-        }
-        if is_pdf {
-            let mut stmt =
-                c.prepare("SELECT page,text FROM temp.import_pdf_pages ORDER BY page")?;
-            let mut rows = stmt.query([])?;
-            let mut last_line = 0;
-            while let Some(row) = rows.next()? {
-                let page: usize = row.get(0)?;
-                let text: String = row.get(1)?;
-                let mut failure = None;
-                crate::segmentation::visit("paragraph", &text, |unit| {
+            }
+            if is_pdf {
+                let mut stmt =
+                    c.prepare("SELECT page,text FROM temp.import_pdf_pages ORDER BY page")?;
+                let mut rows = stmt.query([])?;
+                let mut last_line = 0;
+                while let Some(row) = rows.next()? {
+                    let page: usize = row.get(0)?;
+                    let text: String = row.get(1)?;
+                    let mut failure = None;
+                    crate::segmentation::visit("paragraph", &text, |unit| {
+                        let result = (|| -> Result<()> {
+                            refresh_memory_bytes
+                                .charge(unit.text.len(), "PDF indexed unit text")?;
+                            let vector = cfg
+                                .as_ref()
+                                .map(|(cmd, model)| {
+                                    import_embed(cmd, model, unit.text, &mut refresh_memory_bytes)
+                                })
+                                .transpose()?;
+                            if let Some(vector) = &vector {
+                                if dimension.is_some_and(|d| d != vector.len())
+                                    || configured_dimension.is_some_and(|d| d != vector.len())
+                                {
+                                    return Err("embedding dimension mismatch".into());
+                                }
+                                dimension = Some(vector.len());
+                            }
+                            let vector_bytes = vector.as_ref().map_or(0, |v| v.len() * 4);
+                            refresh_memory_bytes.charge(vector_bytes, "PDF stored vector bytes")?;
+                            let line = unit.line_start.max(last_line + 1);
+                            let line_end = line + unit.line_end.saturating_sub(unit.line_start);
+                            last_line = line_end;
+                            c.execute(
+                            "INSERT OR REPLACE INTO temp.import_stage_units(source_id,version,line,line_end,text,vector,page) VALUES(?1,?2,?3,?4,?5,?6,?7)",
+                            params![id, version, line, line_end, unit.text, vector.map(|v| as_bytes(&v)), page],
+                        )?;
+                            refresh_memory_bytes.release(unit.text.len() + vector_bytes);
+                            Ok(())
+                        })();
+                        if let Err(error) = result {
+                            failure = Some(error);
+                            false
+                        } else {
+                            true
+                        }
+                    })?;
+                    if let Some(error) = failure {
+                        return Err(error);
+                    }
+                }
+            } else {
+                let content = content.expect("non-PDF content exists");
+                let kind = segmentation::kind(Path::new(&locator).as_os_str().as_encoded_bytes());
+                let mut unit_error = None;
+                let segmentation_result = segmentation::visit(kind, &content, |unit| {
                     let result = (|| -> Result<()> {
-                        refresh_memory_bytes.charge(unit.text.len(), "PDF indexed unit text")?;
                         let vector = cfg
                             .as_ref()
                             .map(|(cmd, model)| {
@@ -879,74 +1198,35 @@ pub fn refresh_with_size_limit(
                             dimension = Some(vector.len());
                         }
                         let vector_bytes = vector.as_ref().map_or(0, |v| v.len() * 4);
-                        refresh_memory_bytes.charge(vector_bytes, "PDF stored vector bytes")?;
-                        let line = unit.line_start.max(last_line + 1);
-                        let line_end = line + unit.line_end.saturating_sub(unit.line_start);
-                        last_line = line_end;
-                        c.execute(
-                            "INSERT OR REPLACE INTO temp.import_stage_units(source_id,version,line,line_end,text,vector,page) VALUES(?1,?2,?3,?4,?5,?6,?7)",
-                            params![id, version, line, line_end, unit.text, vector.map(|v| as_bytes(&v)), page],
-                        )?;
-                        refresh_memory_bytes.release(unit.text.len() + vector_bytes);
+                        refresh_memory_bytes.charge(vector_bytes, "stored vector bytes")?;
+                        c.execute("INSERT OR REPLACE INTO temp.import_stage_units(source_id,version,line,line_end,text,vector,page) VALUES(?1,?2,?3,?4,?5,?6,NULL)", params![id, version, unit.line_start, unit.line_end, unit.text, vector.map(|v| as_bytes(&v))])?;
+                        refresh_memory_bytes.release(vector_bytes);
                         Ok(())
                     })();
                     if let Err(error) = result {
-                        failure = Some(error);
-                        false
-                    } else {
-                        true
+                        unit_error = Some(error);
+                        return false;
                     }
-                })?;
-                if let Some(error) = failure {
+                    true
+                });
+                segmentation_result?;
+                if let Some(error) = unit_error {
                     return Err(error);
                 }
             }
-        } else {
-            let content = content.expect("non-PDF content exists");
-            let kind = segmentation::kind(Path::new(&locator).as_os_str().as_encoded_bytes());
-            let mut unit_error = None;
-            let segmentation_result = segmentation::visit(kind, &content, |unit| {
-                let result = (|| -> Result<()> {
-                    let vector = cfg
-                        .as_ref()
-                        .map(|(cmd, model)| {
-                            import_embed(cmd, model, unit.text, &mut refresh_memory_bytes)
-                        })
-                        .transpose()?;
-                    if let Some(vector) = &vector {
-                        if dimension.is_some_and(|d| d != vector.len())
-                            || configured_dimension.is_some_and(|d| d != vector.len())
-                        {
-                            return Err("embedding dimension mismatch".into());
-                        }
-                        dimension = Some(vector.len());
-                    }
-                    let vector_bytes = vector.as_ref().map_or(0, |v| v.len() * 4);
-                    refresh_memory_bytes.charge(vector_bytes, "stored vector bytes")?;
-                    c.execute("INSERT OR REPLACE INTO temp.import_stage_units(source_id,version,line,line_end,text,vector,page) VALUES(?1,?2,?3,?4,?5,?6,NULL)", params![id, version, unit.line_start, unit.line_end, unit.text, vector.map(|v| as_bytes(&v))])?;
-                    refresh_memory_bytes.release(vector_bytes);
-                    Ok(())
-                })();
-                if let Err(error) = result {
-                    unit_error = Some(error);
-                    return false;
-                }
-                true
-            });
-            segmentation_result?;
-            if let Some(error) = unit_error {
-                return Err(error);
+            let pruned = prune_staged_versions(c, &id, history_limit)?;
+            record_pruned_versions(c, &id, &locator, pruned)?;
+            Ok(())
+        })();
+        if let Err(error) = source_result {
+            if kind == "url" {
+                let message: String = error.to_string().chars().take(1024).collect();
+                c.execute(
+                    "UPDATE imported_sources SET fetch_status='stale',last_fetch_error=?1,last_fetch_attempt_at=?2 WHERE id=?3",
+                    params![message, utc_rfc3339_now(), id],
+                )?;
             }
-        }
-        if retention == "latest" {
-            c.execute(
-                "DELETE FROM temp.import_stage_versions WHERE source_id=?1 AND fetched_order<>?2",
-                params![id, fetched_order],
-            )?;
-            c.execute(
-                "DELETE FROM temp.import_stage_units WHERE source_id=?1 AND version NOT IN (SELECT version FROM temp.import_stage_versions WHERE source_id=?1)",
-                [&id],
-            )?;
+            return Err(error);
         }
     }
     if let Some(dimension) = dimension {
@@ -1006,7 +1286,7 @@ pub fn publish(tx: &rusqlite::Transaction<'_>) -> Result<()> {
             [dimension.to_string()],
         )?;
     }
-    tx.execute("UPDATE imported_sources SET object_store=(SELECT object_store FROM temp.import_stage_sources s WHERE s.id=imported_sources.id)", [])?;
+    tx.execute("UPDATE imported_sources SET object_store=(SELECT object_store FROM temp.import_stage_sources s WHERE s.id=imported_sources.id),fetch_status=(SELECT fetch_status FROM temp.import_stage_sources s WHERE s.id=imported_sources.id),last_fetch_error=(SELECT last_fetch_error FROM temp.import_stage_sources s WHERE s.id=imported_sources.id),last_fetch_attempt_at=(SELECT last_fetch_attempt_at FROM temp.import_stage_sources s WHERE s.id=imported_sources.id)", [])?;
     for (table, stage) in [
         ("imported_versions", "import_stage_versions"),
         ("imported_units", "import_stage_units"),
@@ -1014,7 +1294,7 @@ pub fn publish(tx: &rusqlite::Transaction<'_>) -> Result<()> {
     ] {
         tx.execute(&format!("DELETE FROM {table}"), [])?;
         if table == "imported_versions" {
-            tx.execute("INSERT INTO imported_versions(source_id,version,content,fetched_order,first_retrieved_at,last_retrieved_at) SELECT source_id,version,content,fetched_order,first_retrieved_at,last_retrieved_at FROM temp.import_stage_versions", [])?;
+            tx.execute("INSERT INTO imported_versions(source_id,version,content,fetched_order,first_retrieved_at,last_retrieved_at,final_url,redirect_chain) SELECT source_id,version,content,fetched_order,first_retrieved_at,last_retrieved_at,final_url,redirect_chain FROM temp.import_stage_versions", [])?;
             let representations = {
                 let mut statement = tx.prepare(
                     "SELECT source_id,version,content FROM imported_versions WHERE content<>''",
@@ -1171,7 +1451,7 @@ pub fn search(
             return Err("query embedding dimension mismatch".into());
         }
     }
-    let mut st = c.prepare("SELECT s.locator,u.line,u.line_end,u.text,u.version,u.vector,u.page,v.first_retrieved_at,v.last_retrieved_at FROM imported_units u JOIN imported_sources s ON s.id=u.source_id LEFT JOIN imported_versions v ON v.source_id=u.source_id AND v.version=u.version WHERE s.kind<>'git'")?;
+    let mut st = c.prepare("SELECT s.locator,u.line,u.line_end,u.text,u.version,u.vector,u.page,v.first_retrieved_at,v.last_retrieved_at,s.kind,v.final_url,v.redirect_chain,s.fetch_status,s.last_fetch_error FROM imported_units u JOIN imported_sources s ON s.id=u.source_id LEFT JOIN imported_versions v ON v.source_id=u.source_id AND v.version=u.version WHERE s.kind<>'git'")?;
     let rows = st.query_map([], |r| {
         Ok((
             r.get::<_, String>(0)?,
@@ -1183,6 +1463,11 @@ pub fn search(
             r.get::<_, Option<usize>>(6)?,
             r.get::<_, Option<String>>(7)?,
             r.get::<_, Option<String>>(8)?,
+            r.get::<_, String>(9)?,
+            r.get::<_, Option<String>>(10)?,
+            r.get::<_, Option<String>>(11)?,
+            r.get::<_, Option<String>>(12)?,
+            r.get::<_, Option<String>>(13)?,
         ))
     })?;
     let mut out = Vec::new();
@@ -1197,7 +1482,17 @@ pub fn search(
             page,
             first_retrieved_at,
             last_retrieved_at,
+            source_kind,
+            final_url,
+            redirect_chain_json,
+            fetch_status,
+            fetch_error,
         ) = row?;
+        let requested_url = (source_kind == "url").then(|| locator.clone());
+        let redirect_chain = redirect_chain_json
+            .as_deref()
+            .map(serde_json::from_str)
+            .transpose()?;
         if semantic {
             if let (Some(v), Some(q)) = (stored.as_deref(), vector.as_deref()) {
                 if v.len() != q.len() {
@@ -1210,7 +1505,7 @@ pub fn search(
                 out.push((
                     d,
                     SearchResult {
-                        path: locator,
+                        path: locator.clone(),
                         line_start: line,
                         line_end,
                         text,
@@ -1221,6 +1516,11 @@ pub fn search(
                         repo_id: None,
                         first_retrieved_at: first_retrieved_at.clone(),
                         last_retrieved_at: last_retrieved_at.clone(),
+                        requested_url: requested_url.clone(),
+                        final_url: final_url.clone(),
+                        redirect_chain: redirect_chain.clone(),
+                        fetch_status: fetch_status.clone(),
+                        fetch_error: fetch_error.clone(),
                         worktree: None,
                         semantic_worktree: None,
                     },
@@ -1242,6 +1542,11 @@ pub fn search(
                     repo_id: None,
                     first_retrieved_at,
                     last_retrieved_at,
+                    requested_url,
+                    final_url,
+                    redirect_chain,
+                    fetch_status,
+                    fetch_error,
                     worktree: None,
                     semantic_worktree: None,
                 },
@@ -1330,6 +1635,11 @@ pub fn search(
                         repo_id: Some(repo_id),
                         first_retrieved_at: None,
                         last_retrieved_at: None,
+                        requested_url: None,
+                        final_url: None,
+                        redirect_chain: None,
+                        fetch_status: None,
+                        fetch_error: None,
                         worktree: None,
                         semantic_worktree: None,
                     },
@@ -1351,6 +1661,11 @@ pub fn search(
                     repo_id: Some(repo_id),
                     first_retrieved_at: None,
                     last_retrieved_at: None,
+                    requested_url: None,
+                    final_url: None,
+                    redirect_chain: None,
+                    fetch_status: None,
+                    fetch_error: None,
                     worktree: None,
                     semantic_worktree: None,
                 },
@@ -1394,11 +1709,13 @@ mod tests {
     use super::{
         SizeLimit, batch_reader, bounded_command_output_with_input, checksum,
         hydrate_git_unit_with_reader, pdf_representation, refresh_with_size_limit, register,
-        slice_git_unit, visit_cache_pages, write_cache,
+        set_url_max_redirects, slice_git_unit, visit_cache_pages, write_cache,
     };
     use crate::budget::Budget;
     use rusqlite::Connection;
     use std::{
+        io::{Read, Write},
+        net::TcpListener,
         os::unix::fs::PermissionsExt,
         process::{Command, Stdio},
     };
@@ -1427,6 +1744,52 @@ mod tests {
             .execute("INSERT INTO embedding_config VALUES('dimension','0')", [])
             .unwrap();
         (connection, database_path)
+    }
+
+    #[test]
+    fn callable_url_refresh_enforces_a_configured_redirect_limit() {
+        let root = tempfile::tempdir().unwrap();
+        let (connection, _) = size_policy_database(root.path());
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = std::thread::spawn(move || {
+            for (path, target) in [("/one", "/two"), ("/two", "/three")] {
+                let (mut stream, _) = listener.accept().unwrap();
+                let mut request = [0; 1024];
+                let count = stream.read(&mut request).unwrap();
+                let request = String::from_utf8_lossy(&request[..count]);
+                assert!(request.starts_with(&format!("GET {path} ")), "{request}");
+                write!(
+                    stream,
+                    "HTTP/1.1 302 Found\r\nLocation: {target}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                )
+                .unwrap();
+            }
+        });
+        let url = format!("http://{address}/one");
+        register(&connection, &url, None).unwrap();
+        set_url_max_redirects(&connection, 1).unwrap();
+        assert!(set_url_max_redirects(&connection, 21).is_err());
+
+        let error = refresh_with_size_limit(&connection, SizeLimit::Ignore).unwrap_err();
+
+        assert!(error.to_string().contains("URL fetch failed"));
+        server.join().unwrap();
+        let (status, error_message): (String, String) = connection
+            .query_row(
+                "SELECT fetch_status,last_fetch_error FROM imported_sources WHERE locator=?1",
+                [&url],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(status, "stale");
+        assert!(error_message.contains("URL fetch failed"));
+        let versions: i64 = connection
+            .query_row("SELECT count(*) FROM imported_versions", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(versions, 0);
     }
 
     #[test]

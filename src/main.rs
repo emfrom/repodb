@@ -140,6 +140,16 @@ struct SearchResult {
     first_retrieved_at: Option<String>,
     last_retrieved_at: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    requested_url: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    final_url: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    redirect_chain: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    fetch_status: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    fetch_error: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     worktree: Option<WorktreeEvidence>,
     #[serde(skip_serializing_if = "Option::is_none")]
     semantic_worktree: Option<SemanticWorktreeEvidence>,
@@ -929,6 +939,23 @@ fn print_ranked_human(
                     if let Some(last) = x.last_retrieved_at.as_deref() {
                         reference.push_str(&format!(" [last retrieved {last}]"));
                     }
+                    if let Some(requested_url) = x.requested_url.as_deref() {
+                        reference.push_str(&format!(" [requested URL {requested_url}]"));
+                    }
+                    if let Some(final_url) = x.final_url.as_deref() {
+                        reference.push_str(&format!(" [final URL {final_url}]"));
+                    }
+                    if let Some(redirect_chain) = x.redirect_chain.as_ref()
+                        && !redirect_chain.is_empty()
+                    {
+                        reference.push_str(&format!(" [redirect chain {redirect_chain:?}]"));
+                    }
+                    if x.fetch_status.as_deref() == Some("stale") {
+                        reference.push_str(" [stale website snapshot]");
+                        if let Some(error) = x.fetch_error.as_deref() {
+                            reference.push_str(&format!(" [last fetch failed: {error}]"));
+                        }
+                    }
                     if candidate.component == EvidenceComponent::CommitMessage {
                         if let Some(commit) = x.commit_id.as_deref() {
                             reference.push_str(&format!(
@@ -1538,6 +1565,11 @@ fn exact(c: &Connection, q: &str, commits: &[String]) -> Result<Vec<SearchResult
                     repo_id: None,
                     first_retrieved_at: None,
                     last_retrieved_at: None,
+                    requested_url: None,
+                    final_url: None,
+                    redirect_chain: None,
+                    fetch_status: None,
+                    fetch_error: None,
                     worktree: None,
                     semantic_worktree: None,
                 })
@@ -1594,6 +1626,11 @@ fn semantic_with_vector(
             repo_id: None,
             first_retrieved_at: None,
             last_retrieved_at: None,
+            requested_url: None,
+            final_url: None,
+            redirect_chain: None,
+            fetch_status: None,
+            fetch_error: None,
             worktree: None,
             semantic_worktree: None,
         })
@@ -1623,7 +1660,8 @@ Commands:
   init                 Initialize the index and capture the checked-out repository
   refresh              Refresh indexed repository and registered imports
   import SOURCE        Register one local file, URL page, or Git repository
-  retention latest|all Set imported-source version retention
+  retention latest|N   Set imported-source version retention (default: latest)
+  redirect-limit N     Set the maximum followed URL redirects (default: 5; max: 20)
   reembed              Rebuild vectors with an embedding command/model
   search QUERY         Search indexed content, diffs, and commit messages
   status [--json]      Report index freshness and capability readiness
@@ -1789,14 +1827,26 @@ Status does not initialize, refresh, fetch, or mutate the index. JSON distinguis
 missing database/index state from an empty searchable snapshot.
 "#;
 
-const RETENTION_HELP: &str = r#"Choose retention for imported source versions.
+const RETENTION_HELP: &str = r#"Choose a bounded history for imported source versions.
 
 Usage:
-  repodb [--database PATH] retention latest|all
+  repodb [--database PATH] retention latest|N
 
-`latest` is the default and keeps the newest distinct published version per source;
-`all` retains distinct versions. This affects imported sources, not repository Git
-history. It does not fetch sources; use an explicit refresh.
+`latest` is the default and keeps only the newest distinct version per source. A
+number from 2 to 100 keeps that many newest distinct versions per source; `all`
+is a compatibility alias for 2. Setting a lower limit prunes excess versions and
+reports the count. This applies to imported documents, URLs, and pinned Git
+snapshots, not native repository history. It does not fetch sources; use an
+explicit refresh.
+"#;
+
+const REDIRECT_LIMIT_HELP: &str = r#"Set the finite maximum number of HTTP(S) redirects followed when fetching URLs.
+
+Usage:
+  repodb [--database PATH] redirect-limit N
+
+The default is 5 and the hard maximum is 20. A limit of 0 disables redirects.
+This affects explicit URL refreshes and does not crawl page links.
 "#;
 
 const REEMBED_HELP: &str = r#"Rebuild stored vectors using the configured or supplied embedding command/model.
@@ -1815,6 +1865,7 @@ fn print_help(command: Option<&str>) -> Result<()> {
         Some("import") => IMPORT_HELP,
         Some("status") => STATUS_HELP,
         Some("retention") => RETENTION_HELP,
+        Some("redirect-limit") => REDIRECT_LIMIT_HELP,
         Some("reembed") => REEMBED_HELP,
         Some(command) => return Err(format!("unknown help topic: {command}").into()),
     };
@@ -1999,6 +2050,12 @@ fn execute() -> Result<()> {
                 history::publish_refresh(&tx)?;
                 tx.commit()?;
             }
+            for pruned in imports::pruning_report(&db)? {
+                println!(
+                    "pruned {} historical version(s) for {}",
+                    pruned.count, pruned.source
+                );
+            }
             for assessment in size_assessments
                 .into_iter()
                 .filter(|assessment| assessment.warn_large)
@@ -2056,11 +2113,27 @@ fn execute() -> Result<()> {
             }
         }
         "retention" => {
-            let value = a.next().ok_or("retention requires latest or all")?;
+            let value = a
+                .next()
+                .ok_or("retention requires latest or a version limit")?;
             if a.next().is_some() {
                 return Err("unexpected arguments".into());
             }
-            imports::set_retention(&open_db(&db_path)?, &value)?;
+            let pruned = imports::set_retention(&open_db(&db_path)?, &value)?;
+            if pruned > 0 {
+                println!("pruned {pruned} stored imported version(s)");
+            }
+        }
+        "redirect-limit" => {
+            let value: usize = a
+                .next()
+                .ok_or("redirect-limit requires a nonnegative integer")?
+                .parse()?;
+            if a.next().is_some() {
+                return Err("unexpected arguments".into());
+            }
+            imports::set_url_max_redirects(&open_db(&db_path)?, value)?;
+            println!("URL redirect limit set to {value}");
         }
         "reembed" => {
             let mut command = config::embedding_command()?;
@@ -2477,6 +2550,11 @@ fn execute() -> Result<()> {
                         repo_id: None,
                         first_retrieved_at: None,
                         last_retrieved_at: None,
+                        requested_url: None,
+                        final_url: None,
+                        redirect_chain: None,
+                        fetch_status: None,
+                        fetch_error: None,
                         worktree: Some(WorktreeEvidence {
                             origin: "live_worktree",
                             indexed_head: report.indexed_head.clone(),

@@ -160,7 +160,7 @@ fn collect_preview_files(directory: &Path, files: &mut Vec<PathBuf>) -> Result<(
 }
 
 pub(super) fn init(c: &Connection) -> Result<()> {
-    c.execute_batch("CREATE TABLE IF NOT EXISTS imported_sources(id TEXT PRIMARY KEY, locator TEXT NOT NULL UNIQUE, kind TEXT NOT NULL, object_store TEXT); CREATE TABLE IF NOT EXISTS imported_versions(source_id TEXT NOT NULL, version TEXT NOT NULL, content TEXT NOT NULL, fetched_order INTEGER NOT NULL DEFAULT 0, first_retrieved_at TEXT, last_retrieved_at TEXT, PRIMARY KEY(source_id,version)); CREATE TABLE IF NOT EXISTS imported_units(source_id TEXT NOT NULL, version TEXT NOT NULL, line INTEGER NOT NULL, text TEXT NOT NULL, vector BLOB, page INTEGER, line_end INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(source_id,version,line,text)); CREATE TABLE IF NOT EXISTS import_config(key TEXT PRIMARY KEY,value TEXT NOT NULL); CREATE TABLE IF NOT EXISTS imported_git_units(source_id TEXT NOT NULL,commit_id TEXT NOT NULL,path TEXT NOT NULL,blob_id TEXT NOT NULL,segmentation_kind TEXT NOT NULL,byte_start INTEGER NOT NULL,byte_end INTEGER NOT NULL,line INTEGER NOT NULL,line_end INTEGER NOT NULL,vector BLOB,PRIMARY KEY(source_id,commit_id,path,byte_start));")?;
+    c.execute_batch("CREATE TABLE IF NOT EXISTS imported_sources(id TEXT PRIMARY KEY, locator TEXT NOT NULL UNIQUE, kind TEXT NOT NULL, object_store TEXT, fetch_status TEXT, last_fetch_error TEXT, last_fetch_attempt_at TEXT); CREATE TABLE IF NOT EXISTS imported_versions(source_id TEXT NOT NULL, version TEXT NOT NULL, content TEXT NOT NULL, fetched_order INTEGER NOT NULL DEFAULT 0, first_retrieved_at TEXT, last_retrieved_at TEXT, final_url TEXT, redirect_chain TEXT, PRIMARY KEY(source_id,version)); CREATE TABLE IF NOT EXISTS imported_units(source_id TEXT NOT NULL, version TEXT NOT NULL, line INTEGER NOT NULL, text TEXT NOT NULL, vector BLOB, page INTEGER, line_end INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(source_id,version,line,text)); CREATE TABLE IF NOT EXISTS import_config(key TEXT PRIMARY KEY,value TEXT NOT NULL); CREATE TABLE IF NOT EXISTS imported_git_units(source_id TEXT NOT NULL,commit_id TEXT NOT NULL,path TEXT NOT NULL,blob_id TEXT NOT NULL,segmentation_kind TEXT NOT NULL,byte_start INTEGER NOT NULL,byte_end INTEGER NOT NULL,line INTEGER NOT NULL,line_end INTEGER NOT NULL,vector BLOB,PRIMARY KEY(source_id,commit_id,path,byte_start));")?;
     if !column_exists(c, "imported_versions", "representation_sha256")? {
         c.execute(
             "ALTER TABLE imported_versions ADD COLUMN representation_sha256 TEXT",
@@ -261,6 +261,36 @@ pub(super) fn init(c: &Connection) -> Result<()> {
             [],
         )?;
     }
+    if !column_exists(c, "imported_versions", "final_url")? {
+        c.execute(
+            "ALTER TABLE imported_versions ADD COLUMN final_url TEXT",
+            [],
+        )?;
+    }
+    if !column_exists(c, "imported_versions", "redirect_chain")? {
+        c.execute(
+            "ALTER TABLE imported_versions ADD COLUMN redirect_chain TEXT",
+            [],
+        )?;
+    }
+    if !column_exists(c, "imported_sources", "fetch_status")? {
+        c.execute(
+            "ALTER TABLE imported_sources ADD COLUMN fetch_status TEXT",
+            [],
+        )?;
+    }
+    if !column_exists(c, "imported_sources", "last_fetch_error")? {
+        c.execute(
+            "ALTER TABLE imported_sources ADD COLUMN last_fetch_error TEXT",
+            [],
+        )?;
+    }
+    if !column_exists(c, "imported_sources", "last_fetch_attempt_at")? {
+        c.execute(
+            "ALTER TABLE imported_sources ADD COLUMN last_fetch_attempt_at TEXT",
+            [],
+        )?;
+    }
     if !column_exists(c, "imported_versions", "fetched_order")? {
         c.execute(
             "ALTER TABLE imported_versions ADD COLUMN fetched_order INTEGER NOT NULL DEFAULT 0",
@@ -271,6 +301,24 @@ pub(super) fn init(c: &Connection) -> Result<()> {
     c.execute(
         "INSERT OR IGNORE INTO import_config VALUES('retention','latest')",
         [],
+    )?;
+    let default_history_limit = if c.query_row(
+        "SELECT value FROM import_config WHERE key='retention'",
+        [],
+        |row| row.get::<_, String>(0),
+    )? == "all"
+    {
+        "2"
+    } else {
+        "1"
+    };
+    c.execute(
+        "INSERT OR IGNORE INTO import_config VALUES('history_limit',?1)",
+        [default_history_limit],
+    )?;
+    c.execute(
+        "INSERT OR IGNORE INTO import_config VALUES('url_max_redirects',?1)",
+        [super::DEFAULT_URL_MAX_REDIRECTS.to_string()],
     )?;
     Ok(())
 }
@@ -433,21 +481,41 @@ pub(crate) fn register(c: &Connection, locator: &str, revision: Option<&str>) ->
     Ok(())
 }
 
-pub(crate) fn set_retention(c: &Connection, value: &str) -> Result<()> {
-    if value != "latest" && value != "all" {
-        return Err("retention must be latest or all".into());
+pub(crate) fn set_retention(c: &Connection, value: &str) -> Result<usize> {
+    let limit = match value {
+        "latest" => 1,
+        "all" => 2,
+        numeric => numeric.parse::<usize>().map_err(
+            |_| "retention must be latest or a version limit between 2 and 100 (all is 2)",
+        )?,
+    };
+    if !(1..=super::MAX_RETAINED_VERSIONS).contains(&limit) || (limit == 1 && value != "latest") {
+        return Err(format!(
+            "retention must be latest or a version limit between 2 and {} (all is 2)",
+            super::MAX_RETAINED_VERSIONS
+        )
+        .into());
     }
     init(c)?;
+    let retention = if limit == 1 { "latest" } else { "all" };
     c.execute(
         "UPDATE import_config SET value=?1 WHERE key='retention'",
-        [value],
+        [retention],
     )?;
-    if value == "latest" {
-        c.execute("DELETE FROM imported_versions WHERE EXISTS (SELECT 1 FROM imported_versions newer WHERE newer.source_id=imported_versions.source_id AND newer.fetched_order>imported_versions.fetched_order)", [])?;
-        c.execute("DELETE FROM imported_units WHERE NOT EXISTS (SELECT 1 FROM imported_versions v WHERE v.source_id=imported_units.source_id AND v.version=imported_units.version)", [])?;
-        c.execute("DELETE FROM imported_git_units WHERE NOT EXISTS (SELECT 1 FROM imported_versions v WHERE v.source_id=imported_git_units.source_id AND v.version=imported_git_units.commit_id)", [])?;
-    }
-    Ok(())
+    c.execute(
+        "UPDATE import_config SET value=?1 WHERE key='history_limit'",
+        [limit.to_string()],
+    )?;
+    let before: i64 = c.query_row("SELECT count(*) FROM imported_versions", [], |row| {
+        row.get(0)
+    })?;
+    c.execute("DELETE FROM imported_versions AS older WHERE EXISTS (SELECT 1 FROM imported_versions newer WHERE newer.source_id=older.source_id AND (newer.fetched_order>older.fetched_order OR (newer.fetched_order=older.fetched_order AND newer.version>older.version)) ORDER BY newer.fetched_order DESC,newer.version DESC LIMIT 1 OFFSET ?1)", [limit.saturating_sub(1) as i64])?;
+    c.execute("DELETE FROM imported_units WHERE NOT EXISTS (SELECT 1 FROM imported_versions v WHERE v.source_id=imported_units.source_id AND v.version=imported_units.version)", [])?;
+    c.execute("DELETE FROM imported_git_units WHERE NOT EXISTS (SELECT 1 FROM imported_versions v WHERE v.source_id=imported_git_units.source_id AND v.version=imported_git_units.commit_id)", [])?;
+    let after: i64 = c.query_row("SELECT count(*) FROM imported_versions", [], |row| {
+        row.get(0)
+    })?;
+    Ok((before - after).max(0) as usize)
 }
 
 #[cfg(test)]

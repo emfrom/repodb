@@ -3135,7 +3135,7 @@ fn imported_url_fetch_accepts_data_above_old_limit_and_restricts_redirect_protoc
     let curl = bin.join("curl");
     fs::write(
         &curl,
-        "#!/bin/sh\nprintf '%s\n' \"$@\" > \"$CAPTURE\"\nhead -c 10485761 /dev/zero\nexit 0\n",
+        "#!/bin/sh\nprintf '%s\n' \"$@\" > \"$CAPTURE\"\nhead -c 10485761 /dev/zero\nprintf '\\n__REPODB_CURL_META__https://example.invalid/source.txt\\ntext/plain\\n0\\n200\\n'\nexit 0\n",
     )
     .unwrap();
     fs::set_permissions(&curl, fs::Permissions::from_mode(0o755)).unwrap();
@@ -3149,10 +3149,84 @@ fn imported_url_fetch_accepts_data_above_old_limit_and_restricts_redirect_protoc
         )
         .0
     );
-    let args = fs::read_to_string(capture).unwrap();
-    for expected in ["--max-time\n30", "--proto-redir\n=http,https"] {
+    let args = fs::read_to_string(&capture).unwrap();
+    for expected in [
+        "--max-time\n30",
+        "--max-redirs\n5",
+        "--proto-redir\n=http,https",
+    ] {
         assert!(args.contains(expected), "missing {expected:?} in {args:?}");
     }
+
+    assert!(run(root, &["redirect-limit", "1"]).0);
+    assert!(
+        run_with_env(
+            root,
+            &["refresh", "--size-limit=ignore"],
+            &[("PATH", &path), ("CAPTURE", capture.to_str().unwrap())]
+        )
+        .0
+    );
+    let args = fs::read_to_string(capture).unwrap();
+    assert!(args.contains("--max-redirs\n1"), "{args:?}");
+}
+
+#[test]
+fn url_snapshot_uses_extracted_text_hash_and_retains_redirect_provenance() {
+    use std::{
+        io::{Read, Write},
+        net::TcpListener,
+    };
+
+    let repo = repository();
+    let root = repo.path();
+    assert!(run(root, &["init"]).0);
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = std::thread::spawn(move || {
+        for index in 0..2 {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = [0; 1024];
+            let count = stream.read(&mut request).unwrap();
+            let request = String::from_utf8_lossy(&request[..count]);
+            if index == 0 {
+                assert!(request.starts_with("GET /start "), "{request}");
+                stream.write_all(b"HTTP/1.1 302 Found\r\nLocation: /page.html\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").unwrap();
+            } else {
+                assert!(request.starts_with("GET /page.html "), "{request}");
+                let body = b"<h1>Redirected snapshot marker</h1><script>not searchable</script>";
+                write!(stream, "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", body.len()).unwrap();
+                stream.write_all(body).unwrap();
+            }
+        }
+    });
+    let requested_url = format!("http://{address}/start");
+    let final_url = format!("http://{address}/page.html");
+    assert!(run(root, &["import", &requested_url]).0);
+    assert!(run(root, &["refresh"]).0);
+    server.join().unwrap();
+
+    let results = search_json(root, &["Redirected snapshot marker"]);
+    let result = results
+        .iter()
+        .find(|result| result["path"] == requested_url)
+        .unwrap_or_else(|| panic!("{results:?}"));
+    assert_eq!(result["text"], " Redirected snapshot marker ");
+    assert_eq!(
+        result["blob_id"],
+        "da36299a33c9e43e73e743fc8b93778a90c236291f40228af679ed887042a885"
+    );
+    assert_eq!(result["requested_url"], requested_url);
+    assert_eq!(result["final_url"], final_url);
+    assert_eq!(result["redirect_chain"], serde_json::json!(["/page.html"]));
+    assert_eq!(result["fetch_status"], "success");
+    assert!(
+        result["text"]
+            .as_str()
+            .unwrap()
+            .find("not searchable")
+            .is_none()
+    );
 }
 
 #[test]
@@ -3202,12 +3276,28 @@ fn imported_url_and_semantic_search_use_loopback_and_fake_embeddings() {
         .clone();
     assert!(!run(root, &["refresh", "--imports"]).0);
     server.join().unwrap();
+    let database = rusqlite::Connection::open(root.join(".git/repodb.sqlite")).unwrap();
+    let attempt_before_search: String = database
+        .query_row(
+            "SELECT last_fetch_attempt_at FROM imported_sources WHERE locator=?1",
+            [&url],
+            |row| row.get(0),
+        )
+        .unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(1100));
     let results = search_json(root, &["semantic", "--semantic"]);
     let imported = results
         .iter()
         .find(|result| result["path"] == url && result["line_start"] == 1)
         .unwrap_or_else(|| panic!("{results:?}"));
     assert_eq!(imported["blob_id"].as_str().unwrap().len(), 64);
+    assert_eq!(imported["fetch_status"], "stale");
+    assert!(
+        imported["fetch_error"]
+            .as_str()
+            .unwrap()
+            .contains("URL fetch failed")
+    );
     for field in ["first_retrieved_at", "last_retrieved_at"] {
         let timestamp = imported[field].as_str().unwrap();
         assert!(timestamp.ends_with('Z'), "{field}: {timestamp}");
@@ -3231,18 +3321,69 @@ fn imported_url_and_semantic_search_use_loopback_and_fake_embeddings() {
         imported["last_retrieved_at"],
         second_observation["last_retrieved_at"]
     );
-    let database = rusqlite::Connection::open(root.join(".git/repodb.sqlite")).unwrap();
+    let attempt_after_search: String = database
+        .query_row(
+            "SELECT last_fetch_attempt_at FROM imported_sources WHERE locator=?1",
+            [&url],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(attempt_after_search, attempt_before_search);
     let version_count: i64 = database
         .query_row("SELECT count(*) FROM imported_versions", [], |row| {
             row.get(0)
         })
         .unwrap();
-    assert_eq!(version_count, 1, "identical response bytes deduplicate");
+    assert_eq!(version_count, 1, "identical extracted text deduplicates");
     let (ok, human) = run(root, &["search", "semantic"]);
     assert!(ok);
     assert!(human.contains(imported["blob_id"].as_str().unwrap()));
     assert!(human.contains(imported["first_retrieved_at"].as_str().unwrap()));
     assert!(human.contains(imported["last_retrieved_at"].as_str().unwrap()));
+}
+
+#[test]
+fn non_success_redirect_response_preserves_the_last_successful_snapshot() {
+    use std::{
+        io::{Read, Write},
+        net::TcpListener,
+    };
+
+    let repo = repository();
+    let root = repo.path();
+    assert!(run(root, &["init"]).0);
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = std::thread::spawn(move || {
+        for (status, body) in [
+            ("200 OK", "last good snapshot marker\n"),
+            ("302 Found", "error page must not replace snapshot\n"),
+        ] {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = [0; 1024];
+            let _ = stream.read(&mut request);
+            let response = format!(
+                "HTTP/1.1 {status}\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            stream.write_all(response.as_bytes()).unwrap();
+        }
+    });
+    let url = format!("http://{address}/source.html");
+    assert!(run(root, &["import", &url]).0);
+    assert!(run(root, &["refresh", "--imports"]).0);
+    let (ok, output) = run(root, &["refresh", "--imports"]);
+    assert!(!ok, "{output}");
+    server.join().unwrap();
+
+    let results = search_json(root, &["last good snapshot marker"]);
+    let result = results
+        .iter()
+        .find(|result| result["path"] == url)
+        .unwrap_or_else(|| panic!("{results:?}"));
+    assert_eq!(result["fetch_status"], "stale");
+    assert!(search_json(root, &["error page must not replace snapshot"]).is_empty());
 }
 
 #[test]
@@ -3269,17 +3410,18 @@ fn url_parse_and_embedding_failures_preserve_the_published_snapshot_and_timestam
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let address = listener.local_addr().unwrap();
     let server = std::thread::spawn(move || {
-        let bodies: [&[u8]; 3] = [
-            b"good url atomic marker\n",
-            &[0xff, 0xfe],
-            b"failing imported marker\n",
+        let responses: [(&[u8], &str); 4] = [
+            (b"good url atomic marker\n", "text/plain"),
+            (&[0xff, 0xfe], "text/plain"),
+            (b"failing imported marker\n", "text/plain"),
+            (b"unsupported image response\n", "image/png"),
         ];
-        for body in bodies {
+        for (body, content_type) in responses {
             let (mut stream, _) = listener.accept().unwrap();
             let mut request = [0; 1024];
             let _ = stream.read(&mut request);
             let headers = format!(
-                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                "HTTP/1.1 200 OK\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
                 body.len()
             );
             stream.write_all(headers.as_bytes()).unwrap();
@@ -3299,15 +3441,54 @@ fn url_parse_and_embedding_failures_preserve_the_published_snapshot_and_timestam
         .into_iter()
         .find(|result| result["path"] == url)
         .unwrap();
-    assert_eq!(after_parse_failure, published);
+    assert_eq!(after_parse_failure["text"], published["text"]);
+    assert_eq!(after_parse_failure["blob_id"], published["blob_id"]);
+    assert_eq!(
+        after_parse_failure["first_retrieved_at"],
+        published["first_retrieved_at"]
+    );
+    assert_eq!(
+        after_parse_failure["last_retrieved_at"],
+        published["last_retrieved_at"]
+    );
+    assert_eq!(after_parse_failure["fetch_status"], "stale");
+    assert!(
+        after_parse_failure["fetch_error"]
+            .as_str()
+            .unwrap()
+            .contains("utf-8")
+    );
 
     assert!(!run(root, &["refresh", "--imports"]).0);
     let after_embedding_failure = search_json(root, &["good url atomic marker"])
         .into_iter()
         .find(|result| result["path"] == url)
         .unwrap();
-    assert_eq!(after_embedding_failure, published);
+    assert_eq!(after_embedding_failure["text"], published["text"]);
+    assert_eq!(after_embedding_failure["blob_id"], published["blob_id"]);
+    assert_eq!(after_embedding_failure["fetch_status"], "stale");
+    assert!(
+        after_embedding_failure["fetch_error"]
+            .as_str()
+            .unwrap()
+            .contains("embedding command failed")
+    );
+    assert!(!run(root, &["refresh", "--imports"]).0);
+    let after_unsupported_response = search_json(root, &["good url atomic marker"])
+        .into_iter()
+        .find(|result| result["path"] == url)
+        .unwrap();
+    assert_eq!(after_unsupported_response["text"], published["text"]);
+    assert_eq!(after_unsupported_response["blob_id"], published["blob_id"]);
+    assert_eq!(after_unsupported_response["fetch_status"], "stale");
+    assert!(
+        after_unsupported_response["fetch_error"]
+            .as_str()
+            .unwrap()
+            .contains("unsupported URL response content type")
+    );
     assert!(search_json(root, &["failing imported marker"]).is_empty());
+    assert!(search_json(root, &["unsupported image response"]).is_empty());
     server.join().unwrap();
 }
 
@@ -3406,7 +3587,7 @@ fn imported_url_versions_follow_latest_and_all_hash_retention() {
     assert_eq!(
         hashes.len(),
         2,
-        "all retains distinct hashes, not observations"
+        "two-version history retains distinct hashes, not observations"
     );
     let alpha_hash: String = database
         .query_row(
@@ -3449,6 +3630,52 @@ fn imported_url_versions_follow_latest_and_all_hash_retention() {
         .unwrap();
     assert!(latest_times.0.ends_with('Z') && latest_times.1.ends_with('Z'));
     assert_ne!(alpha_times.0, latest_times.0);
+}
+
+#[test]
+fn url_history_limit_keeps_two_distinct_snapshots_and_reports_pruning() {
+    use std::{
+        io::{Read, Write},
+        net::TcpListener,
+    };
+
+    let repo = repository();
+    let root = repo.path();
+    assert!(run(root, &["init"]).0);
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = std::thread::spawn(move || {
+        for body in [
+            "first retained marker\n",
+            "second retained marker\n",
+            "third retained marker\n",
+        ] {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = [0; 1024];
+            let _ = stream.read(&mut request);
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            stream.write_all(response.as_bytes()).unwrap();
+        }
+    });
+    let url = format!("http://{address}/history.txt");
+    assert!(run(root, &["import", &url]).0);
+    assert!(run(root, &["refresh", "--imports"]).0);
+    assert!(run(root, &["retention", "2"]).0);
+    assert!(run(root, &["refresh", "--imports"]).0);
+    let (ok, output) = run(root, &["refresh", "--imports"]);
+    assert!(ok, "{output}");
+    assert!(
+        output.contains(&format!("pruned 1 historical version(s) for {url}")),
+        "{output}"
+    );
+    assert!(search_json(root, &["first retained marker"]).is_empty());
+    assert!(!search_json(root, &["second retained marker"]).is_empty());
+    assert!(!search_json(root, &["third retained marker"]).is_empty());
+    server.join().unwrap();
 }
 
 #[test]
@@ -7328,7 +7555,8 @@ fn help_documents_shipped_commands_options_and_no_crawl_behavior_without_initial
         ("refresh", "--size-limit=error|warn|ignore"),
         ("import", "does not crawl links"),
         ("status", "--json"),
-        ("retention", "latest|all"),
+        ("retention", "latest|N"),
+        ("redirect-limit", "default is 5"),
         ("reembed", "--model ID"),
         ("init", "checked-out repository"),
     ] {
