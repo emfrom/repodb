@@ -117,43 +117,22 @@ def _run(command: list[str], cwd: Path, env: dict[str, str], timeout: int) -> tu
     return result, elapsed_ms, int(match.group(1)) if match else None
 
 
-def _make_embedder_wrapper(path: Path, real_embedder: Path, log: Path, embedder_home: Path) -> None:
-    script = f'''#!/usr/bin/env python3
-import json, os, subprocess, sys, time
-payload = sys.stdin.buffer.read()
-started = time.perf_counter()
-embedder_env = os.environ.copy()
-embedder_env["HOME"] = {str(embedder_home)!r}
-arguments = sys.argv[1:]
-preserved_whitespace = False
-if payload and "-" in arguments:
-    decoded = payload.decode("utf-8")
-    if decoded.isspace():
-        # The real tool strips stdin whitespace and emits no vector. Preserve
-        # this source unit via its literal-text mode for the v0.2 baseline.
-        arguments = [arg for arg in arguments if arg not in ("-0", "-")] + ["--", decoded]
-        preserved_whitespace = True
-proc = subprocess.run([{str(real_embedder)!r}, *arguments], input=payload if not preserved_whitespace else None,
-                      stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=embedder_env)
-record = {{"input_bytes": len(payload), "output_bytes": len(proc.stdout),
-          "preserved_whitespace_stdin": preserved_whitespace,
-          "returncode": proc.returncode,
-          "stderr": proc.stderr.decode("utf-8", errors="replace"),
-          "elapsed_ms": (time.perf_counter()-started)*1000}}
-with open({str(log)!r}, "a", encoding="utf-8") as stream:
-    stream.write(json.dumps(record) + "\\n")
-sys.stdout.buffer.write(proc.stdout)
-sys.stderr.buffer.write(proc.stderr)
-sys.exit(proc.returncode)
-'''
-    path.write_text(script, encoding="utf-8")
-    path.chmod(0o755)
-
-
-def _embed_stats(log: Path) -> dict[str, Any]:
-    records = [json.loads(line) for line in log.read_text().splitlines() if line.strip()] if log.exists() else []
-    return {"calls": len(records), "input_bytes": sum(row["input_bytes"] for row in records),
-            "output_bytes": sum(row["output_bytes"] for row in records)}
+def configure_embedding_environment(output_dir: Path, embedder: Path, semgrep_core: Path | None) -> dict[str, str]:
+    """Isolate RepoDB config, but retain HOME so built-in embedder detection stays intact."""
+    env = os.environ.copy()
+    home = env.get("HOME")
+    if not home:
+        raise RuntimeError("HOME must be set for the direct built-in embedder benchmark")
+    config = output_dir / ".config" / "repodb"
+    config.mkdir(parents=True, exist_ok=True)
+    tools = f'embedding_command = "{embedder}"\n'
+    if semgrep_core:
+        tools += f'semgrep_core = "{semgrep_core}"\n'
+    (config / "config.toml").write_text(f'[tools]\n{tools}', encoding="utf-8")
+    env.update({"XDG_CONFIG_HOME": str(output_dir / ".config"),
+                "HF_HUB_OFFLINE": "1", "TRANSFORMERS_OFFLINE": "1",
+                "PATH": str(embedder.parent) + os.pathsep + env.get("PATH", "")})
+    return env
 
 
 def _parse_results(stdout: str, context: str) -> list[dict[str, Any]]:
@@ -216,23 +195,11 @@ def run_variant(name: str, binary: Path, root: Path, embedder: Path, semgrep_cor
         raise RuntimeError(f"{name} binary is missing or not executable: {binary}")
     if not root.is_dir():
         raise RuntimeError(f"{name} corpus root is missing: {root}")
-    home = output_dir / name / "home"
-    home.mkdir(parents=True, exist_ok=True)
-    config = home / ".config" / "repodb"
-    config.mkdir(parents=True, exist_ok=True)
-    env = os.environ.copy()
-    env.update({"HOME": str(home), "XDG_CONFIG_HOME": str(home / ".config"),
-                "HF_HUB_OFFLINE": "1", "TRANSFORMERS_OFFLINE": "1",
-                "PATH": str(embedder.parent) + os.pathsep + env.get("PATH", "")})
+    env = configure_embedding_environment(output_dir / name, embedder, semgrep_core)
+    if name == "candidate" and embedder.resolve() != (Path(env["HOME"]) / "bin/generate_embeddings").resolve():
+        raise RuntimeError("candidate batch path requires the real HOME/bin/generate_embeddings executable")
     corpus_runs: dict[str, Any] = {}
     for corpus, pin in PIN_BY_CORPUS.items():
-        embed_log = output_dir / name / f"{corpus}-embedding-calls.jsonl"
-        wrapper = output_dir / name / f"{corpus}-embedder-wrapper.py"
-        _make_embedder_wrapper(wrapper, embedder, embed_log, Path.home())
-        tools = f'embedding_command = "{wrapper}"\n'
-        if semgrep_core:
-            tools += f'semgrep_core = "{semgrep_core}"\n'
-        (config / "config.toml").write_text(f'[tools]\n{tools}', encoding="utf-8")
         repo = root / corpus
         if _git_head(repo) != pin:
             raise RuntimeError(f"{name}/{corpus} pin mismatch: expected {pin}, got {_git_head(repo)}")
@@ -243,21 +210,17 @@ def run_variant(name: str, binary: Path, root: Path, embedder: Path, semgrep_cor
         if refresh:
             command = ([str(binary), "--database", str(db), "init"] if name == "candidate"
                        else [str(binary), "init"])
-            embed_log.unlink(missing_ok=True)
             refreshed, refresh_ms, refresh_rss = _run(command, repo, env, timeout)
             if refreshed.returncode:
                 raise RuntimeError(f"{name}/{corpus} refresh failed ({refreshed.returncode}): {refreshed.stderr.strip()}\n{refreshed.stdout[-2000:]}")
-            refresh_embedding = _embed_stats(embed_log)
         else:
             refresh_ms = None
             refresh_rss = None
-            refresh_embedding = None
         if name == "candidate" and not db.is_file():
             raise RuntimeError(f"candidate index missing at {db}; run with --refresh")
         if name == "baseline" and not (Path(git_dir) / "repodb.sqlite").is_file() and not db.is_file():
             raise RuntimeError(f"baseline index missing under {git_dir}; run with --refresh")
         _check_binary_semantics(binary, repo, db if name == "candidate" else None, env, name == "candidate")
-        refresh_embed_stats = _embed_stats(embed_log) if refresh else None
         task_results = []
         tasks = json.loads((Path(__file__).with_name("tasks.json")).read_text())["tasks"]
         for task in (task for task in tasks if task["corpus"] == corpus):
@@ -288,8 +251,8 @@ def run_variant(name: str, binary: Path, root: Path, embedder: Path, semgrep_cor
             "index_bytes": db.stat().st_size if db.exists() else (Path(git_dir) / "repodb.sqlite").stat().st_size,
             "refresh_ms": refresh_ms,
             "refresh_peak_rss_kb": refresh_rss,
-            "refresh_embedding": refresh_embed_stats if refresh else refresh_embedding,
-            "query_embedding": _embed_stats(embed_log),
+            "refresh_embedding": None,
+            "query_embedding": None,
             "tasks": task_results,
         }
     return {"binary": str(binary), "corpora": corpus_runs,
@@ -324,7 +287,7 @@ def main() -> int:
     output.parent.mkdir(parents=True, exist_ok=True)
     try:
         result = {
-            "schema_version": 1,
+            "schema_version": 2,
             "pins": PIN_BY_CORPUS,
             "baseline": run_variant("baseline", args.baseline_bin.resolve(), args.baseline_root.resolve(), args.embedder.resolve(), args.semgrep_core.resolve() if args.semgrep_core else None, output.parent, args.refresh, args.repeat, args.limit, args.timeout),
             "candidate": run_variant("candidate", args.candidate_bin.resolve(), args.candidate_root.resolve(), args.embedder.resolve(), args.semgrep_core.resolve() if args.semgrep_core else None, output.parent, args.refresh, args.repeat, args.limit, args.timeout),
@@ -332,7 +295,9 @@ def main() -> int:
                 "The v0.2.0 baseline has no --database option; it is isolated by distinct Git directories and the common evaluator layer.",
                 "Baseline has no native response-byte budget; both outputs are capped by the same evaluator at complete result boundaries after CLI execution.",
                 "Cold means first fresh-process query only; operating-system caches were not dropped.",
-                "Stale worktree coverage is not exercised by this source-retrieval suite; stale behavior is represented by a source-fact task only."
+                "Stale worktree coverage is not exercised by this source-retrieval suite; stale behavior is represented by a source-fact task only.",
+                "The embedder is invoked directly with its original HOME; no wrapper, input rewrite or process logging changes its batch path. Embedding subprocess call count and stdin/stdout bytes are unmeasured, not zero.",
+                "The v0.2.0 baseline may fail on whitespace-only stdin units; do not rewrite inputs or report incomplete initialization as a comparable baseline."
             ],
         }
         output.write_text(json.dumps(result, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")

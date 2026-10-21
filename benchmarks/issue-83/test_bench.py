@@ -36,58 +36,25 @@ class ScorerTests(unittest.TestCase):
         self.assertEqual(score["recall_at_k"], 0.0)
         self.assertFalse(score["source_reference_correct"])
 
-    def test_embedder_wrapper_preserves_whitespace_only_units(self):
-        import json
-        import subprocess
+    def test_runner_configures_the_real_embedder_without_changing_home(self):
+        import os
         import tempfile
+        from unittest.mock import patch
 
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            fake = root / "fake-embedder"
-            fake.write_text(
-                "#!/usr/bin/env python3\n"
-                "import json, sys\n"
-                "print(json.dumps(sys.argv[1:]))\n",
-                encoding="utf-8",
-            )
-            fake.chmod(0o755)
-            log = root / "calls.jsonl"
-            wrapper = root / "wrapper.py"
-            bench._make_embedder_wrapper(wrapper, fake, log, root / "home")
-            completed = subprocess.run(
-                [str(wrapper), "--json", "-"], input=b" " * 30,
-                stdout=subprocess.PIPE, check=True,
-            )
-            self.assertEqual(json.loads(completed.stdout), ["--json", "--", " " * 30])
-            record = json.loads(log.read_text())
-            self.assertTrue(record["preserved_whitespace_stdin"])
-            self.assertEqual(record["input_bytes"], 30)
-            self.assertEqual(record["returncode"], 0)
-
-    def test_embedder_wrapper_keeps_non_whitespace_stdin_mode(self):
-        import json
-        import subprocess
-        import tempfile
-
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            fake = root / "fake-embedder"
-            fake.write_text(
-                "#!/usr/bin/env python3\n"
-                "import sys\n"
-                "sys.stdout.write(sys.stdin.read())\n",
-                encoding="utf-8",
-            )
-            fake.chmod(0o755)
-            log = root / "calls.jsonl"
-            wrapper = root / "wrapper.py"
-            bench._make_embedder_wrapper(wrapper, fake, log, root / "home")
-            completed = subprocess.run(
-                [str(wrapper), "--json", "-"], input=b"ordinary text",
-                stdout=subprocess.PIPE, check=True,
-            )
-            self.assertEqual(completed.stdout, b"ordinary text")
-            self.assertFalse(json.loads(log.read_text())["preserved_whitespace_stdin"])
+            embedder = root / "generate_embeddings"
+            embedder.write_text("#!/bin/sh\nexit 0\n")
+            embedder.chmod(0o755)
+            with patch.dict(os.environ, {"HOME": str(root)}):
+                env = bench.configure_embedding_environment(root / "run", embedder, None)
+            config = (root / "run" / ".config" / "repodb" / "config.toml").read_text()
+            self.assertEqual(env["HOME"], str(root))
+            self.assertEqual(env["XDG_CONFIG_HOME"], str(root / "run" / ".config"))
+            self.assertIn(f'embedding_command = "{embedder}"', config)
+            self.assertNotIn("wrapper", config)
+            self.assertEqual(env["HF_HUB_OFFLINE"], "1")
+            self.assertEqual(env["TRANSFORMERS_OFFLINE"], "1")
 
     def test_common_budget_keeps_only_complete_results(self):
         first = {"text": "a" * 2700}
