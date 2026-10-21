@@ -2335,6 +2335,30 @@ fn timed_out_import_subprocess_preserves_the_published_snapshot() {
 }
 
 #[test]
+fn timed_out_history_git_process_preserves_the_published_snapshot() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let repo = repository();
+    let root = repo.path();
+    assert!(run(root, &["init"]).0);
+    assert_eq!(search_json(root, &["Exact [literal] TARGET"]).len(), 1);
+
+    let bin = root.join("hanging-git-bin");
+    fs::create_dir(&bin).unwrap();
+    let fake_git = bin.join("git");
+    fs::write(&fake_git, "#!/bin/sh\nsleep 5\n").unwrap();
+    fs::set_permissions(&fake_git, fs::Permissions::from_mode(0o755)).unwrap();
+    let path = format!("{}:{}", bin.display(), std::env::var("PATH").unwrap());
+    let (success, _) = run_with_env(
+        root,
+        &["refresh"],
+        &[("PATH", &path), ("REPODB_REFRESH_TIMEOUT_SECS", "1")],
+    );
+    assert!(!success, "a hung Git command is terminated at the deadline");
+    assert_eq!(search_json(root, &["Exact [literal] TARGET"]).len(), 1);
+}
+
+#[test]
 fn pdf_conversion_larger_than_previous_limit_refreshes() {
     use std::os::unix::fs::PermissionsExt;
     let repo = repository();

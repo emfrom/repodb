@@ -1,7 +1,36 @@
 use std::{
     io::{BufRead, BufReader, Read, Write},
-    process::{Child, ExitStatus},
+    process::{Child, Command, ExitStatus},
 };
+
+const DEFAULT_REFRESH_SUBPROCESS_TIMEOUT_SECS: u64 = 300;
+const MAX_REFRESH_SUBPROCESS_TIMEOUT_SECS: u64 = 3600;
+
+pub(crate) fn refresh_subprocess_timeout() -> crate::Result<std::time::Duration> {
+    let seconds = match std::env::var("REPODB_REFRESH_TIMEOUT_SECS") {
+        Ok(value) => value
+            .parse::<u64>()
+            .map_err(|_| "REPODB_REFRESH_TIMEOUT_SECS must be an integer from 1 through 3600")?,
+        Err(std::env::VarError::NotPresent) => DEFAULT_REFRESH_SUBPROCESS_TIMEOUT_SECS,
+        Err(error) => return Err(error.into()),
+    };
+    if !(1..=MAX_REFRESH_SUBPROCESS_TIMEOUT_SECS).contains(&seconds) {
+        return Err("REPODB_REFRESH_TIMEOUT_SECS must be an integer from 1 through 3600".into());
+    }
+    Ok(std::time::Duration::from_secs(seconds))
+}
+
+pub(crate) fn spawn_in_process_group(command: &mut Command) -> std::io::Result<Child> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        command.process_group(0).spawn()
+    }
+    #[cfg(not(unix))]
+    {
+        command.spawn()
+    }
+}
 
 pub(crate) struct Output {
     pub status: ExitStatus,

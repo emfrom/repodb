@@ -80,22 +80,6 @@ fn create_temporary_file(label: &str) -> Result<(TemporaryFile, fs::File)> {
 }
 
 const MAX_COMMAND_STDERR_BYTES: usize = 64 * 1024;
-const DEFAULT_REFRESH_SUBPROCESS_TIMEOUT_SECS: u64 = 300;
-const MAX_REFRESH_SUBPROCESS_TIMEOUT_SECS: u64 = 3600;
-
-fn refresh_subprocess_timeout() -> Result<std::time::Duration> {
-    let seconds = match std::env::var("REPODB_REFRESH_TIMEOUT_SECS") {
-        Ok(value) => value
-            .parse::<u64>()
-            .map_err(|_| "REPODB_REFRESH_TIMEOUT_SECS must be an integer from 1 through 3600")?,
-        Err(std::env::VarError::NotPresent) => DEFAULT_REFRESH_SUBPROCESS_TIMEOUT_SECS,
-        Err(error) => return Err(error.into()),
-    };
-    if !(1..=MAX_REFRESH_SUBPROCESS_TIMEOUT_SECS).contains(&seconds) {
-        return Err("REPODB_REFRESH_TIMEOUT_SECS must be an integer from 1 through 3600".into());
-    }
-    Ok(std::time::Duration::from_secs(seconds))
-}
 const MAX_URL_HEADER_BYTES: u64 = 1024 * 1024;
 const DEFAULT_URL_MAX_REDIRECTS: usize = 5;
 const HARD_MAX_URL_REDIRECTS: usize = 20;
@@ -134,7 +118,7 @@ fn fetch_url(locator: &str, max_redirects: usize, used: &mut Budget) -> Result<F
         .arg(locator)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
-    let mut child = spawn_refresh_command(&mut command)?;
+    let mut child = process::spawn_in_process_group(&mut command)?;
     let (status, mut output, stderr) = bounded_command_output(
         &mut child,
         used.remaining().saturating_sub(MAX_COMMAND_STDERR_BYTES),
@@ -378,18 +362,6 @@ fn configured_url_curl() -> Command {
     command
 }
 
-fn spawn_refresh_command(command: &mut Command) -> std::io::Result<std::process::Child> {
-    #[cfg(unix)]
-    {
-        use std::os::unix::process::CommandExt;
-        command.process_group(0).spawn()
-    }
-    #[cfg(not(unix))]
-    {
-        command.spawn()
-    }
-}
-
 fn bounded_command_output(
     child: &mut std::process::Child,
     stdout_limit: usize,
@@ -415,7 +387,7 @@ fn bounded_command_output_with_input(
         input,
         stdout_limit,
         stderr_limit,
-        refresh_subprocess_timeout()?,
+        process::refresh_subprocess_timeout()?,
     ) {
         Ok(output) => output,
         Err(error) => {
@@ -446,7 +418,7 @@ fn import_embed(command: &str, model: &str, text: &str, used: &mut Budget) -> Re
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
-    let mut child = spawn_refresh_command(&mut child_command)?;
+    let mut child = process::spawn_in_process_group(&mut child_command)?;
     // A JSON number needs at least one input byte; Vec growth can reserve up to
     // twice the element count, so budget up to 8 bytes of vector capacity per
     // captured stdout byte while stdout remains live.
@@ -487,7 +459,7 @@ fn git_output(repo: &str, args: &[&str], limit: usize, used: &mut Budget) -> Res
         .args(args)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
-    let mut child = spawn_refresh_command(&mut command)?;
+    let mut child = process::spawn_in_process_group(&mut command)?;
     let (status, stdout, stderr) = bounded_command_output(&mut child, limit, used)?;
     if !status.success() {
         return Err(format!(
@@ -787,7 +759,7 @@ pub fn refresh_with_size_limit(
                         .arg(&mirror)
                         .stdout(Stdio::piped())
                         .stderr(Stdio::piped());
-                    let mut child = spawn_refresh_command(&mut command)?;
+                    let mut child = process::spawn_in_process_group(&mut command)?;
                     let (status, _, stderr) = bounded_command_output(
                         &mut child,
                         refresh_memory_bytes
@@ -1044,9 +1016,10 @@ pub fn refresh_with_size_limit(
                         .stdin(Stdio::piped())
                         .stdout(Stdio::piped())
                         .stderr(Stdio::piped());
-                    let mut child = spawn_refresh_command(&mut command).map_err(|error| {
-                        format!("PDF imports require pdftotext on PATH: {error}")
-                    })?;
+                    let mut child =
+                        process::spawn_in_process_group(&mut command).map_err(|error| {
+                            format!("PDF imports require pdftotext on PATH: {error}")
+                        })?;
                     let output = bounded_command_output_with_input(
                         &mut child,
                         &source_bytes,

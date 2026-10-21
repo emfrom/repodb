@@ -101,7 +101,7 @@ pub(crate) fn preview_url(url: &str, database: &Path) -> Result<Preview> {
         .arg(url)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
-    let mut child = super::spawn_refresh_command(&mut command)?;
+    let mut child = super::process::spawn_in_process_group(&mut command)?;
     let mut budget = Budget::new(
         64 + super::MAX_COMMAND_STDERR_BYTES,
         "URL preview subprocess output",

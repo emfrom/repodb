@@ -151,12 +151,19 @@ fn git_output(
         preparation_bytes.used(),
         preparation_bytes.limit(),
     )?;
-    let mut child = Command::new("git")
+    let mut command = Command::new("git");
+    command
         .args(args)
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()?;
-    let output = process::capture(&mut child, stdout_limit, stderr_limit)?;
+        .stderr(Stdio::piped());
+    let mut child = process::spawn_in_process_group(&mut command)?;
+    let output = process::capture_with_input_timeout(
+        &mut child,
+        &[],
+        stdout_limit,
+        stderr_limit,
+        process::refresh_subprocess_timeout()?,
+    )?;
     if output.exceeded {
         return Err(format!(
             "history Git output exceeded its {stdout_limit}-byte budget for {args:?}"
@@ -218,11 +225,15 @@ fn git_diff_output(
     if old_path != new_path {
         command.arg(std::ffi::OsStr::from_bytes(new_path));
     }
-    let mut child_process = command
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()?;
-    let output = process::capture(&mut child_process, stdout_limit, stderr_limit)?;
+    command.stdout(Stdio::piped()).stderr(Stdio::piped());
+    let mut child_process = process::spawn_in_process_group(&mut command)?;
+    let output = process::capture_with_input_timeout(
+        &mut child_process,
+        &[],
+        stdout_limit,
+        stderr_limit,
+        process::refresh_subprocess_timeout()?,
+    )?;
     if output.exceeded {
         return Err(memory_limit());
     }
@@ -939,12 +950,19 @@ pub fn publish_transaction(c: &mut Connection, version: i64) -> Result<Transacti
 fn head(preparation_bytes: &mut Budget) -> Result<Option<String>> {
     let (stdout_limit, stderr_limit) =
         git_capture_limits(128, preparation_bytes.used(), preparation_bytes.limit())?;
-    let mut child = Command::new("git")
+    let mut command = Command::new("git");
+    command
         .args(["rev-parse", "--verify", "--quiet", "HEAD"])
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()?;
-    let output = process::capture(&mut child, stdout_limit, stderr_limit)?;
+        .stderr(Stdio::piped());
+    let mut child = process::spawn_in_process_group(&mut command)?;
+    let output = process::capture_with_input_timeout(
+        &mut child,
+        &[],
+        stdout_limit,
+        stderr_limit,
+        process::refresh_subprocess_timeout()?,
+    )?;
     if output.exceeded {
         return Err(memory_limit());
     }
