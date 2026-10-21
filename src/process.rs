@@ -462,6 +462,36 @@ mod tests {
         assert_eq!(records, 10_000);
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn subprocess_output_floods_are_drained_with_bounded_retention() {
+        let mut command = Command::new("sh");
+        command
+            .args([
+                "-c",
+                "head -c 1048576 /dev/zero; head -c 1048576 /dev/zero >&2",
+            ])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        let mut child = super::spawn_in_process_group(&mut command).unwrap();
+        let output = super::capture_with_input_timeout(
+            &mut child,
+            b"",
+            64,
+            32,
+            std::time::Duration::from_secs(5),
+        )
+        .unwrap();
+
+        assert!(output.status.success());
+        assert_eq!(output.stdout.len(), 64);
+        assert!(output.exceeded);
+        assert_eq!(output.stderr.len(), 32);
+        assert!(output.stdout.capacity() <= 64);
+        assert!(output.stderr.capacity() <= 32);
+    }
+
     #[test]
     fn bounded_drain_capacity_never_exceeds_limit() {
         for limit in [0usize, 1, 8191, 8192, 8193, 16 * 1024 + 3] {
