@@ -305,3 +305,14 @@ These findings are review results, not source fixes. Detailed evidence, acceptan
 ## Final verdict
 
 **BLOCKED for standards/release-readiness sign-off.** The full serial all-target suite passed, but strict Clippy failed in the recorded environment, the baseline quality/performance gate remains waived rather than passed, and material findings and release-readiness evidence gaps remain unresolved. The security review and release-owner decision are pending. No exception satisfying approver, mitigation, owner, and revisit/expiry criteria was independently verified. Date: 2026-10-21. Approver: not identified in evidence.
+
+## Issue #120 verification addendum — exact-tag build, tests, audit, deny
+
+This addendum supplements (and does not replace or erase) the historical #97 tooling-baseline findings above. On 2026-10-21, the exact clean `v0.3.0` checkout `/tmp/repodb-030` at `f7cc6bc5451204c5696f1bbef7e5575772820f47` was verified on Linux x86_64 / Ubuntu 26.04.1 LTS (`rustc 1.99.0`, `cargo 1.99.0`) using a fresh isolated `CARGO_TARGET_DIR=/tmp/repodb-120-target`.
+
+- `cargo build --release --all-targets`: **PASS**, exit 0.
+- `cargo test --all-targets --all-features`: **PASS**, exit 0; all executed tests passed, one worktree race-child test ignored.
+- `cargo-audit 0.22.2 audit`: **PASS**, exit 0; 52 locked crate dependencies scanned, no vulnerability finding printed.
+- `cargo-deny 0.20.2 check`: **BLOCKED / NOT CONFIGURED**, exit 4. No deny configuration exists. The tool warned it was falling back to defaults and rejected unallowed licenses, including the project's GPL-2.0-only license and dependency licenses; advisories, bans, and sources reported `ok`. No deny policy was fabricated. This is not a clean deny result and requires owner disposition.
+
+The complete command outputs and status files are `/tmp/issue120-{build,tests,audit,deny}.{log,status}`. A first audit attempt using unsupported `--locked` exited 2; the supported audit command was rerun successfully. The durable evidence report, including exact commands and platform scope, is [`../security/issue-120-v0.3.0-verification.md`](../security/issue-120-v0.3.0-verification.md). The Ubuntu 24.04 Semgrep-only workflow does not establish full-suite evidence there; no Windows/macOS support claim is made. These checks do not resolve earlier historical findings or close Issue #120.
