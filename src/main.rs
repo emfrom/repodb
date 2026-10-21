@@ -1371,13 +1371,16 @@ pub(crate) fn embed_with_output_limit(
             "the built-in generate_embeddings command only supports all-MiniLM-L6-v2".into(),
         );
     }
-    let mut child = Command::new(command)
+    const MAX_SINGLE_EMBEDDING_OUTPUT_BYTES: usize = 64 * 1024 * 1024;
+    let output_limit = output_limit.unwrap_or(MAX_SINGLE_EMBEDDING_OUTPUT_BYTES);
+    let mut child_command = Command::new(command);
+    child_command
         .env("REPODB_EMBEDDING_MODEL", model)
         .args(["--json", "-"])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()?;
+        .stderr(Stdio::piped());
+    let mut child = process::spawn_in_process_group(&mut child_command)?;
     // Some embedders return no row for empty/whitespace input. Preserve a
     // searchable vector for every indexed unit with a stable sentinel instead.
     let input = if is_builtin_embedding_command(command) && text.trim().is_empty() {
@@ -1385,14 +1388,16 @@ pub(crate) fn embed_with_output_limit(
     } else {
         text
     };
-    let output = match output_limit {
-        Some(limit) => process::capture_with_input(&mut child, input.as_bytes(), limit, 64 * 1024)?,
-        None => process::capture_with_input_unbounded(&mut child, input.as_bytes())?,
-    };
+    let output = process::capture_with_input_timeout(
+        &mut child,
+        input.as_bytes(),
+        output_limit,
+        64 * 1024,
+        process::refresh_subprocess_timeout()?,
+    )?;
     if output.exceeded {
-        let limit = output_limit.expect("bounded capture has a limit");
         return Err(format!(
-            "embedding command output could not be captured completely (limit {limit})"
+            "embedding command output could not be captured completely (limit {output_limit})"
         )
         .into());
     }
@@ -1436,16 +1441,22 @@ pub(crate) fn embed_many_with_output_limit(
     }
     const MAX_BATCH_OUTPUT_BYTES: usize = 256 * 1024 * 1024;
     let output_limit = output_limit.min(MAX_BATCH_OUTPUT_BYTES);
-    let mut child = Command::new(command)
+    let mut child_command = Command::new(command);
+    child_command
         .env("REPODB_EMBEDDING_MODEL", model)
         .args(["--json", "-0", "-"])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()?;
+        .stderr(Stdio::piped());
+    let mut child = process::spawn_in_process_group(&mut child_command)?;
     let mut vectors = Vec::with_capacity(texts.len());
-    let output =
-        process::capture_lines_with_input(&mut child, input, output_limit, 64 * 1024, |line| {
+    let output = process::capture_lines_with_input_timeout(
+        &mut child,
+        &input,
+        output_limit,
+        64 * 1024,
+        process::refresh_subprocess_timeout()?,
+        |line| {
             if line.iter().all(u8::is_ascii_whitespace) {
                 return Ok(());
             }
@@ -1455,7 +1466,8 @@ pub(crate) fn embed_many_with_output_limit(
             })?;
             vectors.push(vector);
             Ok(())
-        })?;
+        },
+    )?;
     if output.exceeded {
         return Err(format!(
             "embedding command output exceeded the {output_limit}-byte capture limit"

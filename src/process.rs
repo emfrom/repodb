@@ -1,7 +1,7 @@
-use std::{
-    io::{BufRead, BufReader, Read, Write},
-    process::{Child, Command, ExitStatus},
-};
+#[cfg(test)]
+use std::io::{BufRead, BufReader};
+use std::io::{Read, Write};
+use std::process::{Child, Command, ExitStatus};
 
 const DEFAULT_REFRESH_SUBPROCESS_TIMEOUT_SECS: u64 = 300;
 const MAX_REFRESH_SUBPROCESS_TIMEOUT_SECS: u64 = 3600;
@@ -21,6 +21,9 @@ pub(crate) fn refresh_subprocess_timeout() -> crate::Result<std::time::Duration>
 }
 
 pub(crate) fn spawn_in_process_group(command: &mut Command) -> std::io::Result<Child> {
+    refresh_subprocess_timeout().map_err(|error| {
+        std::io::Error::new(std::io::ErrorKind::InvalidInput, error.to_string())
+    })?;
     #[cfg(unix)]
     {
         use std::os::unix::process::CommandExt;
@@ -86,6 +89,7 @@ pub(crate) fn capture_with_input(
     capture_streams(child, input, Some(stdout_limit), Some(stderr_limit))
 }
 
+#[cfg(test)]
 pub(crate) fn capture_with_input_unbounded(
     child: &mut Child,
     input: &[u8],
@@ -95,6 +99,7 @@ pub(crate) fn capture_with_input_unbounded(
 
 /// Feeds stdin, drains stderr, and delivers newline-delimited stdout records
 /// incrementally while enforcing a total stdout byte limit.
+#[cfg(test)]
 pub(crate) fn capture_lines_with_input(
     child: &mut Child,
     input: Vec<u8>,
@@ -182,6 +187,25 @@ pub(crate) fn capture_lines_with_input(
 
 /// Captures a process launched in its own process group and enforces a deadline
 /// across process execution, stdin writing, and both output streams.
+pub(crate) fn capture_lines_with_input_timeout(
+    child: &mut Child,
+    input: &[u8],
+    stdout_limit: usize,
+    stderr_limit: usize,
+    timeout: std::time::Duration,
+    mut on_line: impl FnMut(&[u8]) -> std::io::Result<()>,
+) -> std::io::Result<StreamOutput> {
+    let output = capture_with_input_timeout(child, input, stdout_limit, stderr_limit, timeout)?;
+    for line in output.stdout.split_inclusive(|byte| *byte == b'\n') {
+        on_line(line)?;
+    }
+    Ok(StreamOutput {
+        status: output.status,
+        stderr: output.stderr,
+        exceeded: output.exceeded,
+    })
+}
+
 pub(crate) fn capture_with_input_timeout(
     child: &mut Child,
     input: &[u8],
@@ -421,6 +445,30 @@ mod tests {
             Err(ref error) if error.kind() == std::io::ErrorKind::TimedOut
         ));
         assert!(started.elapsed() < std::time::Duration::from_secs(1));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn line_capture_timeout_terminates_hung_embedding_child() {
+        let mut command = Command::new("sh");
+        command
+            .args(["-c", "cat >/dev/null; sleep 2"])
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped());
+        let mut child = spawn_in_process_group(&mut command).unwrap();
+        let result = capture_lines_with_input_timeout(
+            &mut child,
+            b"input",
+            1024,
+            64,
+            std::time::Duration::from_millis(100),
+            |_| Ok(()),
+        );
+        assert!(matches!(
+            result,
+            Err(ref error) if error.kind() == std::io::ErrorKind::TimedOut
+        ));
     }
 
     #[test]
