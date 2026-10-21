@@ -143,7 +143,7 @@ pub fn page_results_with_metadata(
                     continue;
                 }
                 page.pop();
-                omitted_text = page.iter().any(|result| contains_text_omission(result));
+                omitted_text = page.iter().any(contains_text_omission);
             }
             if page.is_empty() {
                 return Err("minimal result reference exceeds byte budget".to_owned());
@@ -236,9 +236,13 @@ fn omit_text_fields(value: &mut Value) -> bool {
             }
             omitted
         }
-        Value::Array(values) => values
-            .iter_mut()
-            .fold(false, |omitted, nested| omit_text_fields(nested) || omitted),
+        Value::Array(values) => {
+            let mut omitted = false;
+            for nested in values {
+                omitted |= omit_text_fields(nested);
+            }
+            omitted
+        }
         _ => false,
     }
 }

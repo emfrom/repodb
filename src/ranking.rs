@@ -255,14 +255,13 @@ pub fn rank_evidence(
         if let Some(index) = groups
             .iter()
             .position(|group| !group.exact_match && group.distance.is_some())
+            && !required.contains(&index)
         {
-            if !required.contains(&index) {
-                required.push(index);
-            }
+            required.push(index);
         }
     }
-    if type_set == TypeSet::All {
-        if let Some(index) = groups.iter().position(|group| {
+    if type_set == TypeSet::All
+        && let Some(index) = groups.iter().position(|group| {
             group
                 .components
                 .iter()
@@ -271,11 +270,10 @@ pub fn rank_evidence(
                     .components
                     .iter()
                     .any(|candidate| candidate.component == EvidenceComponent::Content)
-        }) {
-            if !required.contains(&index) {
-                required.push(index);
-            }
-        }
+        })
+        && !required.contains(&index)
+    {
+        required.push(index);
     }
     if required.len() > limit {
         return Err(format!(
