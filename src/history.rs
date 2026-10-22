@@ -275,70 +275,64 @@ fn parse_diff_line_range(value: &str) -> Result<(usize, usize)> {
     Ok((start, count))
 }
 
+fn flush_changed_lines(
+    result: &mut Vec<ChangedLines>,
+    old_changed: &mut Option<(usize, usize)>,
+    new_changed: &mut Option<(usize, usize)>,
+    hunk_id: i64,
+    old_anchor: Option<(usize, usize)>,
+    new_anchor: Option<(usize, usize)>,
+    budget: &mut Budget,
+) -> Result<()> {
+    for (changed, side) in [
+        (old_changed, DiffSide::Removed),
+        (new_changed, DiffSide::Added),
+    ] {
+        if let Some((first, last)) = changed.take() {
+            budget.charge_records(1, "Git diff hunk span")?;
+            budget.reserve_vec(result, 1, "Git diff hunk spans")?;
+            result.push(ChangedLines {
+                side,
+                hunk_id,
+                first,
+                last,
+                old_anchor,
+                new_anchor,
+            });
+        }
+    }
+    Ok(())
+}
+
 fn changed_lines(
     patch: &[u8],
     first_hunk_id: i64,
     old_line_count: usize,
     new_line_count: usize,
+    budget: &mut Budget,
 ) -> Result<Vec<ChangedLines>> {
     let mut result = Vec::new();
     let mut old_line = 0usize;
     let mut new_line = 0usize;
-    let mut old_changed = Vec::new();
-    let mut new_changed = Vec::new();
+    let mut old_changed = None;
+    let mut new_changed = None;
     let mut old_anchor: Option<(usize, usize)> = None;
     let mut new_anchor: Option<(usize, usize)> = None;
     let mut hunk_id = first_hunk_id;
     let mut seen_hunk = false;
     let mut in_hunk = false;
-    let flush = |result: &mut Vec<ChangedLines>,
-                 old_changed: &mut Vec<usize>,
-                 new_changed: &mut Vec<usize>,
-                 hunk_id: i64,
-                 old_anchor: Option<(usize, usize)>,
-                 new_anchor: Option<(usize, usize)>| {
-        if let Some((first, last)) = old_changed
-            .first()
-            .copied()
-            .zip(old_changed.last().copied())
-        {
-            result.push(ChangedLines {
-                side: DiffSide::Removed,
-                hunk_id,
-                first,
-                last,
-                old_anchor,
-                new_anchor,
-            });
-        }
-        if let Some((first, last)) = new_changed
-            .first()
-            .copied()
-            .zip(new_changed.last().copied())
-        {
-            result.push(ChangedLines {
-                side: DiffSide::Added,
-                hunk_id,
-                first,
-                last,
-                old_anchor,
-                new_anchor,
-            });
-        }
-        old_changed.clear();
-        new_changed.clear();
-    };
     for line in patch.split_inclusive(|byte| *byte == b'\n') {
         if line.starts_with(b"@@ ") {
             if seen_hunk {
-                flush(
+                flush_changed_lines(
                     &mut result,
                     &mut old_changed,
                     &mut new_changed,
                     hunk_id,
                     old_anchor,
                     new_anchor,
-                );
+                    budget,
+                )?;
                 hunk_id += 1;
             }
             seen_hunk = true;
@@ -371,11 +365,15 @@ fn changed_lines(
         }
         match line.first().copied() {
             Some(b'-') => {
-                old_changed.push(old_line);
+                budget.charge_records(1, "removed Git diff line")?;
+                old_changed =
+                    Some(old_changed.map_or((old_line, old_line), |(first, _)| (first, old_line)));
                 old_line += 1;
             }
             Some(b'+') => {
-                new_changed.push(new_line);
+                budget.charge_records(1, "added Git diff line")?;
+                new_changed =
+                    Some(new_changed.map_or((new_line, new_line), |(first, _)| (first, new_line)));
                 new_line += 1;
             }
             Some(b'\\') => {}
@@ -386,14 +384,15 @@ fn changed_lines(
             _ => {}
         }
     }
-    flush(
+    flush_changed_lines(
         &mut result,
         &mut old_changed,
         &mut new_changed,
         hunk_id,
         old_anchor,
         new_anchor,
-    );
+        budget,
+    )?;
     Ok(result)
 }
 
@@ -484,6 +483,7 @@ fn stage_diff_range(context: &mut StageContext<'_, '_>, range: DiffRange<'_>) ->
     let mut unit_error = None;
     segmentation::visit("fallback", changed_text, |unit| {
         let result = (|| -> Result<()> {
+            budget.charge_records(1, "Git diff reference unit")?;
             budget.charge(unit.text.len(), "diff embedding batch text")?;
             *next_unit_id += 1;
             let byte_start = range_start + unit.byte_start;
@@ -592,20 +592,25 @@ fn stage_diff_pair(
         budget.remaining().saturating_sub(MAX_GIT_STDERR_BYTES),
         budget,
     )?;
-    let records: Vec<&[u8]> = output
+    let mut records = output
         .split(|byte| *byte == 0)
-        .filter(|record| !record.is_empty())
-        .collect();
-    let mut i = 0;
+        .filter(|record| !record.is_empty());
     let mut hunk_id = 0i64;
     let mut change_index = 0i64;
     let mut file_change_statement =
         c.prepare("INSERT INTO temp.refresh_diff_file_changes VALUES(?1,?2,?3,?4,?5,?6,?7)")?;
-    while i < records.len() {
-        let metadata = std::str::from_utf8(records[i])?;
-        i += 1;
-        let fields: Vec<&str> = metadata.split_whitespace().collect();
-        if fields.len() != 5 || !fields[0].starts_with(':') {
+    while let Some(metadata_record) = records.next() {
+        budget.charge_records(1, "Git diff file record")?;
+        let metadata = std::str::from_utf8(metadata_record)?;
+        let mut fields_iter = metadata.split_whitespace();
+        let fields = [
+            fields_iter.next().ok_or("invalid raw Git diff record")?,
+            fields_iter.next().ok_or("invalid raw Git diff record")?,
+            fields_iter.next().ok_or("invalid raw Git diff record")?,
+            fields_iter.next().ok_or("invalid raw Git diff record")?,
+            fields_iter.next().ok_or("invalid raw Git diff record")?,
+        ];
+        if fields_iter.next().is_some() || !fields[0].starts_with(':') {
             return Err("invalid raw Git diff record".into());
         }
         let status_token = fields[4].as_bytes();
@@ -613,16 +618,14 @@ fn stage_diff_pair(
             .first()
             .copied()
             .ok_or("missing Git diff status")?;
-        let first_path = *records.get(i).ok_or("missing Git diff path")?;
-        i += 1;
+        let first_path = records.next().ok_or("missing Git diff path")?;
         let (kind, old_path, new_path) = match status {
             b'A' => ("added", None, Some(first_path)),
             b'D' => ("removed", Some(first_path), None),
             b'M' => ("modified", Some(first_path), Some(first_path)),
             b'T' => ("type_changed", Some(first_path), Some(first_path)),
             b'R' | b'C' => {
-                let second_path = *records.get(i).ok_or("missing Git destination path")?;
-                i += 1;
+                let second_path = records.next().ok_or("missing Git destination path")?;
                 let kind = if status == b'R' {
                     "heuristic_rename"
                 } else {
@@ -695,6 +698,7 @@ fn stage_diff_pair(
                 hunk_id,
                 old_text.lines().count(),
                 new_text.lines().count(),
+                budget,
             )?;
             let next_hunk_id = changes
                 .iter()
@@ -895,6 +899,7 @@ fn for_each_tree_record(
                 if record.is_empty() {
                     Ok(false)
                 } else {
+                    preparation_bytes.charge_records(1, "Git tree record")?;
                     visit(&record, preparation_bytes)?;
                     Ok(true)
                 }
@@ -1034,6 +1039,7 @@ fn for_each_reachable_commit(
                 break;
             }
             preparation_bytes.charge(line.capacity(), "Git commit record")?;
+            preparation_bytes.charge_records(1, "Git commit")?;
             let parsed = (|| -> Result<()> {
                 let record = std::str::from_utf8(&line)?;
                 let (timestamp, id) = record
@@ -1411,6 +1417,7 @@ impl StagedUnitWriter<'_, '_> {
         let mut staging_error = None;
         let segmentation_result = segmentation::visit(kind, content, |unit| {
             let staged = (|| -> Result<()> {
+                self.budget.charge_records(1, "history content unit")?;
                 *self.next_unit_id += 1;
                 let text = unit.text.to_owned();
                 self.unit_statement.execute(params![
@@ -1453,6 +1460,14 @@ impl StagedUnitWriter<'_, '_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn changed_diff_lines_obey_the_refresh_record_limit() {
+        let patch = b"@@ -1 +1 @@\n-old\n+new\n";
+        let mut budget = Budget::with_record_limit(1024, 1, "test");
+        let error = changed_lines(patch, 0, 1, 1, &mut budget).err().unwrap();
+        assert!(error.to_string().contains("record limit exceeded"));
+    }
 
     #[test]
     fn full_refresh_indexes_added_and_removed_diff_references() {
@@ -2949,6 +2964,7 @@ fn stage_commit_message(
     let mut staging_error = None;
     segmentation::visit("fallback", message, |unit| {
         let result = (|| -> Result<()> {
+            budget.charge_records(1, "commit-message unit")?;
             *next_unit_id += 1;
             let byte_start = object_byte_start + unit.byte_start;
             let byte_end = object_byte_start + unit.byte_end;

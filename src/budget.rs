@@ -4,12 +4,17 @@ use crate::Result;
 // accounting is a safety limit, not merely an overflow check.
 pub(crate) const MAX_REFRESH_ACCOUNTING_BYTES: usize = 512 * 1024 * 1024;
 const MAX_CONFIGURED_REFRESH_BYTES: usize = 4 * 1024 * 1024 * 1024;
+pub(crate) const DEFAULT_MAX_REFRESH_RECORDS: usize = 10_000_000;
+const MAX_CONFIGURED_REFRESH_RECORDS: usize = 100_000_000;
 const REFRESH_BUDGET_ENV: &str = "REPODB_MAX_REFRESH_BYTES";
+const REFRESH_RECORDS_ENV: &str = "REPODB_MAX_REFRESH_RECORDS";
 
 pub(crate) struct Budget {
     limit: usize,
     used: usize,
     description: &'static str,
+    record_limit: usize,
+    records: usize,
 }
 
 impl Budget {
@@ -18,6 +23,8 @@ impl Budget {
             limit,
             used: 0,
             description,
+            record_limit: usize::MAX,
+            records: 0,
         }
     }
 
@@ -38,7 +45,37 @@ impl Budget {
             Err(std::env::VarError::NotPresent) => MAX_REFRESH_ACCOUNTING_BYTES,
             Err(error) => return Err(error.into()),
         };
-        Ok(Self::new(limit, description))
+        let record_limit = match std::env::var(REFRESH_RECORDS_ENV) {
+            Ok(value) => {
+                let limit: usize = value
+                    .parse()
+                    .map_err(|_| format!("{REFRESH_RECORDS_ENV} must be a record count"))?;
+                if !(1..=MAX_CONFIGURED_REFRESH_RECORDS).contains(&limit) {
+                    return Err(format!(
+                        "{REFRESH_RECORDS_ENV} must be between 1 and {MAX_CONFIGURED_REFRESH_RECORDS}"
+                    )
+                    .into());
+                }
+                limit
+            }
+            Err(std::env::VarError::NotPresent) => DEFAULT_MAX_REFRESH_RECORDS,
+            Err(error) => return Err(error.into()),
+        };
+        Ok(Self::with_record_limit(limit, record_limit, description))
+    }
+
+    pub(crate) fn with_record_limit(
+        limit: usize,
+        record_limit: usize,
+        description: &'static str,
+    ) -> Self {
+        Self {
+            limit,
+            used: 0,
+            description,
+            record_limit,
+            records: 0,
+        }
     }
 
     pub(crate) fn limit(&self) -> usize {
@@ -54,6 +91,21 @@ impl Budget {
                 format!(
                     "{} size overflow while preparing {purpose}",
                     self.description
+                )
+                .into()
+            })?;
+        Ok(())
+    }
+
+    pub(crate) fn charge_records(&mut self, count: usize, purpose: &str) -> Result<()> {
+        self.records = self
+            .records
+            .checked_add(count)
+            .filter(|records| *records <= self.record_limit)
+            .ok_or_else(|| -> Box<dyn std::error::Error> {
+                format!(
+                    "{} record limit exceeded while preparing {purpose} (limit {})",
+                    self.description, self.record_limit
                 )
                 .into()
             })?;
@@ -132,6 +184,21 @@ mod tests {
         budget.charge(3, "second source").unwrap();
         assert!(budget.charge(2, "cumulative source data").is_err());
         assert_eq!(budget.used(), 9);
+    }
+
+    #[test]
+    fn cumulative_record_limit_rejects_growth_beyond_the_configured_cap() {
+        let mut budget = Budget::with_record_limit(100, 3, "test");
+        budget.charge_records(2, "first input").unwrap();
+        budget.charge_records(1, "second input").unwrap();
+        assert!(budget.charge_records(1, "third input").is_err());
+        assert_eq!(budget.records, 3);
+    }
+
+    #[test]
+    fn refresh_record_ceiling_is_finite() {
+        assert_eq!(DEFAULT_MAX_REFRESH_RECORDS, 10_000_000);
+        assert_eq!(MAX_CONFIGURED_REFRESH_RECORDS, 100_000_000);
     }
 
     #[test]

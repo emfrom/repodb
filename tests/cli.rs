@@ -2444,6 +2444,114 @@ fn oversized_local_import_is_rejected_without_replacing_the_published_snapshot()
 }
 
 #[test]
+fn configured_history_record_limit_preserves_the_published_snapshot() {
+    let repo = repository();
+    let root = repo.path();
+    assert!(run(root, &["init"]).0);
+    assert!(run(root, &["refresh"]).0);
+    let published_head = Command::new("git")
+        .args(["rev-parse", "HEAD"])
+        .current_dir(root)
+        .output()
+        .unwrap();
+    let published_head = String::from_utf8(published_head.stdout).unwrap();
+    let published_head = published_head.trim();
+
+    fs::write(
+        root.join("notes.txt"),
+        "unpublished history record marker\n",
+    )
+    .unwrap();
+    git(root, &["add", "notes.txt"]);
+    git(root, &["commit", "-qm", "record limit fixture"]);
+    let pending_head = Command::new("git")
+        .args(["rev-parse", "HEAD"])
+        .current_dir(root)
+        .output()
+        .unwrap();
+    let pending_head = String::from_utf8(pending_head.stdout).unwrap();
+    let pending_head = pending_head.trim();
+    let (success, _) = run_with_env(root, &["refresh"], &[("REPODB_MAX_REFRESH_RECORDS", "2")]);
+    assert!(!success, "history record cap must reject the refresh");
+
+    let database = Connection::open(root.join(".git/repodb.sqlite")).unwrap();
+    let (old_snapshot_preserved, rejected_commit_published): (i64, i64) = database
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM git_commits WHERE commit_id=?1), EXISTS(SELECT 1 FROM git_commits WHERE commit_id=?2)",
+            [published_head, pending_head],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(old_snapshot_preserved, 1);
+    assert_eq!(rejected_commit_published, 0);
+}
+
+#[test]
+fn configured_record_limit_covers_raw_history_diff_records() {
+    let repo = repository();
+    let root = repo.path();
+    assert!(run(root, &["init"]).0);
+    assert!(run(root, &["refresh"]).0);
+    let published_head = Command::new("git")
+        .args(["rev-parse", "HEAD"])
+        .current_dir(root)
+        .output()
+        .unwrap();
+    let published_head = String::from_utf8(published_head.stdout).unwrap();
+    let published_head = published_head.trim();
+
+    fs::write(root.join("notes.txt"), "changed raw diff record marker\n").unwrap();
+    git(root, &["add", "notes.txt"]);
+    git(root, &["commit", "-qm", "diff record fixture"]);
+    let pending_head = Command::new("git")
+        .args(["rev-parse", "HEAD"])
+        .current_dir(root)
+        .output()
+        .unwrap();
+    let pending_head = String::from_utf8(pending_head.stdout).unwrap();
+    let pending_head = pending_head.trim();
+    let config_home = test_config_home(root);
+    let mut reached_diff_record_limit = false;
+    for record_limit in 1..=64 {
+        let output = Command::new(env!("CARGO_BIN_EXE_repodb"))
+            .args(["refresh"])
+            .current_dir(root)
+            .env("XDG_CONFIG_HOME", &config_home)
+            .env(
+                "REPODB_SEMGREP_CORE",
+                semgrep_corpus::required_semgrep_core(),
+            )
+            .env("REPODB_MAX_REFRESH_RECORDS", record_limit.to_string())
+            .output()
+            .unwrap();
+        let error = String::from_utf8_lossy(&output.stderr);
+        if error.contains("Git diff file record") {
+            reached_diff_record_limit = true;
+            break;
+        }
+        assert!(
+            !output.status.success(),
+            "record cap {record_limit} unexpectedly published the refresh"
+        );
+    }
+    assert!(
+        reached_diff_record_limit,
+        "no cap reached the raw Git diff record"
+    );
+
+    let database = Connection::open(root.join(".git/repodb.sqlite")).unwrap();
+    let (old_snapshot_preserved, rejected_commit_published): (i64, i64) = database
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM git_commits WHERE commit_id=?1), EXISTS(SELECT 1 FROM git_commits WHERE commit_id=?2)",
+            [published_head, pending_head],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(old_snapshot_preserved, 1);
+    assert_eq!(rejected_commit_published, 0);
+}
+
+#[test]
 fn configured_refresh_memory_budget_rejects_inputs_and_preserves_the_snapshot() {
     let repo = repository();
     let root = repo.path();
@@ -2464,6 +2572,31 @@ fn configured_refresh_memory_budget_rejects_inputs_and_preserves_the_snapshot() 
         search_json(root, &["prior budget snapshot marker"]).len(),
         1
     );
+}
+
+#[test]
+fn configured_record_limit_rejects_import_units_and_preserves_the_snapshot() {
+    let repo = repository();
+    let root = repo.path();
+    assert!(run(root, &["init"]).0);
+    let file = root.join("record-budget.txt");
+    fs::write(&file, "published record snapshot marker\n").unwrap();
+    let locator = file.to_string_lossy().into_owned();
+    assert!(run(root, &["import", &locator]).0);
+    assert!(run(root, &["refresh", "--imports"]).0);
+
+    fs::write(&file, "new record one\n\nnew record two\n").unwrap();
+    let (success, _) = run_with_env(
+        root,
+        &["refresh", "--imports"],
+        &[("REPODB_MAX_REFRESH_RECORDS", "2")],
+    );
+    assert!(!success, "configured record budget must reject the refresh");
+    assert_eq!(
+        search_json(root, &["published record snapshot marker"]).len(),
+        1
+    );
+    assert!(search_json(root, &["new record one"]).is_empty());
 }
 
 #[test]

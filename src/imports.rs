@@ -773,17 +773,27 @@ fn refresh_with_size_limit_and_allowlist(
     if table_exists(c, "imported_git_units")? && !legacy_git_units {
         c.execute("INSERT INTO temp.import_stage_git_units SELECT source_id,commit_id,path,blob_id,segmentation_kind,byte_start,byte_end,line,line_end,vector FROM imported_git_units", [])?;
     }
+    let mut refresh_memory_bytes = Budget::refresh("import refresh preparation accounting")?;
     let source_rows = {
-        let mut st =
+        let mut rows = Vec::new();
+        let mut statement =
             c.prepare("SELECT id,locator,kind FROM temp.import_stage_sources ORDER BY id")?;
-        st.query_map([], |r| {
+        for row in statement.query_map([], |r| {
             Ok((
                 r.get::<_, String>(0)?,
                 r.get::<_, String>(1)?,
                 r.get::<_, String>(2)?,
             ))
-        })?
-        .collect::<std::result::Result<Vec<_>, _>>()?
+        })? {
+            let (id, locator, kind) = row?;
+            refresh_memory_bytes.charge_records(1, "imported source")?;
+            refresh_memory_bytes.reserve_vec(&mut rows, 1, "import source rows")?;
+            refresh_memory_bytes.charge(id.capacity(), "import source identifier")?;
+            refresh_memory_bytes.charge(locator.capacity(), "import source locator")?;
+            refresh_memory_bytes.charge(kind.capacity(), "import source kind")?;
+            rows.push((id, locator, kind));
+        }
+        rows
     };
     c.execute_batch("DROP TABLE IF EXISTS temp.import_refresh_dimension; CREATE TEMP TABLE import_refresh_dimension(value INTEGER);")?;
     let (command, model, configured_dimension) = crate::history::configuration(c)?;
@@ -808,7 +818,6 @@ fn refresh_with_size_limit_and_allowlist(
         .join("repodb-cache");
     c.execute_batch("DROP TABLE IF EXISTS temp.import_pdf_pages; CREATE TEMP TABLE import_pdf_pages(page INTEGER PRIMARY KEY,text TEXT NOT NULL);")?;
     // This conservative cumulative accounting includes buffers and representations materialized during preparation.
-    let mut refresh_memory_bytes = Budget::refresh("import refresh preparation accounting")?;
     for (id, locator, kind) in source_rows {
         if kind == "git" {
             let repository = if Path::new(&locator).is_dir() {
@@ -875,6 +884,7 @@ fn refresh_with_size_limit_and_allowlist(
             let commits = String::from_utf8(commits_bytes)?;
             let mut commit_ids = Vec::new();
             for line in commits.lines() {
+                refresh_memory_bytes.charge_records(1, "imported Git commit")?;
                 refresh_memory_bytes.charge(line.len(), "Git commit identifiers")?;
                 refresh_memory_bytes.reserve_vec(&mut commit_ids, 1, "Git commit vector")?;
                 commit_ids.push(line.to_owned());
@@ -906,6 +916,7 @@ fn refresh_with_size_limit_and_allowlist(
                     &mut refresh_memory_bytes,
                 )?;
                 for path in paths.split(|b| *b == 0).filter(|p| !p.is_empty()) {
+                    refresh_memory_bytes.charge_records(1, "imported Git path")?;
                     let Ok(path) = String::from_utf8(path.to_vec()) else {
                         continue;
                     };
@@ -937,6 +948,7 @@ fn refresh_with_size_limit_and_allowlist(
                         &text,
                         |unit| {
                             let result = (|| -> Result<()> {
+                                refresh_memory_bytes.charge_records(1, "imported Git unit")?;
                                 let vector = cfg
                                     .as_ref()
                                     .map(|(cmd, model)| {
@@ -1071,6 +1083,7 @@ fn refresh_with_size_limit_and_allowlist(
                 let cache = cache_dir.join(format!("{source_version}.json"));
                 c.execute("DELETE FROM temp.import_pdf_pages", [])?;
                 let cached = visit_cache_pages(&cache, |page, text| {
+                    refresh_memory_bytes.charge_records(1, "PDF page")?;
                     c.execute(
                         "INSERT INTO temp.import_pdf_pages(page,text) VALUES(?1,?2)",
                         params![page, text],
@@ -1109,6 +1122,7 @@ fn refresh_with_size_limit_and_allowlist(
                     let pages = text.split('\u{c}');
                     write_cache(&cache, pages.clone())?;
                     for (page, text) in pages.enumerate() {
+                        refresh_memory_bytes.charge_records(1, "PDF page")?;
                         c.execute(
                             "INSERT INTO temp.import_pdf_pages(page,text) VALUES(?1,?2)",
                             params![page + 1, text],
@@ -1236,6 +1250,7 @@ fn refresh_with_size_limit_and_allowlist(
                     let mut failure = None;
                     crate::segmentation::visit("paragraph", &text, |unit| {
                         let result = (|| -> Result<()> {
+                            refresh_memory_bytes.charge_records(1, "PDF indexed unit")?;
                             refresh_memory_bytes
                                 .charge(unit.text.len(), "PDF indexed unit text")?;
                             let vector = cfg
@@ -1281,6 +1296,7 @@ fn refresh_with_size_limit_and_allowlist(
                 let mut unit_error = None;
                 let segmentation_result = segmentation::visit(kind, &content, |unit| {
                     let result = (|| -> Result<()> {
+                        refresh_memory_bytes.charge_records(1, "imported document unit")?;
                         let vector = cfg
                             .as_ref()
                             .map(|(cmd, model)| {
