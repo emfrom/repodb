@@ -22,6 +22,7 @@ mod process;
 mod segmentation;
 mod semgrep_languages;
 mod sqlite_vec_extension;
+mod url_security;
 
 type Result<T> = std::result::Result<T, Box<dyn Error>>;
 

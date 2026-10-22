@@ -95,9 +95,29 @@ pub(crate) fn preview(path: &Path, database: &Path) -> Result<Preview> {
 }
 
 pub(crate) fn preview_url(url: &str, database: &Path) -> Result<Preview> {
-    let mut command = super::configured_url_curl();
+    let deadline = std::time::Instant::now() + crate::url_security::URL_FETCH_TIMEOUT;
+    let endpoint = crate::url_security::parse_http_url(url)?;
+    let allowlist = crate::url_security::private_address_allowlist_from_env()?;
+    let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+    if remaining.is_zero() {
+        return Err("URL preview exceeded its 30-second total deadline".into());
+    }
+    let addresses = crate::url_security::resolve_and_validate(&endpoint, &allowlist, deadline)?;
+    let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+    if remaining.is_zero() {
+        return Err("URL preview exceeded its 30-second total deadline".into());
+    }
+    let timeout = remaining.as_secs_f64().max(0.001);
+    let mut command = super::configured_url_curl(&endpoint, &addresses);
     command
-        .args(["--output", "/dev/null", "--write-out", "%{size_download}"])
+        .arg("--max-time")
+        .arg(format!("{timeout:.3}"))
+        .args([
+            "--output",
+            "/dev/null",
+            "--write-out",
+            "%{size_download}\\n%{http_code}",
+        ])
         .arg(url)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
@@ -114,7 +134,16 @@ pub(crate) fn preview_url(url: &str, database: &Path) -> Result<Preview> {
         )
         .into());
     }
-    let total = String::from_utf8(output)?.trim().parse::<u64>()?;
+    let output = String::from_utf8(output)?;
+    let mut fields = output.lines();
+    let total = fields.next().unwrap_or_default().parse::<u64>()?;
+    let response_code = fields.next().unwrap_or_default().parse::<u16>()?;
+    if !(200..300).contains(&response_code) {
+        return Err(format!(
+            "URL preview returned HTTP status {response_code}; redirects are not followed"
+        )
+        .into());
+    }
     let (current_db_bytes, warning_basis_bytes, warn_large) = preview_size_fields(total, database);
     Ok(Preview {
         selected_url: Some(url.to_owned()),

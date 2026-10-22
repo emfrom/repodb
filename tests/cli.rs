@@ -77,7 +77,9 @@ fn run_with_env(repo: &Path, args: &[&str], vars: &[(&str, &str)]) -> (bool, Str
             "REPODB_SEMGREP_CORE",
             semgrep_corpus::required_semgrep_core(),
         )
-        .env("XDG_CONFIG_HOME", config_home);
+        .env("XDG_CONFIG_HOME", config_home)
+        // Local HTTP fixtures are explicitly trusted test destinations.
+        .env("REPODB_URL_PRIVATE_ALLOWLIST", "127.0.0.1");
     for (key, value) in vars {
         command.env(key, value);
     }
@@ -578,6 +580,125 @@ fn url_import_preview_reports_body_size_without_import_side_effects() {
         })
         .unwrap();
     assert_eq!((sources, versions), (1, 1));
+}
+
+#[test]
+fn real_curl_fetches_localhost_without_using_configured_proxies() {
+    use std::{
+        io::{Read, Write},
+        net::TcpListener,
+        time::{Duration, Instant},
+    };
+
+    let repo = repository();
+    let root = repo.path();
+    assert!(run(root, &["init"]).0);
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let (stop_server, server_stop) = std::sync::mpsc::channel();
+    let server = std::thread::spawn(move || {
+        let deadline = Instant::now() + Duration::from_secs(35);
+        loop {
+            match listener.accept() {
+                Ok((mut stream, _)) => {
+                    let mut request = [0; 1024];
+                    let count = stream.read(&mut request).unwrap();
+                    stream
+                        .write_all(
+                            b"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 24\r\nConnection: close\r\n\r\nreal curl pinned marker\n",
+                        )
+                        .unwrap();
+                    return Some(String::from_utf8_lossy(&request[..count]).into_owned());
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                    if server_stop.try_recv().is_ok() || Instant::now() >= deadline {
+                        return None;
+                    }
+                    std::thread::sleep(Duration::from_millis(5));
+                }
+                Err(error) => panic!("HTTP fixture listener failed: {error}"),
+            }
+        }
+    });
+
+    let proxy = TcpListener::bind("127.0.0.1:0").unwrap();
+    let proxy_address = proxy.local_addr().unwrap();
+    proxy.set_nonblocking(true).unwrap();
+    let (stop_proxy, proxy_stop) = std::sync::mpsc::channel();
+    let proxy_observer = std::thread::spawn(move || {
+        let deadline = Instant::now() + Duration::from_secs(35);
+        loop {
+            match proxy.accept() {
+                Ok((mut stream, _)) => {
+                    let mut request = [0; 1024];
+                    let _ = stream.read(&mut request);
+                    let _ = stream.write_all(
+                        b"HTTP/1.1 502 Proxy must not be used\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                    );
+                    return true;
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                    if proxy_stop.try_recv().is_ok() || Instant::now() >= deadline {
+                        return false;
+                    }
+                    std::thread::sleep(Duration::from_millis(5));
+                }
+                Err(error) => panic!("proxy listener failed: {error}"),
+            }
+        }
+    });
+
+    let proxy_url = format!("http://{proxy_address}");
+    let vars = [
+        ("REPODB_URL_PRIVATE_ALLOWLIST", "127.0.0.1,::1"),
+        ("http_proxy", proxy_url.as_str()),
+        ("HTTP_PROXY", proxy_url.as_str()),
+        ("all_proxy", proxy_url.as_str()),
+        ("ALL_PROXY", proxy_url.as_str()),
+        ("NO_PROXY", ""),
+        ("no_proxy", ""),
+    ];
+    let url = format!("http://localhost:{}/source.txt", address.port());
+    let imported = run_with_env(root, &["import", &url], &vars).0;
+    let refreshed = run_with_env(root, &["refresh", "--imports"], &vars).0;
+    let _ = stop_server.send(());
+    let _ = stop_proxy.send(());
+    let request = server.join().unwrap();
+    let proxy_used = proxy_observer.join().unwrap();
+    assert!(imported && refreshed, "URL import or refresh failed");
+    assert!(
+        request.unwrap_or_default().starts_with("GET /source.txt "),
+        "real curl did not reach the direct HTTP fixture"
+    );
+    assert!(!proxy_used, "curl sent a request through the proxy");
+    assert!(!search_json(root, &["real curl pinned marker"]).is_empty());
+}
+
+#[test]
+fn url_preview_does_not_follow_redirects_to_private_destinations() {
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+
+    let repo = repository();
+    let root = repo.path();
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = std::thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        let mut request = [0; 1024];
+        let bytes_read = stream.read(&mut request).unwrap();
+        stream
+            .write_all(
+                b"HTTP/1.1 302 Found\r\nLocation: http://10.0.0.1/private\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+            )
+            .unwrap();
+        String::from_utf8_lossy(&request[..bytes_read]).into_owned()
+    });
+    let url = format!("http://{address}/preview");
+    let (success, _) = run(root, &["import", "--preview", &url]);
+    assert!(!success);
+    assert!(server.join().unwrap().starts_with("GET /preview "));
 }
 
 #[test]
@@ -3414,7 +3535,67 @@ fn combined_search_merges_imported_candidates_before_global_limit() {
 }
 
 #[test]
-fn imported_url_fetch_accepts_data_above_old_limit_and_restricts_redirect_protocols() {
+fn url_redirect_to_private_address_is_rejected_before_the_next_request() {
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+
+    let repo = repository();
+    let root = repo.path();
+    assert!(run(root, &["init"]).0);
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = std::thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        let mut request = [0; 1024];
+        let bytes_read = stream.read(&mut request).unwrap();
+        stream
+            .write_all(
+                b"HTTP/1.1 302 Found\r\nLocation: http://10.0.0.1/private\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+            )
+            .unwrap();
+        String::from_utf8_lossy(&request[..bytes_read]).into_owned()
+    });
+    let url = format!("http://{address}/redirect");
+    assert!(run(root, &["import", &url]).0);
+
+    let (success, _) = run(root, &["refresh", "--imports"]);
+    assert!(!success, "a redirect to a private address must be rejected");
+    assert!(server.join().unwrap().starts_with("GET /redirect "));
+}
+
+#[test]
+fn url_refresh_rejects_loopback_without_an_explicit_private_allowlist() {
+    use std::net::TcpListener;
+
+    let repo = repository();
+    let root = repo.path();
+    assert!(run(root, &["init"]).0);
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let url = format!("http://{}/internal", listener.local_addr().unwrap());
+    assert!(run(root, &["import", &url]).0);
+
+    let output = Command::new(env!("CARGO_BIN_EXE_repodb"))
+        .args(["refresh", "--imports"])
+        .current_dir(root)
+        .env("XDG_CONFIG_HOME", test_config_home(root))
+        .env(
+            "REPODB_SEMGREP_CORE",
+            semgrep_corpus::required_semgrep_core(),
+        )
+        .env_remove("REPODB_URL_PRIVATE_ALLOWLIST")
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("restricted address"));
+    assert!(matches!(
+        listener.accept(),
+        Err(error) if error.kind() == std::io::ErrorKind::WouldBlock
+    ));
+}
+
+#[test]
+fn imported_url_fetch_accepts_large_data_and_disables_proxy_redirect_following() {
     use std::os::unix::fs::PermissionsExt;
     let repo = repository();
     let root = repo.path();
@@ -3425,11 +3606,11 @@ fn imported_url_fetch_accepts_data_above_old_limit_and_restricts_redirect_protoc
     let curl = bin.join("curl");
     fs::write(
         &curl,
-        "#!/bin/sh\nprintf '%s\n' \"$@\" > \"$CAPTURE\"\nhead -c 10485761 /dev/zero\nprintf '\\n__REPODB_CURL_META__https://example.invalid/source.txt\\ntext/plain\\n0\\n200\\n'\nexit 0\n",
+        "#!/bin/sh\nprintf '%s\n' \"$@\" > \"$CAPTURE\"\nwhile [ \"$#\" -gt 0 ]; do if [ \"$1\" = --dump-header ]; then printf 'HTTP/1.1 200 OK\\r\\nContent-Type: text/plain\\r\\n\\r\\n' > \"$2\"; break; fi; shift; done\nhead -c 10485761 /dev/zero\nprintf '\\n__REPODB_CURL_META__https://1.1.1.1/source.txt\\ntext/plain\\n200\\n\\n'\nexit 0\n",
     )
     .unwrap();
     fs::set_permissions(&curl, fs::Permissions::from_mode(0o755)).unwrap();
-    assert!(run(root, &["import", "https://example.invalid/source.txt"]).0);
+    assert!(run(root, &["import", "https://1.1.1.1/source.txt"]).0);
     let path = format!("{}:{}", bin.display(), std::env::var("PATH").unwrap());
     assert!(
         run_with_env(
@@ -3441,24 +3622,21 @@ fn imported_url_fetch_accepts_data_above_old_limit_and_restricts_redirect_protoc
     );
     let args = fs::read_to_string(&capture).unwrap();
     for expected in [
-        "--max-time\n30",
-        "--max-redirs\n5",
-        "--proto-redir\n=http,https",
+        "--disable",
+        "--proto\n=http,https",
+        "--noproxy\n*",
+        "--proxy\n\n",
     ] {
         assert!(args.contains(expected), "missing {expected:?} in {args:?}");
     }
-
-    assert!(run(root, &["redirect-limit", "1"]).0);
     assert!(
-        run_with_env(
-            root,
-            &["refresh", "--size-limit=ignore"],
-            &[("PATH", &path), ("CAPTURE", capture.to_str().unwrap())]
-        )
-        .0
+        !args.contains("--location"),
+        "redirects are followed manually"
     );
-    let args = fs::read_to_string(capture).unwrap();
-    assert!(args.contains("--max-redirs\n1"), "{args:?}");
+    assert!(
+        !args.contains("--proto-redir"),
+        "redirect schemes are checked per hop"
+    );
 }
 
 #[test]

@@ -1,6 +1,6 @@
 use crate::{
     Result, SearchResult, as_bytes, budget::Budget, embed, git_objects::GitBlobReader, git_ranges,
-    process, segmentation,
+    process, segmentation, url_security,
 };
 use rusqlite::{Connection, OptionalExtension, params};
 use std::{
@@ -93,98 +93,139 @@ struct FetchedUrl {
     redirect_chain: Vec<String>,
 }
 
-fn fetch_url(locator: &str, max_redirects: usize, used: &mut Budget) -> Result<FetchedUrl> {
-    let (headers_file, file) = create_temporary_file("url-headers")?;
-    drop(file);
-    let marker = CURL_METADATA_MARKER;
-    let write_out = format!(
-        "\\n{marker}%{{url_effective}}\\n%{{content_type}}\\n%{{num_redirects}}\\n%{{http_code}}\\n"
-    );
-    let mut command = Command::new("curl");
-    command
-        .args([
-            "--fail",
-            "--location",
-            "--silent",
-            "--show-error",
-            "--max-time",
-            "30",
-            "--max-redirs",
-        ])
-        .arg(max_redirects.to_string())
-        .args(["--proto-redir", "=http,https", "--dump-header"])
-        .arg(&headers_file.0)
-        .args(["--write-out", &write_out])
-        .arg(locator)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-    let mut child = process::spawn_in_process_group(&mut command)?;
-    let (status, mut output, stderr) = bounded_command_output(
-        &mut child,
-        used.remaining().saturating_sub(MAX_COMMAND_STDERR_BYTES),
-        used,
-    )?;
-    if !status.success() {
-        return Err(format!(
-            "URL fetch failed for {locator}: {}",
-            String::from_utf8_lossy(&stderr)
-        )
-        .into());
-    }
-    let marker = marker.as_bytes();
-    let metadata_start = output
-        .windows(marker.len())
-        .rposition(|window| window == marker)
-        .ok_or("curl did not return URL response metadata")?;
-    let metadata = std::str::from_utf8(&output[metadata_start + marker.len()..])?;
-    let mut fields = metadata.lines();
-    let final_url = fields
-        .next()
-        .filter(|value| !value.is_empty())
-        .unwrap_or(locator)
-        .to_owned();
-    let content_type = fields.next().unwrap_or_default().to_owned();
-    let redirects: usize = fields.next().unwrap_or("0").parse()?;
-    let response_code: u16 = fields.next().unwrap_or("0").parse()?;
-    if !(200..300).contains(&response_code) {
-        return Err(format!("URL fetch returned HTTP status {response_code} for {locator}").into());
-    }
-    if redirects > max_redirects {
-        return Err("URL redirect count exceeded the configured limit".into());
-    }
-    let body_end = metadata_start
-        .checked_sub(1)
-        .ok_or("curl response is missing its metadata separator")?;
-    output.truncate(body_end);
+fn fetch_url(
+    locator: &str,
+    max_redirects: usize,
+    used: &mut Budget,
+    private_allowlist: &std::collections::HashSet<std::net::IpAddr>,
+) -> Result<FetchedUrl> {
+    use std::time::Instant;
+    let fetch_deadline = Instant::now() + url_security::URL_FETCH_TIMEOUT;
+    let mut current_url = locator.to_owned();
+    let mut redirect_chain = Vec::new();
+    loop {
+        let endpoint = url_security::parse_http_url(&current_url)?;
+        let remaining = fetch_deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return Err("URL fetch exceeded its 30-second total deadline".into());
+        }
+        let addresses =
+            url_security::resolve_and_validate(&endpoint, private_allowlist, fetch_deadline)?;
+        let remaining = fetch_deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return Err("URL fetch exceeded its 30-second total deadline".into());
+        }
+        let (headers_file, file) = create_temporary_file("url-headers")?;
+        drop(file);
+        let marker = CURL_METADATA_MARKER;
+        let write_out = format!(
+            "\\n{marker}%{{url_effective}}\\n%{{content_type}}\\n%{{http_code}}\\n%{{redirect_url}}\\n"
+        );
+        let mut command = configured_url_curl(&endpoint, &addresses);
+        let curl_timeout = remaining.as_secs_f64().max(0.001);
+        command
+            .args(["--max-time", &format!("{curl_timeout:.3}")])
+            .arg("--dump-header")
+            .arg(&headers_file.0)
+            .arg("--write-out")
+            .arg(&write_out)
+            .arg(&current_url)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        let mut child = process::spawn_in_process_group(&mut command)?;
+        let (status, mut output, stderr) = bounded_command_output(
+            &mut child,
+            used.remaining().saturating_sub(MAX_COMMAND_STDERR_BYTES),
+            used,
+        )?;
+        if !status.success() {
+            return Err(format!(
+                "URL fetch failed for {current_url}: {}",
+                String::from_utf8_lossy(&stderr)
+            )
+            .into());
+        }
+        let marker_bytes = marker.as_bytes();
+        let metadata_start = output
+            .windows(marker_bytes.len())
+            .rposition(|window| window == marker_bytes)
+            .ok_or("curl did not return URL response metadata")?;
+        let metadata = std::str::from_utf8(&output[metadata_start + marker_bytes.len()..])?;
+        let mut fields = metadata.lines();
+        let final_url = fields
+            .next()
+            .filter(|value| !value.is_empty())
+            .unwrap_or(&current_url)
+            .to_owned();
+        let content_type = fields.next().unwrap_or_default().to_owned();
+        let response_code: u16 = fields.next().unwrap_or("0").parse()?;
+        let redirect_url = fields.next().unwrap_or_default().to_owned();
+        let body_end = metadata_start
+            .checked_sub(1)
+            .ok_or("curl response is missing its metadata separator")?;
+        output.truncate(body_end);
 
-    let headers_size = fs::metadata(&headers_file.0)?.len();
-    if headers_size > MAX_URL_HEADER_BYTES {
-        return Err("URL response headers exceeded the 1 MiB limit".into());
+        let headers_size = fs::metadata(&headers_file.0)?.len();
+        if headers_size > MAX_URL_HEADER_BYTES {
+            return Err("URL response headers exceeded the 1 MiB limit".into());
+        }
+        let headers = fs::read(&headers_file.0)?;
+        let location = response_location(&headers)?;
+        if (300..400).contains(&response_code) {
+            if redirect_chain.len() >= max_redirects {
+                return Err("URL redirect count exceeded the configured limit".into());
+            }
+            let location = location.ok_or("redirect response is missing its Location header")?;
+            if redirect_url.is_empty() {
+                return Err("curl did not resolve the URL redirect destination".into());
+            }
+            let retained = output.capacity() + stderr.capacity();
+            drop(output);
+            drop(stderr);
+            used.release(retained);
+            redirect_chain.push(location);
+            current_url = redirect_url;
+            continue;
+        }
+        if !(200..300).contains(&response_code) {
+            return Err(format!(
+                "URL fetch returned HTTP status {response_code} for {current_url}"
+            )
+            .into());
+        }
+        used.charge(final_url.len(), "URL final address")?;
+        used.charge(content_type.len(), "URL content type")?;
+        for address in &redirect_chain {
+            used.charge(address.len(), "URL redirect provenance")?;
+        }
+        return Ok(FetchedUrl {
+            body: output,
+            final_url,
+            content_type,
+            redirect_chain,
+        });
     }
-    let headers = fs::read(&headers_file.0)?;
-    let header_text = String::from_utf8_lossy(&headers);
-    let redirect_chain: Vec<String> = header_text
-        .lines()
-        .filter_map(|line| {
-            let (name, value) = line.split_once(':')?;
-            name.eq_ignore_ascii_case("location")
-                .then(|| value.trim().to_owned())
-        })
-        .collect();
-    if redirect_chain.len() != redirects {
-        return Err("URL redirect provenance did not match curl's redirect count".into());
+}
+
+fn response_location(headers: &[u8]) -> Result<Option<String>> {
+    let header_text = String::from_utf8_lossy(headers);
+    let response_block = header_text
+        .split("\r\n\r\n")
+        .filter(|block| block.starts_with("HTTP/"))
+        .last()
+        .ok_or("curl response headers are malformed")?;
+    let mut location = None;
+    for line in response_block.lines().skip(1) {
+        if let Some((name, value)) = line.split_once(':')
+            && name.eq_ignore_ascii_case("location")
+        {
+            if location.is_some() {
+                return Err("URL response contains multiple Location headers".into());
+            }
+            location = Some(value.trim().to_owned());
+        }
     }
-    used.charge(final_url.len(), "URL final address")?;
-    used.charge(content_type.len(), "URL content type")?;
-    for address in &redirect_chain {
-        used.charge(address.len(), "URL redirect provenance")?;
-    }
-    Ok(FetchedUrl {
-        body: output,
-        final_url,
-        content_type,
-        redirect_chain,
-    })
+    Ok(location)
 }
 
 const LARGE_IMPORT_WARNING_THRESHOLD_BYTES: u64 = 50_000_000;
@@ -346,19 +387,26 @@ fn read_all(reader: impl Read, byte_limit: u64) -> Result<Vec<u8>> {
     Ok(bytes)
 }
 
-fn configured_url_curl() -> Command {
+pub(crate) fn configured_url_curl(
+    endpoint: &url_security::Endpoint,
+    addresses: &[std::net::IpAddr],
+) -> Command {
     let mut command = Command::new("curl");
     command.args([
+        "--disable",
         "--fail",
-        "--location",
         "--silent",
         "--show-error",
-        "--max-time",
-        "30",
-        "--max-redirs",
+        "--proto",
+        "=http,https",
+        "--noproxy",
+        "*",
+        "--proxy",
+        "",
     ]);
-    command.arg(DEFAULT_URL_MAX_REDIRECTS.to_string());
-    command.args(["--proto-redir", "=http,https"]);
+    for entry in url_security::resolve_entries(endpoint, addresses) {
+        command.arg("--resolve").arg(entry);
+    }
     command
 }
 
@@ -661,6 +709,15 @@ pub fn refresh_with_size_limit(
     c: &Connection,
     size_limit: SizeLimit,
 ) -> Result<Vec<ImportSizeAssessment>> {
+    let private_allowlist = url_security::private_address_allowlist_from_env()?;
+    refresh_with_size_limit_and_allowlist(c, size_limit, &private_allowlist)
+}
+
+fn refresh_with_size_limit_and_allowlist(
+    c: &Connection,
+    size_limit: SizeLimit,
+    private_allowlist: &std::collections::HashSet<std::net::IpAddr>,
+) -> Result<Vec<ImportSizeAssessment>> {
     init(c)?;
     let url_max_redirects = url_max_redirects(c)?;
     let history_limit = retention_limit(c)?;
@@ -961,7 +1018,12 @@ pub fn refresh_with_size_limit(
                     Vec::new(),
                 )
             } else {
-                let response = fetch_url(&locator, url_max_redirects, &mut refresh_memory_bytes)?;
+                let response = fetch_url(
+                    &locator,
+                    url_max_redirects,
+                    &mut refresh_memory_bytes,
+                    private_allowlist,
+                )?;
                 (
                     response.body,
                     Some(response.final_url),
@@ -1745,9 +1807,10 @@ pub fn search(
 #[cfg(test)]
 mod tests {
     use super::{
-        SizeLimit, batch_reader, bounded_command_output_with_input, checksum,
-        hydrate_git_unit_with_reader, pdf_representation, refresh_with_size_limit, register,
-        set_url_max_redirects, slice_git_unit, utc_rfc3339_now, visit_cache_pages, write_cache,
+        SizeLimit, batch_reader, bounded_command_output_with_input, checksum, configured_url_curl,
+        hydrate_git_unit_with_reader, pdf_representation, refresh_with_size_limit,
+        refresh_with_size_limit_and_allowlist, register, set_url_max_redirects, slice_git_unit,
+        utc_rfc3339_now, visit_cache_pages, write_cache,
     };
     use crate::budget::Budget;
     use rusqlite::Connection;
@@ -1757,6 +1820,46 @@ mod tests {
         os::unix::fs::PermissionsExt,
         process::{Command, Stdio},
     };
+
+    #[test]
+    fn url_curl_pins_validated_answers_and_disables_proxy_configuration() {
+        let endpoint = crate::url_security::Endpoint {
+            scheme: "https".to_owned(),
+            host: "example.test".to_owned(),
+            port: 443,
+        };
+        let command = configured_url_curl(
+            &endpoint,
+            &[
+                "93.184.216.34".parse().unwrap(),
+                "2606:4700:4700::1111".parse().unwrap(),
+            ],
+        );
+        let args = command
+            .get_args()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+        assert_eq!(args[0], "--disable");
+        assert!(
+            args.windows(2)
+                .any(|pair| pair[0] == "--noproxy" && pair[1] == "*")
+        );
+        assert!(
+            args.windows(2)
+                .any(|pair| pair[0] == "--proxy" && pair[1].is_empty())
+        );
+        assert_eq!(
+            args.windows(2)
+                .filter(|pair| pair[0] == "--resolve")
+                .map(|pair| pair[1].as_str())
+                .collect::<Vec<_>>(),
+            [
+                "example.test:443:93.184.216.34",
+                "example.test:443:[2606:4700:4700::1111]",
+            ]
+        );
+        assert!(!args.iter().any(|arg| arg == "--location"));
+    }
 
     #[test]
     fn timestamp_formatter_returns_a_valid_utc_rfc3339_value() {
@@ -1824,9 +1927,18 @@ mod tests {
         set_url_max_redirects(&connection, 1).unwrap();
         assert!(set_url_max_redirects(&connection, 21).is_err());
 
-        let error = refresh_with_size_limit(&connection, SizeLimit::Ignore).unwrap_err();
+        let private_allowlist = ["127.0.0.1".parse().unwrap()].into_iter().collect();
+        let error = refresh_with_size_limit_and_allowlist(
+            &connection,
+            SizeLimit::Ignore,
+            &private_allowlist,
+        )
+        .unwrap_err();
 
-        assert!(error.to_string().contains("URL fetch failed"));
+        assert!(
+            error.to_string().contains("redirect count exceeded"),
+            "{error}"
+        );
         server.join().unwrap();
         let (status, error_message): (String, String) = connection
             .query_row(
@@ -1836,7 +1948,7 @@ mod tests {
             )
             .unwrap();
         assert_eq!(status, "stale");
-        assert!(error_message.contains("URL fetch failed"));
+        assert!(error_message.contains("redirect count exceeded"));
         let versions: i64 = connection
             .query_row("SELECT count(*) FROM imported_versions", [], |row| {
                 row.get(0)
