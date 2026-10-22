@@ -602,6 +602,9 @@ fn real_curl_fetches_localhost_without_using_configured_proxies() {
         loop {
             match listener.accept() {
                 Ok((mut stream, _)) => {
+                    stream
+                        .set_read_timeout(Some(Duration::from_secs(2)))
+                        .unwrap();
                     let mut request = [0; 1024];
                     let count = stream.read(&mut request).unwrap();
                     stream
@@ -631,6 +634,9 @@ fn real_curl_fetches_localhost_without_using_configured_proxies() {
         loop {
             match proxy.accept() {
                 Ok((mut stream, _)) => {
+                    stream
+                        .set_read_timeout(Some(Duration::from_secs(2)))
+                        .expect("set proxy fixture read timeout");
                     let mut request = [0; 1024];
                     let _ = stream.read(&mut request);
                     let _ = stream.write_all(
@@ -660,6 +666,7 @@ fn real_curl_fetches_localhost_without_using_configured_proxies() {
         ("no_proxy", ""),
     ];
     let url = format!("http://localhost:{}/source.txt", address.port());
+    // Import registers the source; the following refresh performs the fixture's one GET.
     let imported = run_with_env(root, &["import", &url], &vars).0;
     let refreshed = run_with_env(root, &["refresh", "--imports"], &vars).0;
     let _ = stop_server.send(());
