@@ -24,14 +24,14 @@ Scope owner and release owner: emfrom. Exact changed-component inventory, candid
 ### Dependencies and supply chain
 - [ ] Status: In progress
 - Scope / owner: Complete Linux-target locked production, development, build, and platform-specific dependency graph / emfrom.
-- Evidence: At baseline `592a042`, `CARGO_NET_OFFLINE=true /home/emfrom/opt/rust/cargo/bin/cargo-audit audit --no-fetch` (cargo-audit 0.22.2; cached database contained 1,348 advisories; 52 locked dependencies; exit 0, no findings) and `CARGO_NET_OFFLINE=true /home/emfrom/opt/rust/cargo/bin/cargo-deny check advisories bans licenses sources` (cargo-deny 0.20.2; all checks passed). Existing duplicate-`hashbrown` warning is reported. `Cargo.toml`, `Cargo.lock`, and `deny.toml` are unchanged from baseline/evidence commit `402e5e8` and prior baseline `43bda0b`.
-- Findings / rationale: Re-run or tie this evidence to the final exact candidate; offline audit covers the local advisory cache only. The `deny.toml` license allowlist is not legal advice. No artifact provenance is established here.
+- Evidence: At exact HEAD `d90772e` (`Cargo.lock` SHA-256 `995fd7c15706d241afa6249d7cdf8ce4e795fca4`), with Cargo 1.99.0, `CARGO_NET_OFFLINE=true /home/emfrom/opt/rust/cargo/bin/cargo-audit audit --no-fetch` (cargo-audit 0.22.2; 1,348 cached advisories; 52 locked dependencies; exit 0, no findings) and `CARGO_NET_OFFLINE=true /home/emfrom/opt/rust/cargo/bin/cargo-deny check advisories bans licenses sources` (cargo-deny 0.20.2; all checks passed). Existing duplicate-`hashbrown` warning is reported (0.14.5 via hashlink/rusqlite, 0.17.1 via indexmap/toml). `Cargo.toml`, `Cargo.lock`, and `deny.toml` are unchanged from `592a042`.
+- Findings / rationale: Offline audit covers only the local advisory cache; source checksum/provenance and legal compatibility are not established by these checks. No artifact provenance is established here.
 
 ### Static analysis and security-sensitive code
 - [ ] Status: In progress
 - Scope / owner: Exact candidate source, unsafe/FFI, parsing, conversions, paths, subprocesses, logging, permissions, and secrets / emfrom.
-- Evidence: Existing Semgrep progress is recorded on issue #128 at earlier integration commit `9646191`; it is not a final-candidate result. Exact-candidate formatting, strict Clippy, static analysis, manual unsafe/FFI review, and secret scan remain to be recorded.
-- Findings / rationale: No full final-candidate audit or secret scan is claimed.
+- Evidence: At `d90772e`, Semgrep 1.181.0 ran `semgrep scan --config p/rust --metrics off --json src` (11 rules, 19 tracked Rust files, 13 INFO findings, 0 scan errors). All findings were manually triaged: `signal`/`gmtime_r`/`MaybeUninit`/process-group/pre-exec/libsqlite-vec ABI and the new `flock` calls have adjacent safety invariants; temporary-file helpers use process/counter-derived unique names, `create_new`, and Unix mode 0600; `env::args` is ordinary CLI parsing, not a security authorization. JSON output: `/tmp/repodb-static-review-d90772e/semgrep.json`. Format and strict Clippy pass at `d90772e`.
+- Findings / rationale: Semgrep's Rust rules are a limited signal, not a full Rust security audit. `gitleaks`, `trufflehog`, `detect-secrets`, `git-secrets`, and `cargo-geiger` were unavailable; no secret scanner or comprehensive unsafe/dependency FFI audit is claimed. Manual review of parsing/path/permissions is incomplete; #128 remains open.
 
 ### Input, parser robustness and resource exhaustion
 - [ ] Status: In progress
