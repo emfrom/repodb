@@ -1280,18 +1280,14 @@ fn status(db_path: &std::path::Path) -> Result<serde_json::Value> {
         let c = Connection::open(db_path)?;
         let version: i64 = c.query_row("PRAGMA user_version", [], |r| r.get(0))?;
         if version >= 2 {
-            let units = c
-                .query_row("SELECT count(*) FROM indexed_units", [], |r| {
-                    r.get::<_, i64>(0)
-                })
-                .unwrap_or(0);
-            let unsupported = c
-                .query_row(
-                    "SELECT count(*) FROM blob_contents WHERE status != 'text'",
-                    [],
-                    |r| r.get::<_, i64>(0),
-                )
-                .unwrap_or(0);
+            let units = c.query_row("SELECT count(*) FROM indexed_units", [], |r| {
+                r.get::<_, i64>(0)
+            })?;
+            let unsupported = c.query_row(
+                "SELECT count(*) FROM blob_contents WHERE status != 'text'",
+                [],
+                |r| r.get::<_, i64>(0),
+            )?;
             (units, unsupported)
         } else {
             (0, 0)
