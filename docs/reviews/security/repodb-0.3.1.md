@@ -90,7 +90,7 @@ A low-severity status-diagnostic/integrity defect found at `8e36710` was fixed a
 - Data integrity: #126 and the #127 verification deliverable are closed with evidence; #127's documented crash/repair limits remain for #132 owner disposition despite the passing suite.
 - Failure handling: #124/#126/#127 evidence tasks are closed; crash-boundary and general-repair guarantees remain unproven and require #132 owner disposition.
 - Interface: #131's local source-checkout install/upgrade/rollback/uninstall evidence is complete; performance variance and #127's documented recovery limits remain release risks.
-- Structure: Pending #133 review.
+- Structure: #133 standards-review deliverable is complete with a **BLOCKED** verdict; independent comprehension/release subreviews remain NOT RUN and #132 is still required.
 - Performance: Synthetic workload measured under #124 with inconclusive timing variance; #131's local source-checkout install compatibility was verified, but timing variance prevents a performance conclusion.
 - Reproducibility: Local package and release build are verified at frozen source candidate `0c9d908`; a clean archived source export reproduced the release binary hash and full tests. Provenance/signing/publishing controls and owner-dependent operational decisions remain unresolved under #130.
 - Decision and rationale: No go/no-go decision made. The release owner decides after all required evidence is complete; missing/failed checks block absent an authorized, explicit, time-bounded exception.
