@@ -65,7 +65,7 @@ Scope owner and release owner: emfrom. Exact changed-component inventory, candid
 - Findings / rationale: No release, publish, or deployment action is authorized by this review record.
 
 ### Conditional reviews
-- Network/URL fetching: **Triggered**; destination policy, redirects, DNS/address changes, proxies, schemes, credentials, limits, and tests tracked in #125.
+- Network/URL fetching: **Triggered**. At `c755cb5`, deterministic URL-security tests cover restricted/public IPv4/IPv6, mixed DNS answers, per-hop redirect revalidation, pinned DNS entries, and parser/scheme/credential rejection. CLI fixtures cover private redirect rejection before the next request, loopback default-deny/explicit allowlist, real curl with proxy variables set, response/redirect handling, failed-fetch snapshot preservation, and offline search. Full serial suite passed at this commit. Policy and the bounded-resolver availability tradeoff are documented; #125 evidence is posted in the issue.
 - Subprocess/executable behavior: **Triggered**; bounds, deadlines, output capture, cancellation, environment, and child cleanup tracked in #124 and #128.
 - Filesystem/Git object access: **Triggered**; hostile objects, path/symlink/submodule behavior, and resource costs tracked in #124 and #127.
 - Database/persistence/migration: **Triggered**; transaction, metadata, corruption, migration, and rollback behavior tracked in #126 and #127.
