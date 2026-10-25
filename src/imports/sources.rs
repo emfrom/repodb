@@ -443,6 +443,9 @@ pub(crate) fn register(c: &Connection, locator: &str, revision: Option<&str>) ->
     } else {
         "file"
     };
+    let _remote_git_deadline = (is_git && !path.is_dir())
+        .then(crate::budget::RefreshDeadline::start)
+        .transpose()?;
     let requested_revision = if is_git {
         let revision = revision.unwrap_or("HEAD");
         if revision.is_empty() || revision.starts_with('-') || revision.contains('\0') {
@@ -468,13 +471,8 @@ pub(crate) fn register(c: &Connection, locator: &str, revision: Option<&str>) ->
             fs::create_dir_all(&cache)?;
             let mirror = cache.join(format!("git-{}", checksum(locator.as_bytes())));
             if !mirror.exists() {
-                let status = Command::new("git")
-                    .args(["clone", "--mirror", locator])
-                    .arg(&mirror)
-                    .status()?;
-                if !status.success() {
-                    return Err(format!("git clone failed for {locator}").into());
-                }
+                let mut budget = Budget::refresh("Git import registration")?;
+                super::clone_git_mirror(locator, &mirror, &cache, &mut budget)?;
             } else {
                 let status = Command::new("git")
                     .arg("--git-dir")

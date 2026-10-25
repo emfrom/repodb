@@ -72,8 +72,9 @@ pub(super) fn checksum(bytes: &[u8]) -> String {
     state.iter().map(|word| format!("{word:08x}")).collect()
 }
 
-pub(super) fn visit_cache_pages(
+pub(super) fn visit_cache_pages_limited(
     cache: &Path,
+    maximum_bytes: u64,
     mut visit: impl FnMut(usize, String) -> Result<()>,
 ) -> Result<Option<usize>> {
     use serde::de::{Error as _, SeqAccess, Visitor};
@@ -83,6 +84,10 @@ pub(super) fn visit_cache_pages(
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(error) => return Err(error.into()),
     };
+    if file.metadata()?.len() > maximum_bytes {
+        fs::remove_file(cache)?;
+        return Ok(None);
+    }
     let mut deserializer = serde_json::Deserializer::from_reader(BufReader::new(file));
     let mut callback_error = None;
     struct PageVisitor<'a, F> {
@@ -135,13 +140,23 @@ pub(super) fn visit_cache_pages(
     }
 }
 
-pub(super) fn write_cache<'a>(
+pub(super) fn write_cache_limited<'a>(
     cache: &Path,
-    pages: impl IntoIterator<Item = &'a str>,
-) -> Result<()> {
+    pages: impl IntoIterator<Item = &'a str> + Clone,
+    maximum_bytes: u64,
+) -> Result<bool> {
     use std::sync::atomic::{AtomicU64, Ordering};
     static NEXT_TEMP: AtomicU64 = AtomicU64::new(0);
     let parent = cache.parent().ok_or("cache path has no parent")?;
+    let mut counter = CountWriter::default();
+    serialize_pages(&mut counter, pages.clone())?;
+    let existing_bytes = super::super::refresh_storage::directory_bytes(parent)?;
+    if existing_bytes
+        .checked_add(counter.bytes)
+        .is_none_or(|total| total > maximum_bytes)
+    {
+        return Ok(false);
+    }
     fs::create_dir_all(parent)?;
     let temp = parent.join(format!(
         ".{}.{}.{}.tmp",
@@ -157,13 +172,7 @@ pub(super) fn write_cache<'a>(
             .write(true)
             .create_new(true)
             .open(&temp)?;
-        use serde::ser::{SerializeSeq, Serializer};
-        let mut serializer = serde_json::Serializer::new(&mut file);
-        let mut sequence = serializer.serialize_seq(None)?;
-        for page in pages {
-            sequence.serialize_element(page)?;
-        }
-        sequence.end()?;
+        serialize_pages(&mut file, pages)?;
         file.sync_all()?;
         fs::rename(&temp, cache)?;
         Ok(())
@@ -171,5 +180,38 @@ pub(super) fn write_cache<'a>(
     if result.is_err() {
         let _ = fs::remove_file(&temp);
     }
-    result
+    result.map(|()| true)
+}
+
+#[derive(Default)]
+struct CountWriter {
+    bytes: u64,
+}
+
+impl std::io::Write for CountWriter {
+    fn write(&mut self, buffer: &[u8]) -> std::io::Result<usize> {
+        self.bytes = self
+            .bytes
+            .checked_add(buffer.len() as u64)
+            .ok_or_else(|| std::io::Error::other("serialized cache size overflow"))?;
+        Ok(buffer.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+fn serialize_pages<'a>(
+    writer: &mut impl std::io::Write,
+    pages: impl IntoIterator<Item = &'a str>,
+) -> Result<()> {
+    use serde::ser::{SerializeSeq, Serializer};
+    let mut serializer = serde_json::Serializer::new(writer);
+    let mut sequence = serializer.serialize_seq(None)?;
+    for page in pages {
+        sequence.serialize_element(page)?;
+    }
+    sequence.end()?;
+    Ok(())
 }

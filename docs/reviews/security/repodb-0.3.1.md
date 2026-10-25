@@ -1,10 +1,10 @@
 # RepoDB 0.3.1 candidate security and release-readiness review
 
 - Status: **In progress — candidate not frozen; no release authorization.**
-- Target commit/tag: Candidate baseline `592a0422917f249df800de751dd8e5bad14a430b`; final target commit/tag must be pinned after all remediation and reviews.
+- Target commit/tag: Candidate baseline `592a0422917f249df800de751dd8e5bad14a430b`; integration HEAD is `0ee9458` with uncommitted #124 work in progress. Final target commit/tag must be pinned after all remediation and reviews.
 - Commit range: Pending final candidate selection; compare from the agreed release baseline and record exact range before sign-off.
 - Release date/window: As soon as review passes; date not set.
-- Supported platforms: Linux only; architecture and tested environment to be recorded against the final candidate.
+- Supported platforms: Linux only. Current work environment: x86_64 Linux (`Sancho`, kernel `7.0.0-38-generic`); confirm against the final candidate.
 - Release owner: emfrom (@emfrom).
 
 ## Scope and threat model
@@ -36,8 +36,9 @@ Scope owner and release owner: emfrom. Exact changed-component inventory, candid
 ### Input, parser robustness and resource exhaustion
 - [ ] Status: In progress
 - Scope / owner: Local files, Git histories/repositories, URLs/responses, PDFs/converters, segmentation, embedding, staging and persistence / emfrom.
-- Evidence: Work tracked by #124 and #125. Prior integration evidence includes a finite preparation-memory budget, per-child deadlines, bounded subprocess output, per-preparation record caps, and URL destination checks; exact current/final commit evidence and remaining storage/runtime/cancellation/workload criteria are pending.
-- Findings / rationale: Temporary/durable storage bounds, total refresh runtime, explicit cancellation, and measured workload/resource budget remain open under #124. Do not infer complete resource safety from memory/record limits alone.
+- Evidence: Work tracked by #124 and #125. The current uncommitted implementation adds a total refresh deadline (default 3600s, configurable 1–86400), SIGINT child-process-group cancellation, SQLite durable/temp page caps, Git mirror and PDF cache storage caps, and #124 CLI/unit regressions. Focused checks passed after the latest storage-open ordering change: database/temp cap, Git clone cap, cancellation, and PDF cache bounds. Earlier full suite at this WIP passed 189 CLI tests plus all other targets (one ignored); rerun after the latest edits before treating it as final evidence.
+- Measured workload (Linux x86_64, release binary; deterministic local fake embedding command, no network): 5,000 tracked text files totaling 10,075,000 bytes across two commits (100 modified in commit two), plus one 129,280-byte imported document (256 units); final snapshot had 10,302 units/vectors, two Git commits, a 6,840,320-byte SQLite DB, and a 15,634,133-byte `.git` directory. `/usr/bin/time -v`: `repodb init` 56.35s / 14,116 KiB peak RSS; `repodb refresh` 66.63s / 13,304 KiB peak RSS; no swap; final status `usable` with all capabilities ready. Scratch evidence retained at `/tmp/repodb-resource-bench-final.2EADTr/{init.time,refresh.time}`. This is one controlled run and excludes production embedding-model cost; repeated runs and final-candidate confirmation remain pending.
+- Findings / rationale: Limits and regression evidence are materially improved, but no final resource-safety conclusion is claimed until final-candidate reruns and the remaining #124 acceptance (including repeatable workload/resource evidence) are recorded. The configured per-preparation memory budget is not a blanket bound on allocations outside its accounting.
 
 ### Correctness, security tests and data integrity
 - [ ] Status: In progress
@@ -54,8 +55,8 @@ Scope owner and release owner: emfrom. Exact changed-component inventory, candid
 ### Interface, maintainability and performance
 - [ ] Status: In progress
 - Scope / owner: CLI/API contracts, diagnostics, maintainability, large-input workload and resource budgets / emfrom.
-- Evidence: #131; no candidate-specific contract matrix or representative measured workload is recorded yet.
-- Findings / rationale: A defined workload, budget, environment, latency and memory/disk observations, repeated-work analysis, and compatibility results remain required. Historical v0.3.1 baseline waivers are not a pass of this security/release gate.
+- Evidence: #131; one controlled 5,000-file / 10,302-unit workload is recorded above with environment, elapsed times, peak RSS, and disk usage. It used a deterministic fake embedder and was measured once.
+- Findings / rationale: Repeated-run variance, production-embedder cost, explicit performance budgets, and final-candidate compatibility remain to be assessed. Historical v0.3.1 baseline waivers are not a pass of this security/release gate.
 
 ### Build, artifacts, release hygiene and operations
 - [ ] Status: In progress

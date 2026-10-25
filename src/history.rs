@@ -3025,8 +3025,9 @@ pub fn prepare_refresh_excluding(
 ) -> Result<()> {
     is_current(c)?;
     let mut preparation_bytes = Budget::refresh("history refresh preparation accounting")?;
-    c.execute_batch("PRAGMA temp_store=FILE;
-        DROP TABLE IF EXISTS temp.refresh_commits; DROP TABLE IF EXISTS temp.refresh_blobs;
+    c.execute_batch("PRAGMA temp_store=FILE;")?;
+    crate::refresh_storage::configure_temp(c)?;
+    c.execute_batch("DROP TABLE IF EXISTS temp.refresh_commits; DROP TABLE IF EXISTS temp.refresh_blobs;
         DROP TABLE IF EXISTS temp.refresh_occurrences; DROP TABLE IF EXISTS temp.refresh_variants;
         DROP TABLE IF EXISTS temp.refresh_units; DROP TABLE IF EXISTS temp.refresh_embeddings;
         DROP TABLE IF EXISTS temp.refresh_commit_message_units;
@@ -3383,8 +3384,9 @@ fn refresh_scoped(
     .trim()
     .parse()?;
 
-    c.execute_batch("PRAGMA temp_store=FILE;
-        DROP TABLE IF EXISTS temp.scoped_commit; DROP TABLE IF EXISTS temp.scoped_blobs;
+    c.execute_batch("PRAGMA temp_store=FILE;")?;
+    crate::refresh_storage::configure_temp(c)?;
+    c.execute_batch("DROP TABLE IF EXISTS temp.scoped_commit; DROP TABLE IF EXISTS temp.scoped_blobs;
         DROP TABLE IF EXISTS temp.scoped_occurrences; DROP TABLE IF EXISTS temp.scoped_variants;
         DROP TABLE IF EXISTS temp.scoped_units; DROP TABLE IF EXISTS temp.scoped_embeddings;
         DROP TABLE IF EXISTS temp.scoped_config;
@@ -3921,7 +3923,9 @@ pub(crate) fn search_diffs_filtered(
 
 pub fn reembed(c: &mut Connection, command: &str, model: &str) -> Result<()> {
     let version = snapshot_version(c)?;
-    c.execute_batch("PRAGMA temp_store=FILE; DROP TABLE IF EXISTS temp.reembed_vectors; CREATE TEMP TABLE reembed_vectors(unit_id INTEGER PRIMARY KEY, vector BLOB NOT NULL);")?;
+    c.execute_batch("PRAGMA temp_store=FILE;")?;
+    crate::refresh_storage::configure_temp(c)?;
+    c.execute_batch("DROP TABLE IF EXISTS temp.reembed_vectors; CREATE TEMP TABLE reembed_vectors(unit_id INTEGER PRIMARY KEY, vector BLOB NOT NULL);")?;
     let mut preparation_bytes = Budget::refresh("history refresh preparation accounting")?;
     let mut dim = 0;
     let schema: i64 = c.query_row("PRAGMA user_version", [], |row| row.get(0))?;

@@ -13,7 +13,7 @@ use std::{
 
 mod cache;
 mod sources;
-use cache::{checksum, visit_cache_pages, write_cache};
+use cache::{checksum, visit_cache_pages_limited, write_cache_limited};
 use sources::{column_exists, init};
 pub(crate) use sources::{preview, preview_url, register, set_retention};
 
@@ -705,6 +705,63 @@ fn url_max_redirects(c: &Connection) -> Result<usize> {
     Ok(max_redirects)
 }
 
+pub(super) fn clone_git_mirror(
+    locator: &str,
+    mirror: &Path,
+    cache_dir: &Path,
+    budget: &mut Budget,
+) -> Result<()> {
+    static NEXT_CLONE_ID: AtomicU64 = AtomicU64::new(0);
+    fs::create_dir_all(cache_dir)?;
+    let maximum = crate::refresh_storage::max_git_cache_bytes()?;
+    let existing = crate::refresh_storage::git_cache_bytes(cache_dir)?;
+    if existing >= maximum {
+        return Err(
+            format!("Git mirror cache is at its configured limit ({maximum} bytes)").into(),
+        );
+    }
+    let remaining = maximum - existing;
+    let temporary_mirror = cache_dir.join(format!(
+        "git-tmp-{}-{}",
+        std::process::id(),
+        NEXT_CLONE_ID.fetch_add(1, Ordering::Relaxed)
+    ));
+    let result = (|| -> Result<()> {
+        let mut command = Command::new("git");
+        command
+            .args(["clone", "--mirror", locator])
+            .arg(&temporary_mirror)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        let mut child = process::spawn_in_process_group_with_file_limit(&mut command, remaining)?;
+        let (status, _, stderr) = bounded_command_output(
+            &mut child,
+            budget.remaining().saturating_sub(MAX_COMMAND_STDERR_BYTES),
+            budget,
+        )?;
+        if !status.success() {
+            return Err(format!(
+                "git clone failed for {locator}: {}",
+                String::from_utf8_lossy(&stderr)
+            )
+            .into());
+        }
+        let total = crate::refresh_storage::git_cache_bytes(cache_dir)?;
+        if total > maximum {
+            return Err(format!(
+                "Git mirror cache exceeded its configured limit ({total} > {maximum} bytes)"
+            )
+            .into());
+        }
+        fs::rename(&temporary_mirror, mirror)?;
+        Ok(())
+    })();
+    if result.is_err() {
+        let _ = fs::remove_dir_all(&temporary_mirror);
+    }
+    result
+}
+
 pub fn refresh_with_size_limit(
     c: &Connection,
     size_limit: SizeLimit,
@@ -722,8 +779,9 @@ fn refresh_with_size_limit_and_allowlist(
     let url_max_redirects = url_max_redirects(c)?;
     let history_limit = retention_limit(c)?;
     let mut size_assessments = Vec::new();
-    c.execute_batch("PRAGMA temp_store=FILE;
-        DROP TABLE IF EXISTS temp.import_refresh_pruned;
+    c.execute_batch("PRAGMA temp_store=FILE;")?;
+    crate::refresh_storage::configure_temp(c)?;
+    c.execute_batch("DROP TABLE IF EXISTS temp.import_refresh_pruned;
         DROP TABLE IF EXISTS temp.import_stage_sources; DROP TABLE IF EXISTS temp.import_stage_versions;
         DROP TABLE IF EXISTS temp.import_stage_units; DROP TABLE IF EXISTS temp.import_stage_git_units;
         CREATE TEMP TABLE import_refresh_pruned(source_id TEXT PRIMARY KEY,locator TEXT NOT NULL,versions_pruned INTEGER NOT NULL);
@@ -826,24 +884,13 @@ fn refresh_with_size_limit_and_allowlist(
                 let mirror = cache_dir.join(format!("git-{}", checksum(locator.as_bytes())));
                 fs::create_dir_all(&cache_dir)?;
                 if !mirror.exists() {
-                    let mut command = Command::new("git");
-                    command
-                        .args(["clone", "--mirror", &locator])
-                        .arg(&mirror)
-                        .stdout(Stdio::piped())
-                        .stderr(Stdio::piped());
-                    let mut child = process::spawn_in_process_group(&mut command)?;
-                    let (status, _, stderr) = bounded_command_output(
-                        &mut child,
-                        refresh_memory_bytes
-                            .remaining()
-                            .saturating_sub(MAX_COMMAND_STDERR_BYTES),
-                        &mut refresh_memory_bytes,
-                    )?;
-                    if !status.success() {
+                    clone_git_mirror(&locator, &mirror, &cache_dir, &mut refresh_memory_bytes)?;
+                } else {
+                    let maximum = crate::refresh_storage::max_git_cache_bytes()?;
+                    let existing = crate::refresh_storage::git_cache_bytes(&cache_dir)?;
+                    if existing > maximum {
                         return Err(format!(
-                            "git clone failed for {locator}: {}",
-                            String::from_utf8_lossy(&stderr)
+                            "Git mirror cache exceeds its configured limit ({existing} > {maximum} bytes)"
                         )
                         .into());
                     }
@@ -1080,9 +1127,12 @@ fn refresh_with_size_limit_and_allowlist(
                     .is_some_and(|extension| extension.eq_ignore_ascii_case("pdf"));
             let mut url_version = None;
             let (version, content) = if is_pdf {
-                let cache = cache_dir.join(format!("{source_version}.json"));
+                let cache = cache_dir
+                    .join("pdf-pages")
+                    .join(format!("{source_version}.json"));
+                let pdf_cache_limit = crate::refresh_storage::max_pdf_cache_bytes()?;
                 c.execute("DELETE FROM temp.import_pdf_pages", [])?;
-                let cached = visit_cache_pages(&cache, |page, text| {
+                let cached = visit_cache_pages_limited(&cache, pdf_cache_limit, |page, text| {
                     refresh_memory_bytes.charge_records(1, "PDF page")?;
                     c.execute(
                         "INSERT INTO temp.import_pdf_pages(page,text) VALUES(?1,?2)",
@@ -1120,7 +1170,7 @@ fn refresh_with_size_limit_and_allowlist(
                     let text = String::from_utf8(output.1)?;
                     refresh_memory_bytes.charge(text.len(), "PDF conversion output")?;
                     let pages = text.split('\u{c}');
-                    write_cache(&cache, pages.clone())?;
+                    let _ = write_cache_limited(&cache, pages.clone(), pdf_cache_limit)?;
                     for (page, text) in pages.enumerate() {
                         refresh_memory_bytes.charge_records(1, "PDF page")?;
                         c.execute(
@@ -1448,7 +1498,9 @@ pub fn publish(tx: &rusqlite::Transaction<'_>) -> Result<()> {
 
 pub fn reembed(c: &Connection, command: &str, model: &str) -> Result<Option<usize>> {
     init(c)?;
-    c.execute_batch("PRAGMA temp_store=FILE; DROP TABLE IF EXISTS temp.import_reembed_vectors; CREATE TEMP TABLE import_reembed_vectors(kind TEXT NOT NULL, source_id TEXT NOT NULL, version TEXT NOT NULL, line INTEGER NOT NULL, text TEXT NOT NULL, path TEXT, byte_start INTEGER, vector BLOB NOT NULL);")?;
+    c.execute_batch("PRAGMA temp_store=FILE;")?;
+    crate::refresh_storage::configure_temp(c)?;
+    c.execute_batch("DROP TABLE IF EXISTS temp.import_reembed_vectors; CREATE TEMP TABLE import_reembed_vectors(kind TEXT NOT NULL, source_id TEXT NOT NULL, version TEXT NOT NULL, line INTEGER NOT NULL, text TEXT NOT NULL, path TEXT, byte_start INTEGER, vector BLOB NOT NULL);")?;
     let mut dimension = None;
     {
         let current = column_exists(c, "imported_git_units", "blob_id")?;
@@ -1826,7 +1878,7 @@ mod tests {
         SizeLimit, batch_reader, bounded_command_output_with_input, checksum, configured_url_curl,
         hydrate_git_unit_with_reader, pdf_representation, refresh_with_size_limit,
         refresh_with_size_limit_and_allowlist, register, set_url_max_redirects, slice_git_unit,
-        utc_rfc3339_now, visit_cache_pages, write_cache,
+        utc_rfc3339_now, visit_cache_pages_limited, write_cache_limited,
     };
     use crate::budget::Budget;
     use rusqlite::Connection;
@@ -2254,7 +2306,7 @@ mod tests {
         let json = format!("[{}]", vec!["\"\""; 1000].join(","));
         std::fs::write(&path, &json).unwrap();
         let mut pages = 0;
-        let count = visit_cache_pages(&path, |_, page| {
+        let count = visit_cache_pages_limited(&path, u64::MAX, |_, page| {
             assert!(page.is_empty());
             pages += 1;
             Ok(())
@@ -2268,12 +2320,47 @@ mod tests {
     }
 
     #[test]
+    fn pdf_cache_write_skips_when_the_configured_storage_budget_would_be_exceeded() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let cache_dir = temp_dir.path().join("pdf-pages");
+        let path = cache_dir.join("snapshot.json");
+        let pages = ["x".repeat(1024)];
+
+        let written = write_cache_limited(&path, pages.iter().map(String::as_str), 128).unwrap();
+
+        assert!(
+            !written,
+            "over-budget cache writes are skipped as optional work"
+        );
+        assert!(!path.exists());
+        assert!(!cache_dir.exists());
+    }
+
+    #[test]
+    fn oversized_pdf_cache_is_removed_before_deserialization() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let path = temp_dir.path().join("oversized.json");
+        std::fs::write(&path, b"[\\\"large page\\\"]").unwrap();
+        let mut visited = false;
+
+        let cached = visit_cache_pages_limited(&path, 4, |_, _| {
+            visited = true;
+            Ok(())
+        })
+        .unwrap();
+
+        assert_eq!(cached, None);
+        assert!(!visited, "oversized content must not be deserialized");
+        assert!(!path.exists(), "invalid cache is disposable");
+    }
+
+    #[test]
     fn cache_writer_streams_page_iterator_as_compatible_json() {
         let temp_dir = tempfile::tempdir().unwrap();
         let path = temp_dir.path().join("cache.json");
         let pages = vec!["first page".to_owned(), "second\\npage".to_owned()];
 
-        write_cache(&path, pages.iter().map(String::as_str)).unwrap();
+        assert!(write_cache_limited(&path, pages.iter().map(String::as_str), u64::MAX).unwrap());
 
         let decoded: Vec<String> = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
         assert_eq!(decoded, pages);

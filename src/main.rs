@@ -19,6 +19,7 @@ mod git_ranges;
 mod history;
 mod imports;
 mod process;
+mod refresh_storage;
 mod segmentation;
 mod semgrep_languages;
 mod sqlite_vec_extension;
@@ -1185,8 +1186,22 @@ fn selected_database(option: Option<String>) -> Result<PathBuf> {
     }
 }
 fn open_db(path: &std::path::Path) -> Result<Connection> {
+    open_db_with_refresh_limits(path, false)
+}
+
+fn open_db_for_refresh(path: &std::path::Path) -> Result<Connection> {
+    open_db_with_refresh_limits(path, true)
+}
+
+fn open_db_with_refresh_limits(
+    path: &std::path::Path,
+    apply_refresh_limits: bool,
+) -> Result<Connection> {
     sqlite_vec_extension::register()?;
     let c = Connection::open(path)?;
+    if apply_refresh_limits {
+        refresh_storage::configure(&c)?;
+    }
     if !history::is_current(&c)? {
         c.execute_batch("CREATE TABLE IF NOT EXISTS indexed_files(path TEXT PRIMARY KEY NOT NULL,commit_id TEXT NOT NULL,content TEXT NOT NULL); CREATE TABLE IF NOT EXISTS embeddings(path TEXT NOT NULL,line INTEGER NOT NULL,text TEXT NOT NULL,commit_id TEXT NOT NULL,vector BLOB NOT NULL,PRIMARY KEY(path,line)); CREATE TABLE IF NOT EXISTS embedding_config(key TEXT PRIMARY KEY,value TEXT NOT NULL);")?;
     }
@@ -1793,6 +1808,13 @@ adds the selected commit. `--changed` and `--update` cannot be combined with
 size-gated. `import SOURCE` only registers a source; refreshing it is explicit.
 Search never refreshes or fetches.
 
+Refresh uses a one-hour total deadline (`REPODB_MAX_REFRESH_DURATION_SECS`, 1–86400),
+a 10 GiB durable database cap (`REPODB_MAX_DATABASE_BYTES`), a 2 GiB temporary
+staging cap (`REPODB_MAX_REFRESH_TEMP_BYTES`), a 10 GiB Git mirror cache cap
+(`REPODB_MAX_GIT_CACHE_BYTES`), and a 1 GiB PDF conversion cache cap
+(`REPODB_MAX_PDF_CACHE_BYTES`). Storage overrides accept 4096 bytes through 1 TiB.
+On Unix, SIGINT cancels refresh and terminates its active child process group.
+
 Examples:
   repodb init --size-limit=warn
   repodb refresh --size-limit=warn
@@ -2027,7 +2049,8 @@ fn execute() -> Result<()> {
                     "usage: repodb refresh [--imports | --changed | --update COMMIT] [--size-limit=error|warn|ignore]".into(),
                 );
             }
-            let mut db = open_db(&db_path)?;
+            let _refresh_deadline = budget::RefreshDeadline::start()?;
+            let mut db = open_db_for_refresh(&db_path)?;
             let mut size_assessments = Vec::new();
             let excluded_database_path = if imports_only {
                 None
@@ -2037,26 +2060,33 @@ fn execute() -> Result<()> {
             if imports_only {
                 let version = history::snapshot_version(&db)?;
                 size_assessments = imports::refresh_with_size_limit(&db, size_limit)?;
+                budget::check_refresh_deadline()?;
                 imports::validate_dimensions(&db)?;
                 let tx = history::publish_transaction(&mut db, version)?;
                 imports::publish(&tx)?;
+                budget::check_refresh_deadline()?;
                 tx.commit()?;
             } else if changed {
                 history::refresh_changed_excluding(&mut db, excluded_database_path.as_deref())?;
+                budget::check_refresh_deadline()?;
             } else if let Some(commit_id) = update {
                 history::refresh_update_excluding(
                     &mut db,
                     &commit_id,
                     excluded_database_path.as_deref(),
                 )?;
+                budget::check_refresh_deadline()?;
             } else {
                 let version = history::snapshot_version(&db)?;
                 size_assessments = imports::refresh_with_size_limit(&db, size_limit)?;
+                budget::check_refresh_deadline()?;
                 history::prepare_refresh_excluding(&db, excluded_database_path.as_deref())?;
+                budget::check_refresh_deadline()?;
                 imports::validate_dimensions(&db)?;
                 let tx = history::publish_transaction(&mut db, version)?;
                 imports::publish(&tx)?;
                 history::publish_refresh(&tx)?;
+                budget::check_refresh_deadline()?;
                 tx.commit()?;
             }
             for pruned in imports::pruning_report(&db)? {

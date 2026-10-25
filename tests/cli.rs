@@ -2642,6 +2642,171 @@ fn timed_out_import_subprocess_preserves_the_published_snapshot() {
         search_json(root, &["previous PDF snapshot marker"]).len(),
         1
     );
+
+    let started = std::time::Instant::now();
+    let (total_deadline_success, _) = run_with_env(
+        root,
+        &["refresh"],
+        &[
+            ("PATH", &path),
+            ("REPODB_REFRESH_TIMEOUT_SECS", "30"),
+            ("REPODB_MAX_REFRESH_DURATION_SECS", "1"),
+        ],
+    );
+    assert!(
+        !total_deadline_success,
+        "the refresh-wide deadline cancels a child"
+    );
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(4),
+        "the refresh-wide deadline must bound a child more tightly than its per-process limit"
+    );
+    assert_eq!(
+        search_json(root, &["previous PDF snapshot marker"]).len(),
+        1,
+        "a total-deadline failure must preserve the previously published snapshot"
+    );
+}
+
+#[test]
+fn database_and_temporary_storage_caps_preserve_the_published_snapshot() {
+    let repo = repository();
+    let root = repo.path();
+    assert!(run(root, &["init"]).0);
+    let source = root.join("storage-limit.txt");
+    fs::write(&source, "published storage snapshot marker\n").unwrap();
+    let locator = source.to_string_lossy().into_owned();
+    assert!(run(root, &["import", &locator]).0);
+    assert!(run(root, &["refresh", "--imports"]).0);
+
+    let (database_cap_success, _) = run_with_env(
+        root,
+        &["refresh", "--imports"],
+        &[("REPODB_MAX_DATABASE_BYTES", "4096")],
+    );
+    assert!(
+        !database_cap_success,
+        "a configured durable database cap below the existing snapshot must reject refresh"
+    );
+
+    fs::write(
+        &source,
+        format!("{}\n", "new oversized staging data ".repeat(8_192)),
+    )
+    .unwrap();
+    let (temp_cap_success, _) = run_with_env(
+        root,
+        &["refresh", "--imports"],
+        &[("REPODB_MAX_REFRESH_TEMP_BYTES", "4096")],
+    );
+    assert!(
+        !temp_cap_success,
+        "temporary staging must not grow beyond its configured page cap"
+    );
+    assert_eq!(
+        search_json(root, &["published storage snapshot marker"]).len(),
+        1,
+        "storage-limit failures preserve the previously published snapshot"
+    );
+    assert!(search_json(root, &["new oversized staging data"]).is_empty());
+}
+
+#[cfg(unix)]
+#[test]
+fn interrupting_refresh_terminates_child_and_preserves_the_published_snapshot() {
+    use std::{
+        os::unix::fs::PermissionsExt,
+        time::{Duration, Instant},
+    };
+
+    let repo = repository();
+    let root = repo.path();
+    assert!(run(root, &["init"]).0);
+    let pdf = root.join("cancel.pdf");
+    fs::write(&pdf, b"%PDF-first version").unwrap();
+    let locator = pdf.to_string_lossy().into_owned();
+    assert!(run(root, &["import", &locator]).0);
+
+    let bin = root.join("cancel-bin");
+    fs::create_dir(&bin).unwrap();
+    let converter = bin.join("pdftotext");
+    fs::write(
+        &converter,
+        "#!/bin/sh\ncat >/dev/null\nprintf 'previous cancel snapshot marker\\n'\n",
+    )
+    .unwrap();
+    fs::set_permissions(&converter, fs::Permissions::from_mode(0o755)).unwrap();
+    let path = format!("{}:{}", bin.display(), std::env::var("PATH").unwrap());
+    assert!(run_with_env(root, &["refresh"], &[("PATH", &path)]).0);
+    fs::write(&pdf, b"%PDF-second version").unwrap();
+
+    let marker = root.join("converter-started");
+    let group_pid = root.join("converter-pid");
+    let done = root.join("converter-finished");
+    fs::write(
+        &converter,
+        format!("#!/bin/sh\ncat >/dev/null\ntouch '{}'\nprintf '%s' \"$$\" > '{}'\nsleep 30\ntouch '{}'\n", marker.display(), group_pid.display(), done.display()),
+    )
+    .unwrap();
+    let config_home = test_config_home(root);
+    let mut command = Command::new(env!("CARGO_BIN_EXE_repodb"));
+    command
+        .args(["refresh"])
+        .current_dir(root)
+        .env(
+            "REPODB_SEMGREP_CORE",
+            semgrep_corpus::required_semgrep_core(),
+        )
+        .env("XDG_CONFIG_HOME", config_home)
+        .env("REPODB_URL_PRIVATE_ALLOWLIST", "127.0.0.1")
+        .env("REPODB_REFRESH_TIMEOUT_SECS", "30")
+        .env("REPODB_MAX_REFRESH_DURATION_SECS", "60")
+        .env("PATH", &path);
+    let mut child = command.spawn().unwrap();
+    let start_deadline = Instant::now() + Duration::from_secs(5);
+    while !marker.exists() && Instant::now() < start_deadline {
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert!(marker.exists(), "converter should have started");
+    let group_id: i32 = fs::read_to_string(&group_pid).unwrap().parse().unwrap();
+    unsafe {
+        assert_eq!(libc::kill(child.id() as i32, libc::SIGINT), 0);
+    }
+    let exit_deadline = Instant::now() + Duration::from_secs(3);
+    let status = loop {
+        if let Some(status) = child.try_wait().unwrap() {
+            break status;
+        }
+        if Instant::now() >= exit_deadline {
+            unsafe {
+                libc::kill(child.id() as i32, libc::SIGKILL);
+                libc::kill(-group_id, libc::SIGKILL);
+            }
+            let _ = child.wait();
+            panic!("interrupted refresh did not exit promptly");
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    };
+    let group_running = unsafe { libc::kill(-group_id, 0) == 0 };
+    if group_running {
+        unsafe {
+            libc::kill(-group_id, libc::SIGKILL);
+        }
+    }
+    assert!(!status.success(), "interrupted refresh must fail visibly");
+    assert!(
+        !group_running,
+        "interrupt must terminate the child process group"
+    );
+    assert!(
+        !done.exists(),
+        "killed converter must not continue after cancellation"
+    );
+    assert_eq!(
+        search_json(root, &["previous cancel snapshot marker"]).len(),
+        1,
+        "cancellation must preserve the previously published snapshot"
+    );
 }
 
 #[test]
@@ -3342,6 +3507,63 @@ fn imported_git_repository_refreshes_with_identity_commit_path_and_line_refs() {
 }
 
 #[test]
+fn git_mirror_clone_respects_the_configured_cache_size_limit() {
+    let repo = repository();
+    let root = repo.path();
+    assert!(run(root, &["init"]).0);
+
+    let external = tempfile::tempdir().unwrap();
+    git(external.path(), &["init", "-q"]);
+    git(
+        external.path(),
+        &["config", "user.email", "test@example.com"],
+    );
+    git(external.path(), &["config", "user.name", "Test"]);
+    let mut bytes = Vec::with_capacity(256 * 1024);
+    let mut state = 0x9e37_79b9_7f4a_7c15u64;
+    for _ in 0..(256 * 1024) {
+        state ^= state << 13;
+        state ^= state >> 7;
+        state ^= state << 17;
+        bytes.push(state as u8);
+    }
+    fs::write(external.path().join("large.bin"), bytes).unwrap();
+    git(external.path(), &["add", "large.bin"]);
+    git(external.path(), &["commit", "-qm", "large repository"]);
+    let bare = external.path().with_extension("git");
+    let clone = Command::new("git")
+        .args(["clone", "--bare"])
+        .arg(external.path())
+        .arg(&bare)
+        .output()
+        .unwrap();
+    assert!(clone.status.success());
+    let locator = format!("file://{}", bare.display());
+
+    let (success, _) = run_with_env(
+        root,
+        &["import", "--revision", "HEAD", &locator],
+        &[("REPODB_MAX_GIT_CACHE_BYTES", "4096")],
+    );
+
+    assert!(
+        !success,
+        "an over-budget Git pack must be rejected during clone"
+    );
+    let cache = root.join(".git/repodb-cache");
+    let remaining_mirrors = fs::read_dir(cache)
+        .into_iter()
+        .flatten()
+        .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+        .filter(|name| name.starts_with("git-"))
+        .collect::<Vec<_>>();
+    assert!(
+        remaining_mirrors.is_empty(),
+        "partial mirror leaked: {remaining_mirrors:?}"
+    );
+}
+
+#[test]
 fn long_file_git_locator_uses_bounded_mirror_directory_name() {
     let repo = repository();
     let root = repo.path();
@@ -3408,7 +3630,8 @@ fn imported_pdfs_preserve_pages_cache_conversions_and_refresh_versions() {
     assert_eq!(fs::read_to_string(&calls).unwrap(), "called");
     let cache_dir = root.join(".git/repodb-cache");
     assert!(cache_dir.is_dir());
-    let cache = fs::read_dir(&cache_dir)
+    let pdf_cache_dir = cache_dir.join("pdf-pages");
+    let cache = fs::read_dir(&pdf_cache_dir)
         .unwrap()
         .next()
         .unwrap()

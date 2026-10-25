@@ -1,4 +1,121 @@
 use crate::Result;
+use std::{
+    cell::Cell,
+    time::{Duration, Instant},
+};
+
+const REFRESH_DEADLINE_ENV: &str = "REPODB_MAX_REFRESH_DURATION_SECS";
+const DEFAULT_MAX_REFRESH_DURATION_SECS: u64 = 3600;
+const MAX_CONFIGURED_REFRESH_DURATION_SECS: u64 = 86_400;
+
+thread_local! {
+    static REFRESH_DEADLINE: Cell<Option<Instant>> = const { Cell::new(None) };
+}
+
+static REFRESH_INTERRUPTED: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+#[cfg(unix)]
+extern "C" fn record_interrupt(_signal: libc::c_int) {
+    REFRESH_INTERRUPTED.store(true, std::sync::atomic::Ordering::Relaxed);
+}
+
+pub(crate) struct RefreshDeadline {
+    previous: Option<Instant>,
+    #[cfg(unix)]
+    previous_sigint: libc::sighandler_t,
+}
+
+impl RefreshDeadline {
+    pub(crate) fn start() -> Result<Self> {
+        let seconds = match std::env::var(REFRESH_DEADLINE_ENV) {
+            Ok(value) => value.parse::<u64>().map_err(|_| {
+                format!("{REFRESH_DEADLINE_ENV} must be an integer from 1 through {MAX_CONFIGURED_REFRESH_DURATION_SECS}")
+            })?,
+            Err(std::env::VarError::NotPresent) => DEFAULT_MAX_REFRESH_DURATION_SECS,
+            Err(error) => return Err(error.into()),
+        };
+        if !(1..=MAX_CONFIGURED_REFRESH_DURATION_SECS).contains(&seconds) {
+            return Err(format!(
+                "{REFRESH_DEADLINE_ENV} must be an integer from 1 through {MAX_CONFIGURED_REFRESH_DURATION_SECS}"
+            )
+            .into());
+        }
+        let deadline = Instant::now()
+            .checked_add(Duration::from_secs(seconds))
+            .ok_or("refresh deadline overflow")?;
+        let previous = REFRESH_DEADLINE.with(|slot| {
+            let previous = slot.get();
+            slot.set(Some(
+                previous.map_or(deadline, |previous| previous.min(deadline)),
+            ));
+            previous
+        });
+        #[cfg(unix)]
+        let previous_sigint = if previous.is_none() {
+            REFRESH_INTERRUPTED.store(false, std::sync::atomic::Ordering::Relaxed);
+            // SAFETY: the handler only sets a lock-free atomic flag; the previous
+            // process handler is restored when the refresh scope exits.
+            let previous_handler = unsafe {
+                libc::signal(
+                    libc::SIGINT,
+                    record_interrupt as *const () as libc::sighandler_t,
+                )
+            };
+            if previous_handler == libc::SIG_ERR {
+                REFRESH_DEADLINE.with(|slot| slot.set(previous));
+                return Err(std::io::Error::last_os_error().into());
+            }
+            previous_handler
+        } else {
+            0
+        };
+        Ok(Self {
+            previous,
+            #[cfg(unix)]
+            previous_sigint,
+        })
+    }
+}
+
+impl Drop for RefreshDeadline {
+    fn drop(&mut self) {
+        #[cfg(unix)]
+        if self.previous.is_none() {
+            // SAFETY: restore the handler captured by `start` for the same scope.
+            unsafe {
+                libc::signal(libc::SIGINT, self.previous_sigint);
+            }
+        }
+        REFRESH_DEADLINE.with(|slot| slot.set(self.previous));
+    }
+}
+
+pub(crate) fn check_refresh_deadline() -> Result<()> {
+    if REFRESH_INTERRUPTED.load(std::sync::atomic::Ordering::Relaxed) {
+        return Err("refresh cancelled by interrupt signal".into());
+    }
+    let expired = REFRESH_DEADLINE.with(|slot| {
+        slot.get()
+            .is_some_and(|deadline| Instant::now() >= deadline)
+    });
+    if expired {
+        return Err("refresh exceeded its total wall-clock deadline".into());
+    }
+    Ok(())
+}
+
+pub(crate) fn remaining_refresh_time() -> Result<Option<Duration>> {
+    check_refresh_deadline()?;
+    let remaining = REFRESH_DEADLINE.with(|slot| {
+        slot.get()
+            .map(|deadline| deadline.saturating_duration_since(Instant::now()))
+    });
+    if remaining.is_some_and(|remaining| remaining.is_zero()) {
+        return Err("refresh exceeded its total wall-clock deadline".into());
+    }
+    Ok(remaining)
+}
 
 // Maximum retained preparation memory across a refresh. Keep this finite: refresh
 // accounting is a safety limit, not merely an overflow check.
@@ -83,6 +200,7 @@ impl Budget {
     }
 
     pub(crate) fn charge(&mut self, bytes: usize, purpose: &str) -> Result<()> {
+        check_refresh_deadline()?;
         self.used = self
             .used
             .checked_add(bytes)
@@ -98,6 +216,7 @@ impl Budget {
     }
 
     pub(crate) fn charge_records(&mut self, count: usize, purpose: &str) -> Result<()> {
+        check_refresh_deadline()?;
         self.records = self
             .records
             .checked_add(count)

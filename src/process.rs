@@ -25,7 +25,9 @@ pub(crate) fn refresh_subprocess_timeout() -> crate::Result<std::time::Duration>
     if !(1..=MAX_REFRESH_SUBPROCESS_TIMEOUT_SECS).contains(&seconds) {
         return Err("REPODB_REFRESH_TIMEOUT_SECS must be an integer from 1 through 3600".into());
     }
-    Ok(std::time::Duration::from_secs(seconds))
+    let configured = std::time::Duration::from_secs(seconds);
+    Ok(crate::budget::remaining_refresh_time()?
+        .map_or(configured, |remaining| configured.min(remaining)))
 }
 
 pub(crate) struct ProcessDeadline {
@@ -96,6 +98,40 @@ pub(crate) fn spawn_in_process_group(command: &mut Command) -> std::io::Result<C
     {
         command.spawn()
     }
+}
+
+pub(crate) fn spawn_in_process_group_with_file_limit(
+    command: &mut Command,
+    maximum_file_bytes: u64,
+) -> std::io::Result<Child> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        let maximum_file_bytes = libc::rlim_t::try_from(maximum_file_bytes).map_err(|_| {
+            std::io::Error::new(std::io::ErrorKind::InvalidInput, "file limit is too large")
+        })?;
+        // SAFETY: the pre-exec hook only invokes async-signal-safe getrlimit/setrlimit
+        // and captures a plain integer. It applies a child-only file-size ceiling.
+        unsafe {
+            command.pre_exec(move || {
+                let mut current = std::mem::MaybeUninit::<libc::rlimit>::uninit();
+                if libc::getrlimit(libc::RLIMIT_FSIZE, current.as_mut_ptr()) != 0 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                let mut current = current.assume_init();
+                let mut soft_limit = maximum_file_bytes.min(current.rlim_max);
+                if current.rlim_cur != libc::RLIM_INFINITY {
+                    soft_limit = soft_limit.min(current.rlim_cur);
+                }
+                current.rlim_cur = soft_limit;
+                if libc::setrlimit(libc::RLIMIT_FSIZE, &current) != 0 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                Ok(())
+            });
+        }
+    }
+    spawn_in_process_group(command)
 }
 
 pub(crate) struct Output {
@@ -302,6 +338,19 @@ pub(crate) fn capture_with_input_timeout(
             stdin = Some(Ok(()));
         }
         while status.is_none() || stdout.is_none() || stderr.is_none() || stdin.is_none() {
+            if let Err(error) = crate::budget::check_refresh_deadline() {
+                terminate_process_group(child, group_id);
+                let _ = child.wait();
+                let _ = stdout_thread.join();
+                let _ = stderr_thread.join();
+                if let Some(thread) = stdin_thread.take() {
+                    let _ = thread.join();
+                }
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::Interrupted,
+                    error.to_string(),
+                ));
+            }
             if status.is_none() {
                 match child.try_wait() {
                     Ok(result) => status = result,
