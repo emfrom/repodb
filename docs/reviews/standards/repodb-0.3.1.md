@@ -1,113 +1,115 @@
 # RepoDB 0.3.1 coding-standards release review
 
-- Status: **BLOCKED — final review not started; candidate not frozen**
-- Target commit/tag: Pending. Integration HEAD `895161d` is a progress snapshot, not a reviewed/frozen release candidate.
-- Commit range: Pending final target; historical base is v0.3.0 tag `f7cc6bc5451204c5696f1bbef7e5575772820f47`.
-- Release date: Not set.
-- Supported platforms: Linux x86_64 only (scope decision recorded in #123); exact release environment pending.
-- Review owner: Pending assignment.
+- Status: **BLOCKED — reviewed against the frozen verification target, but required independent and release-readiness evidence remains incomplete.**
+- Target commit/tag: Source candidate `0a64388af91c65ea47ad223dff402830fda438b5`; no release tag.
+- Commit range: `592a0422917f249df800de751dd8e5bad14a430b..0a64388af91c65ea47ad223dff402830fda438b5`.
+- Review date: 2026-10-25.
+- Supported platforms: Linux x86_64 only, per scope decision #123; host `Sancho`, kernel `7.0.0-38-generic`, Cargo 1.99.0.
+- Review owner: emfrom.
 - Release owner: emfrom.
 
 ## Scope and evidence index
 
-This is a preliminary gate record created before the exact candidate is frozen. It does **not** claim a standards review or release approval. The normative criteria are `docs/CODING_STANDARDS_FULL.md` and `docs/reviews/STANDARDS.md`, both read in full. Review procedure requires inspection against the exact frozen commit and prohibits treating unrun checks as passed.
+This review targets the exact source commit above. The source freeze is for verification only, not release approval; code changes reset the freeze. Normative sources `docs/CODING_STANDARDS_FULL.md` and `docs/reviews/STANDARDS.md` were read in full. Changed areas include Rust import/cache/URL/process/storage/history/CLI code, integration and unit tests, Cargo version/package metadata, user documentation, and release-review/benchmark records. The historical `v0.3.0` security/standards reports remain separate.
 
-Candidate remediation and verification tickets #124–#131 remain incomplete/open as applicable. The in-progress security review is `docs/reviews/security/repodb-0.3.1.md`; security review must be completed last, after standards and other applicable reviews. Current source progress includes commits `c755cb5`, `f9a1f41`, `d90772e`, `03b6e6b`, and `895161d`; no one of these has been declared the final target. The prior v0.3.0 standards review is historical evidence only and is not substituted for this report.
+Evidence is recorded in `docs/reviews/security/repodb-0.3.1.md`. At `0a64388`, formatting, strict Clippy, and the serial all-target/all-feature test suite passed: **315 passed, 1 ignored**. These checks were repeated from `/tmp/repodb-clean-final.qt5vdv`, a `git archive` export whose 130 paths exactly matched the commit tree; the clean-export release build reproduced SHA-256 `375d4c32cb3b6d2ce21267c5e818644e0aec7cbe036c387f1c5b6174c41b93b7`. Local package verification passed (102 files); this is not a published or signed artifact. Semgrep 1.181.0 `p/rust` reports 13 INFO findings / 0 scan errors; `p/secrets` reports 0 findings on the source diff and packaged files.
 
-At the time this planning record was prepared, format, strict Clippy, and serial all-target/all-feature tests passed at implementation commit `f9a1f41` (299 passed, 1 ignored); offline dependency checks passed at `d90772e`; Semgrep 1.181.0 at `d90772e` reported 13 INFO findings / 0 scan errors. These checks are not reclassified as a standards-review pass at the final candidate. The security review records a provisional binary/package inspection and open artifact, version, secret-scanning, and operational gaps.
+The user explicitly prohibited local agents/subagents. Accordingly, self-review is not represented as an independent comprehension or release audit. Open candidate issues #127, #128, #130, and #131 and owner-gated #132 remain tracked; no ticket or release approval is implied by this report.
 
 ## Sub-review 1 — Precedence and fundamental principles
-- Status: **NOT RUN**
-- Evidence: Final candidate not frozen; no release-range review performed.
-- Findings / rationale: Reassess priority order, behavior preservation, explicit deviations, and compatibility on the frozen diff.
+- Status: **PASS**
+- Evidence: The candidate prioritizes integrity and safe failure: refresh/import publication stays transactional, invalid status schemas fail rather than appear empty, credential-bearing imports are rejected, and sensitive PDF cache files receive private Unix permissions. User-visible credential behavior is documented. No intentional public-format migration was found in the reviewed candidate.
+- Findings / rationale: Existing behavior is preserved except for explicit security rejection/redaction behavior. The change to reject credential-bearing URL/Git locators is documented and regression-tested. No MUST exception or style-over-integrity optimization was identified.
 
 ## Sub-review 2 — Structure and complexity
-- Status: **NOT RUN**
-- Evidence: No final-range function/call-graph/complexity review performed.
-- Findings / rationale: Inspect changed operations and dependency graphs; evaluate all soft thresholds without mechanical splitting.
+- Status: **PASS (documented soft deviation)**
+- Evidence: `cargo clippy --locked --all-targets --all-features -- -D warnings` passes. Manual line comparison found `refresh_with_size_limit_and_allowlist` in `src/imports.rs` is approximately 805 source lines at `0a64388`, versus approximately 803 at baseline `592a042`; it predates this candidate's net changes and owns the staged import/refresh transaction orchestration. New cache/URL/resource behavior remains in cohesive existing modules. No dedicated cyclomatic/cognitive/fan-out/indirect-call analyzer was run.
+- Findings / rationale: The function substantially exceeds the 60-line soft threshold; this is an explicit maintainability deviation, not a hard-gate failure or numerical pass. It was not split mechanically during security remediation because the stateful staging/publication path is high risk and refactoring would enlarge the candidate diff. Track a deliberate extraction with characterization tests in later work; #131 records the maintainability concern. Other complexity metrics remain unmeasured.
 
 ## Sub-review 3 — Interfaces and contracts
-- Status: **NOT RUN**
-- Evidence: Candidate CLI smoke and broad tests exist in the security evidence, but there is no final-candidate stdout/stderr, JSON schema, exit-status, compatibility, or public API review.
-- Findings / rationale: Include the version-mismatch and unknown-command diagnostic observations in the final interface assessment; verify disposition.
+- Status: **PASS**
+- Evidence: `help_documents_shipped_commands_options_and_no_crawl_behavior_without_initializing`, `version_flag_prints_package_version_without_database_side_effects`, URL/Git credential rejection tests, legacy metadata redaction test, JSON/status/pagination tests, and the full CLI suite passed at the exact candidate. README records import credential policy and trusted executable/data-flow limitations. Errors do not print the rejected locator or Git stderr in the new regression cases.
+- Findings / rationale: The version is 0.3.1. A pre-existing low-severity diagnostic inconsistency remains: an unknown command outside a Git repository can report Git discovery failure rather than the inside-repository `unknown command` message. No stable JSON/exit-status regression was observed. Installation-channel and install/upgrade/rollback/uninstall compatibility remain NOT RUN under #131.
 
 ## Sub-review 4 — State, data flow, and persistence
-- Status: **NOT RUN**
-- Evidence: #126/#127 transaction and migration evidence is in progress; no complete frozen-candidate state-transition review.
-- Findings / rationale: Trace input through validation, staging, publication, persistence, recovery, and output.
+- Status: **PASS**
+- Evidence: Existing transactional publication and `PRAGMA data_version` checks preserve the last usable snapshot. Named tests cover import/publication SQL failure, URL metadata rollback, migration rollback/retry, failed Git pin publication, post-commit reporting failure, concurrent model changes, interruption, and corrupted database rejection without replacement. New credential checks run before registration/network use; legacy credential metadata is redacted from search output and refresh refuses to reuse credential-bearing legacy sources. PDF cache readers discard non-private cache files before deserialization.
+- Findings / rationale: Durable database/cache paths still follow their selected ownership/permissions/umask and README warns operators to protect shared-host data. No partial-publication defect was observed in the exact suite. Arbitrary crash-at-every-write-boundary and general repair of partially corrupted databases remain open under #127.
 
 ## Sub-review 5 — Security and resource safety
-- Status: **NOT RUN**
-- Evidence: Security review is deliberately last and not complete; candidate security record lists unresolved gaps.
-- Findings / rationale: Review untrusted inputs, filesystem/network/subprocess boundaries, unsafe/FFI invariants, resource controls, and leakage on the final diff.
+- Status: **PASS**
+- Evidence: Resource ceilings, deadlines, output bounds, cache/database locks, URL egress validation, Git argument arrays, safe failure, and cancellation are described in the security review. Semgrep `p/rust` and `p/secrets` results are recorded there. Manual inspection covered production unsafe sites, temporary-file creation, command execution, credential-bearing URL rejection, Git stderr suppression, legacy result redaction, and the `sqlite-vec` 0.1.9 callback/header signature. A PDF-cache permission defect was caught and fixed at `0a64388`: default creation mode produced 0664 under umask 0002; new cache files are now created with mode 0600 on Unix and legacy group/world-accessible entries are discarded. Tests verify both conditions.
+- Findings / rationale: The fixed PDF-cache issue is recorded in the security review. No comprehensive audit of all transitive dependency FFI is claimed; GitHub secret scanning remains disabled, and standalone secret-scanner binaries were unavailable. These do not invalidate the executed Semgrep source/package secret scans but remain explicit limitations for #128/#130.
 
 ## Sub-review 6 — Behavioural verification
-- Status: **NOT RUN**
-- Evidence: A broad test suite passed at `f9a1f41`, but final-candidate test selection, coverage, fault/property/fuzz and mutation evidence are not complete.
-- Findings / rationale: Select risk-based deterministic observable tests and document skipped tools accurately.
+- Status: **PASS**
+- Evidence: At `0a64388`, serial `CARGO_NET_OFFLINE=true cargo test --locked --all-targets --all-features -- --test-threads=1`: 315 passed, 1 ignored. The clean `git archive` export produced the same result. Coverage includes URL/Git credential handling, source/range invariants, malformed Git/PDF input, SQLite corruption, atomic rollback, timeouts/output floods, cancellation, concurrency, and private PDF-cache modes. Exhaustive deterministic testing checks UTF-8 range offset pairs; workload measurements and variance are in the security report.
+- Findings / rationale: Mutation, coverage, fuzz, and broad generated history/state-transition tools/tests were not run; no fuzz/property dependency was installed. These are documented gaps, not passing results, and remain under #127.
 
 ## Sub-review 7 — Architecture
-- Status: **NOT RUN**
-- Evidence: No final-range cohesion/coupling/state-owner review.
-- Findings / rationale: Assess concrete change locality and abstraction value; avoid speculative refactoring.
+- Status: **PASS**
+- Evidence: Changes remain within cohesive existing modules: URL validation/redaction in `url_security.rs`, source registration in `imports/sources.rs`, cache serialization/permissions in `imports/cache.rs`, and cross-process resource controls in `refresh_storage.rs`. The cache permission fix adds no public API. `git diff --stat 592a042..0a64388` shows 27 changed files, including review/history records and tests; unrelated changes were not introduced during the final cache fix.
+- Findings / rationale: `imports.rs` is a large existing coordinator and remains a soft maintainability concern; this review found no concrete reason for risky restructuring in the release candidate. Formal coupling/complexity metrics were not run (see sub-review 2).
 
 ## Sub-review 8 — Agent comprehensibility and reasoning cost
 - Status: **NOT RUN**
-- Evidence: No independent fresh-reviewer walkthrough or measured comprehension signals for the final candidate.
-- Findings / rationale: Trace representative refresh/import/search operations and record assumptions and change points.
+- Evidence: No fresh independent reviewer walkthrough or measured comprehension/tool-cost study was performed. The user prohibited local agents.
+- Findings / rationale: The security review maps major invariants to tests and README documents executable/data-flow trust assumptions, but self-review cannot satisfy the independent comprehensibility criterion. Do not treat this as passed.
 
 ## Sub-review 9 — Tooling baselines
-- Status: **NOT RUN**
-- Evidence: Existing commands/results are tied to progress commits, not a frozen release target.
-- Findings / rationale: Re-run configured format, strict Clippy, full relevant tests, and dependency checks at final target; list unavailable coverage, mutation, fuzz, Miri, sanitizer, and semver tools as NOT RUN where applicable.
+- Status: **PASS**
+- Evidence: `cargo fmt --all -- --check`; `CARGO_NET_OFFLINE=true cargo clippy --locked --all-targets --all-features -- -D warnings`; and serial `CARGO_NET_OFFLINE=true cargo test --locked --all-targets --all-features -- --test-threads=1` passed at `0a64388`, and were repeated from a clean export. `CARGO_NET_OFFLINE=true cargo package --locked --allow-dirty` and `cargo build --release --locked` passed. Semgrep 1.181.0 `p/rust` and `p/secrets` results are captured in `/tmp/repodb-static-review-0a64388/`. Offline cargo-audit/cargo-deny and checksum checks were previously run; the lockfile/dependency graph did not change in this candidate follow-up.
+- Findings / rationale: `cargo-fuzz`, `cargo-quickcheck`, `cargo-mutants`, `cargo-llvm-cov`, cargo-geiger, and dedicated standalone secret scanners were unavailable/not run. Offline advisories may be stale. These are recorded as NOT RUN/limitations; no warnings were suppressed.
 
 ## Sub-review 10 — Quality gates
-- Status: **NOT RUN**
-- Evidence: No final-candidate gate review.
-- Findings / rationale: Verify hard gates and disposition soft thresholds against the final diff.
+- Status: **FAIL**
+- Evidence: Supported Linux build, format, strict Clippy, test, package verification, and clean archived-source rebuild pass. The release gate is not complete: #127 recovery/property gaps remain; #128 broader FFI/path audit limitations remain; #130 release provenance/signing/reporting/incident-plan and owner dispositions remain; #131 installation/upgrade/rollback/uninstall remains NOT RUN; #132 owner go/no-go is pending.
+- Findings / rationale: Hard release gates are blocked by the explicit unresolved items; no exception or release approval is inferred.
 
 ## Sub-review 11 — Independent comprehension review
 - Status: **NOT RUN**
-- Evidence: No independent reviewer was requested or assigned; the session is following the user's no-subagents instruction.
-- Findings / rationale: Do not represent self-review as an independent review. Release owner must decide whether an authorized independent review is required and arrange it if so.
+- Evidence: No independent reviewer was assigned because the user prohibited local agents/subagents; no external reviewer was engaged.
+- Findings / rationale: Self-review cannot be reported as independent. This remains a release review limitation, not a hidden pass.
 
 ## Sub-review 12 — Agent change workflow and reporting
-- Status: **NOT RUN**
-- Evidence: Run ledger exists at `/tmp/automate-spec-repodb-security-20261025/run.md`; no final-candidate workflow assessment.
-- Findings / rationale: Verify scope, minimality, tests, review, and exact evidence reporting for all final changes.
+- Status: **PASS**
+- Evidence: Scope/issues and project standards were read; relevant source, tests, and candidate docs were inspected; changes were targeted and tested; static checks, serial tests, package/build inspection, and clean-export verification were run. The automation ledger is `/tmp/automate-spec-repodb-security-20261025/run.md`. Review records and issue comments distinguish evidence from missing checks. No local agents, push, publish, deploy, release, credential change, or destructive cleanup occurred.
+- Findings / rationale: An earlier exact candidate freeze was reset when review found the PDF-cache permissions defect; the fix was separately tested and the new source commit was frozen only after exact-candidate verification.
 
 ## Sub-review 13 — Independent release audit and findings
 - Status: **NOT RUN**
-- Evidence: No independent architecture/security/correctness/interface/release audit against a frozen target.
-- Findings / rationale: Do not self-certify previously disputed findings without independent evidence.
+- Evidence: No separate architecture/security/correctness/interface/release auditor was engaged; prohibited local delegation was not bypassed.
+- Findings / rationale: The implementer performed a focused self-review and records one fixed cache confidentiality issue plus previously fixed status corruption behavior. This is not an independent audit.
 
 ## Sub-review 14 — Definition of done / release readiness
-- Status: **NOT RUN**
-- Evidence: Security record and #124–#131 identify unresolved remediation/artifact/operations gaps; no final exact candidate or owner decision.
-- Findings / rationale: Require clean-checkout reproducibility, supported-platform evidence, data recovery, public interface, performance, and limitations evidence.
+- Status: **FAIL**
+- Evidence: Candidate code is frozen and reproducible locally from a clean archive; the exact full suite and Linux target pass. The review and issues still list unresolved recovery, security-depth, operations, installation, and owner sign-off requirements.
+- Findings / rationale: The standards review cannot produce a release pass while these gates remain unresolved. No version tag, publish, deploy, or go/no-go action is taken.
 
 ## Sub-review 15 — Prohibited practices and final principle
-- Status: **NOT RUN**
-- Evidence: No final-candidate review of all agent actions and prohibited practices.
-- Findings / rationale: Reassess the final change history and ensure no test weakening, silent format change, ignored failure, unverified claim, or evidence-free closure.
+- Status: **PASS**
+- Evidence: No tests were removed/weakened; failures were investigated (including the failed first permission regression, which exposed default mode 0664, and a cache-reader test updated to create a correctly private fixture). Unrun tools are explicitly listed; no release approval or ticket closure is claimed without evidence. A found permissions defect was fixed and retested.
+- Findings / rationale: The work favors tested safe failure and records limitations rather than presenting incomplete checks as passes.
 
 ## Findings
 
-No formal standards findings are asserted before review of the frozen candidate. Provisional release blockers and gaps—including package version mismatch, broad Cargo package contents, unavailable secret scanning, and missing operational/reporting evidence—are recorded in `docs/reviews/security/repodb-0.3.1.md` and must be dispositioned by the appropriate review/owner.
+- **SEC-0.3.1-CACHE-PERMISSIONS — Low; fixed at `0a64388`.** Location: `src/imports/cache.rs::{write_cache_limited,visit_cache_pages_limited}`. Reproduction/evidence: cache creation under umask `0002` produced mode `0664`, making extracted PDF page text readable outside the owner; the new regression fails before the fix. Violated invariant: source-derived cached text should not gain group/world access by default. Fix: create new Unix cache temp files with mode `0600`; discard pre-existing entries with group/world permission bits before reading. Acceptance tests: `pdf_cache_is_created_with_private_permissions` and `pdf_cache_with_non_private_permissions_is_discarded_before_reading` pass at the frozen candidate. Disposition: mitigated; no exception. Owner: emfrom.
+- **SEC-0.3.1-STATUS-CORRUPTION — Low; fixed at `e7b3c7b`.** Location: `src/main.rs` status schema/count queries. A missing required table was previously converted to zero counts and reported as an empty index. Fix propagates query errors; `status_rejects_a_structurally_corrupted_database_without_replacing_it` confirms visible failure and unchanged DB bytes.
+- **IFACE-0.3.1-UNKNOWN-COMMAND — Low; deferred.** Unknown command diagnostics vary by whether the working directory is a Git repository. No data-integrity impact; existing behavior is documented in `docs/reviews/security/repodb-0.3.1.md`. Owner disposition remains open under #131.
 
 ## Hard release gates
 
-- Supported builds: **BLOCKED** — no frozen-candidate build record.
-- Configured formatting/static checks: **BLOCKED** — progress-commit checks only.
-- Relevant tests: **BLOCKED** — progress-commit suite only; remaining #126/#127 matrix open.
-- Security/data invariants and public contracts: **BLOCKED** — #124–#131 and final security review incomplete.
-- Release-blocking findings: **BLOCKED** — provisional artifact/version/reporting gaps have no owner disposition.
-- Unsafe/undefined behavior: **BLOCKED** — Semgrep findings triaged, but no comprehensive final unsafe/FFI review.
-- Clean-checkout reproducibility: **NOT RUN**.
-- Supported platforms: **BLOCKED** — Linux x86_64 scope is selected; final-target evidence pending.
-- Dependency/security review: **BLOCKED** — progress-commit checks exist; final exact target and security review pending.
-- Recovery, interface, performance, limitations: **BLOCKED** — issues #126/#127/#130/#131 remain open and benchmark variance is high.
+- Supported builds: **PASS** — Linux x86_64 candidate release build succeeded; other platforms out of scope by #123.
+- Configured formatting/static checks: **PASS** — fmt, strict Clippy, and configured Semgrep scans pass with findings triaged.
+- Relevant tests: **PASS WITH LIMITATIONS** — 315 passed / 1 ignored, including clean-export rerun; fuzz/property/mutation and process-crash-boundary gaps remain.
+- Security/data invariants and public contracts: **BLOCKED** — implemented and tested controls are recorded; #127/#128 residual scope remains.
+- Release-blocking findings: **BLOCKED** — no known unfixed code finding, but operational/security-reporting and installation gates remain.
+- Unsafe/undefined behavior: **BLOCKED** — production unsafe sites and sqlite-vec callback were reviewed; comprehensive transitive dependency FFI audit is not complete.
+- Clean-checkout reproducibility: **PASS** — exact `git archive` tree (130 paths) passed format, Clippy, tests, and release build; binary hash reproduced.
+- Supported platforms: **PASS** — Linux x86_64 scope only; no claim for other platforms.
+- Dependency/security review: **BLOCKED** — prior offline cargo-audit/cargo-deny/checksum evidence is limited by advisory-cache freshness; broader FFI audit and GitHub controls remain open.
+- Recovery, interface, performance, limitations: **BLOCKED** — #127 crash/recovery and generated tests; #131 installation flow; benchmark timing variance; and documented trust/storage limits remain.
 
 ## Final verdict
 
-**BLOCKED.** This is a planning/progress record only. No standards pass, security sign-off, release authorization, or go/no-go decision is made. Final review must be updated against the frozen candidate after remediation and before security review; the release owner emfrom retains the final decision.
+**BLOCKED.** The coding-standards review was performed against the frozen verification candidate, with subreviews explicitly marked PASS/NOT RUN/FAIL and one newly discovered low-severity cache confidentiality issue fixed and tested. Independent reviewer checks, residual security/integrity evidence, operations, installation-channel verification, and release-owner go/no-go remain unresolved. This is not a release approval or a claim that unavailable checks passed.
