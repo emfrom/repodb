@@ -14,7 +14,7 @@ This review targets the exact source commit above. The source freeze is for veri
 
 Evidence is recorded in `docs/reviews/security/repodb-0.3.1.md`. At `0c9d908`, formatting, strict Clippy, and the serial all-target/all-feature test suite passed: **317 passed, 1 ignored**. These checks were repeated from `/tmp/repodb-clean-final-0c9d908.pmxDSk/source`, a `git archive` export whose 130 paths exactly matched the commit tree; the clean-export release build reproduced SHA-256 `375d4c32cb3b6d2ce21267c5e818644e0aec7cbe036c387f1c5b6174c41b93b7`. Local package verification passed (102 files from the exact Git checkout); this is not a published or signed artifact. Semgrep 1.181.0 `p/rust` reports 13 INFO findings / 0 scan errors; `p/secrets` reports 0 findings on the source diff and packaged files.
 
-The user explicitly prohibited local agents/subagents. Accordingly, self-review is not represented as an independent comprehension or release audit. Verification tasks #127, #128, and #131 are closed with the limits recorded; this standards review is complete with a BLOCKED verdict. #130 remains open and #132 remains owner-gated. No ticket closure or release approval is implied by this report.
+The user explicitly prohibited local agents/subagents. Accordingly, self-review is not represented as an independent comprehension or release audit. Verification tasks #127, #128, #130, and #131 are closed with the limits recorded; this standards review is complete with a BLOCKED verdict. #132 remains owner-gated; closure of evidence tickets does not approve release. No ticket closure or release approval is implied by this report.
 
 ## Sub-review 1 — Precedence and fundamental principles
 - Status: **PASS**
@@ -63,7 +63,7 @@ The user explicitly prohibited local agents/subagents. Accordingly, self-review 
 
 ## Sub-review 10 — Quality gates
 - Status: **FAIL**
-- Evidence: Supported Linux build, format, strict Clippy, test, package verification, clean archived-source rebuild, and isolated local Cargo install/upgrade/rollback/uninstall pass. The release gate is not complete: #127's test deliverable closed with crash/repair limits still requiring #132 owner disposition; #128's focused evidence is complete but whole-upstream FFI auditing is not claimed; #130 provenance/signing/reporting/incident-plan and owner dispositions remain; #132 owner go/no-go is pending.
+- Evidence: Supported Linux build, format, strict Clippy, test, package verification, clean archived-source rebuild, and isolated local Cargo install/upgrade/rollback/uninstall pass. The release gate is not complete: #127's test deliverable closed with crash/repair limits still requiring #132 owner disposition; #128's focused evidence is complete but whole-upstream FFI auditing is not claimed; #130's evidence deliverable is complete, but provenance/signing/reporting/incident-plan gaps remain as explicit risks for #132 owner review; #132 owner go/no-go is pending.
 - Findings / rationale: Hard release gates are blocked by the explicit unresolved items, including public registry/tag distribution and owner-dependent operational controls; no exception or release approval is inferred.
 
 ## Sub-review 11 — Independent comprehension review
