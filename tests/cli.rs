@@ -2247,6 +2247,108 @@ fn import_publication_sql_failure_preserves_the_previous_snapshot() {
 }
 
 #[test]
+fn failed_url_publication_rolls_back_source_attempt_and_version_metadata() {
+    use std::{
+        io::{Read, Write},
+        net::TcpListener,
+    };
+
+    let repo = repository();
+    let root = repo.path();
+    assert!(run(root, &["init"]).0);
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    let url = format!("http://{address}/publication.txt");
+    let server = std::thread::spawn(move || {
+        for body in [
+            b"previous URL publication marker\n".as_slice(),
+            b"unpublished URL replacement marker\n".as_slice(),
+        ] {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = [0; 1024];
+            let _ = stream.read(&mut request);
+            let headers = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                body.len()
+            );
+            stream.write_all(headers.as_bytes()).unwrap();
+            stream.write_all(body).unwrap();
+        }
+    });
+    assert!(run(root, &["import", &url]).0);
+    assert!(run(root, &["refresh", "--imports"]).0);
+    assert_eq!(
+        search_json(root, &["previous URL publication marker"]).len(),
+        1
+    );
+
+    let database_path = root.join(".git/repodb.sqlite");
+    let database = Connection::open(&database_path).unwrap();
+    let source_id: String = database
+        .query_row(
+            "SELECT id FROM imported_sources WHERE locator=?1",
+            [&url],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let source_metadata = || {
+        database
+            .query_row(
+                "SELECT fetch_status,last_fetch_error,last_fetch_attempt_at FROM imported_sources WHERE id=?1",
+                [&source_id],
+                |row| Ok((row.get::<_, Option<String>>(0)?, row.get::<_, Option<String>>(1)?, row.get::<_, Option<String>>(2)?)),
+            )
+            .unwrap()
+    };
+    let version_metadata = || {
+        let mut statement = database
+            .prepare(
+                "SELECT version,content,first_retrieved_at,last_retrieved_at,final_url,redirect_chain FROM imported_versions WHERE source_id=?1 ORDER BY fetched_order",
+            )
+            .unwrap();
+        statement
+            .query_map([&source_id], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, Option<String>>(2)?,
+                    row.get::<_, Option<String>>(3)?,
+                    row.get::<_, Option<String>>(4)?,
+                    row.get::<_, Option<String>>(5)?,
+                ))
+            })
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap()
+    };
+    let before_source = source_metadata();
+    let before_versions = version_metadata();
+    assert_eq!(before_source.0.as_deref(), Some("success"));
+    assert_eq!(before_versions.len(), 1);
+
+    database
+        .execute_batch(
+            "CREATE TRIGGER injected_url_publish_failure
+             BEFORE INSERT ON imported_units
+             BEGIN SELECT RAISE(ABORT, 'injected URL publication failure'); END;",
+        )
+        .unwrap();
+    let (success, _) = run(root, &["refresh", "--imports"]);
+    assert!(
+        !success,
+        "the injected SQL publication failure must surface"
+    );
+    assert_eq!(source_metadata(), before_source);
+    assert_eq!(version_metadata(), before_versions);
+    assert_eq!(
+        search_json(root, &["previous URL publication marker"]).len(),
+        1
+    );
+    assert!(search_json(root, &["unpublished URL replacement marker"]).is_empty());
+    server.join().unwrap();
+}
+
+#[test]
 fn failed_import_refresh_does_not_publish_resolved_git_pin_or_content() {
     let repo = repository();
     let root = repo.path();
@@ -3633,10 +3735,12 @@ fn imported_pdfs_preserve_pages_cache_conversions_and_refresh_versions() {
     let pdf_cache_dir = cache_dir.join("pdf-pages");
     let cache = fs::read_dir(&pdf_cache_dir)
         .unwrap()
-        .next()
-        .unwrap()
-        .unwrap()
-        .path();
+        .map(|entry| entry.unwrap().path())
+        .find(|path| {
+            path.extension()
+                .is_some_and(|extension| extension == "json")
+        })
+        .unwrap();
     fs::write(&cache, b"{partial").unwrap();
     assert!(run_with_env(root, &["refresh"], &env).0);
     assert_eq!(fs::read_to_string(&calls).unwrap(), "calledcalled");

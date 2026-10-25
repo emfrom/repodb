@@ -3,9 +3,13 @@ use crate::{
     process, segmentation, url_security,
 };
 use rusqlite::{Connection, OptionalExtension, params};
+use serde::{
+    Serialize,
+    ser::{SerializeSeq, Serializer},
+};
 use std::{
     fs::{self, OpenOptions},
-    io::Read,
+    io::{Read, Write},
     path::{Path, PathBuf},
     process::{Command, Stdio},
     sync::atomic::{AtomicU64, Ordering},
@@ -361,12 +365,113 @@ fn html_attribute(tag: &str, name: &str) -> Option<String> {
     }
 }
 
+#[cfg(test)]
 fn pdf_representation(pages: &[String]) -> Result<String> {
     let pages_json = serde_json::to_string(pages)?;
     Ok(serde_json::to_string(&serde_json::json!({
         "sha256": checksum(pages_json.as_bytes()),
         "pages": pages,
     }))?)
+}
+
+struct PdfPageRows<'a>(&'a Connection);
+
+impl Serialize for PdfPageRows<'_> {
+    fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        let mut sequence = serializer.serialize_seq(None)?;
+        let mut statement = self
+            .0
+            .prepare("SELECT text FROM temp.import_pdf_pages ORDER BY page")
+            .map_err(serde::ser::Error::custom)?;
+        let mut rows = statement.query([]).map_err(serde::ser::Error::custom)?;
+        while let Some(row) = rows.next().map_err(serde::ser::Error::custom)? {
+            let page = row
+                .get_ref(0)
+                .map_err(serde::ser::Error::custom)?
+                .as_str()
+                .map_err(serde::ser::Error::custom)?;
+            sequence.serialize_element(page)?;
+        }
+        sequence.end()
+    }
+}
+
+#[derive(Serialize)]
+struct PdfPageRepresentation<'a> {
+    pages: PdfPageRows<'a>,
+    sha256: &'a str,
+}
+
+struct Sha256Writer<'a>(&'a mut cache::Sha256);
+
+impl Write for Sha256Writer<'_> {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        self.0.update(bytes);
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+struct BudgetVecWriter<'a> {
+    bytes: Vec<u8>,
+    budget: &'a mut Budget,
+}
+
+impl Write for BudgetVecWriter<'_> {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        self.budget
+            .reserve_vec(&mut self.bytes, bytes.len(), "PDF page representation")
+            .map_err(|error| std::io::Error::other(error.to_string()))?;
+        self.bytes.extend_from_slice(bytes);
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+fn pdf_representation_from_temp(c: &Connection, budget: &mut Budget) -> Result<(String, String)> {
+    let mut pages_hash = cache::Sha256::new();
+    let mut extracted_hash = cache::Sha256::new();
+    {
+        let mut writer = Sha256Writer(&mut pages_hash);
+        let mut serializer = serde_json::Serializer::new(&mut writer);
+        let mut sequence = serializer.serialize_seq(None)?;
+        let mut statement = c.prepare("SELECT text FROM temp.import_pdf_pages ORDER BY page")?;
+        let mut rows = statement.query([])?;
+        let mut first = true;
+        while let Some(row) = rows.next()? {
+            let page = row.get_ref(0)?.as_str()?;
+            sequence.serialize_element(page)?;
+            if !first {
+                extracted_hash.update(b"\x0c");
+            }
+            extracted_hash.update(page.as_bytes());
+            first = false;
+        }
+        sequence.end()?;
+    }
+    let pages_hash = pages_hash.finalize();
+    let extracted_hash = extracted_hash.finalize();
+    let mut writer = BudgetVecWriter {
+        bytes: Vec::new(),
+        budget,
+    };
+    serde_json::to_writer(
+        &mut writer,
+        &PdfPageRepresentation {
+            pages: PdfPageRows(c),
+            sha256: &pages_hash,
+        },
+    )?;
+    Ok((String::from_utf8(writer.bytes)?, extracted_hash))
 }
 
 fn table_exists(c: &Connection, table: &str) -> Result<bool> {
@@ -529,21 +634,30 @@ fn stage_legacy_git_units(
     retention_limit: usize,
     memory: &mut Budget,
 ) -> Result<()> {
-    let legacy = {
-        let mut stmt = c.prepare("SELECT commit_id,path,line,line_end,text,vector FROM imported_git_units WHERE source_id=?1 AND commit_id IN (SELECT version FROM temp.import_stage_versions WHERE source_id=?1 ORDER BY fetched_order DESC LIMIT ?2)")?;
-        stmt.query_map(params![source_id, retention_limit as i64], |row| {
-            Ok((
-                row.get::<_, String>(0)?,
-                row.get::<_, String>(1)?,
-                row.get::<_, usize>(2)?,
-                row.get::<_, usize>(3)?,
-                row.get::<_, String>(4)?,
-                row.get::<_, Option<Vec<u8>>>(5)?,
-            ))
-        })?
-        .collect::<std::result::Result<Vec<_>, _>>()?
-    };
-    for (commit, path, line, line_end, legacy_text, vector) in legacy {
+    let mut statement = c.prepare("SELECT commit_id,path,line,line_end,text,vector FROM imported_git_units WHERE source_id=?1 AND commit_id IN (SELECT version FROM temp.import_stage_versions WHERE source_id=?1 ORDER BY fetched_order DESC LIMIT ?2)")?;
+    let mut rows = statement.query(params![source_id, retention_limit as i64])?;
+    while let Some(row) = rows.next()? {
+        let commit_bytes = row.get_ref(0)?.as_bytes()?.len();
+        let path_bytes = row.get_ref(1)?.as_bytes()?.len();
+        let text_bytes = row.get_ref(4)?.as_bytes()?.len();
+        let vector_bytes = match row.get_ref(5)? {
+            rusqlite::types::ValueRef::Null => 0,
+            value => value.as_bytes()?.len(),
+        };
+        let row_bytes = commit_bytes
+            .checked_add(path_bytes)
+            .and_then(|bytes| bytes.checked_add(text_bytes))
+            .and_then(|bytes| bytes.checked_add(vector_bytes))
+            .and_then(|bytes| bytes.checked_add(128))
+            .ok_or("legacy Git unit memory accounting overflow")?;
+        memory.charge_records(1, "legacy imported Git unit")?;
+        memory.charge(row_bytes, "legacy imported Git unit row")?;
+        let commit: String = row.get(0)?;
+        let path: String = row.get(1)?;
+        let line: usize = row.get(2)?;
+        let line_end: usize = row.get(3)?;
+        let legacy_text: String = row.get(4)?;
+        let vector: Option<Vec<u8>> = row.get(5)?;
         let spec = format!("{commit}:{path}");
         let text = String::from_utf8(git_output(
             repository,
@@ -570,6 +684,7 @@ fn stage_legacy_git_units(
             found.ok_or_else(|| format!("legacy imported Git unit not found in {spec}"))?;
         c.execute("INSERT OR REPLACE INTO temp.import_stage_git_units(source_id,commit_id,path,blob_id,segmentation_kind,byte_start,byte_end,line,line_end,vector) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)", params![source_id, commit, path, blob_id, kind, start, end, line, line_end, vector])?;
         memory.release(text.len());
+        memory.release(row_bytes);
     }
     Ok(())
 }
@@ -599,31 +714,29 @@ fn utc_rfc3339_now() -> Result<String> {
     ))
 }
 
-pub struct PrunedVersions {
-    pub source: String,
-    pub count: usize,
-}
-
-pub fn pruning_report(c: &Connection) -> Result<Vec<PrunedVersions>> {
+pub fn print_pruning_report(c: &Connection) -> Result<()> {
     let table_exists: bool = c.query_row(
         "SELECT EXISTS(SELECT 1 FROM sqlite_temp_master WHERE type='table' AND name='import_refresh_pruned')",
         [],
         |row| row.get(0),
     )?;
     if !table_exists {
-        return Ok(Vec::new());
+        return Ok(());
     }
     let mut statement = c.prepare(
         "SELECT locator,versions_pruned FROM temp.import_refresh_pruned WHERE versions_pruned>0 ORDER BY locator",
     )?;
-    Ok(statement
-        .query_map([], |row| {
-            Ok(PrunedVersions {
-                source: row.get(0)?,
-                count: row.get(1)?,
-            })
-        })?
-        .collect::<std::result::Result<Vec<_>, _>>()?)
+    let mut rows = statement.query([])?;
+    let stdout = std::io::stdout();
+    let mut output = stdout.lock();
+    while let Some(row) = rows.next()? {
+        let source: String = row.get(0)?;
+        let count: usize = row.get(1)?;
+        if writeln!(output, "pruned {count} historical version(s) for {source}").is_err() {
+            break;
+        }
+    }
+    Ok(())
 }
 
 fn retention_limit(c: &Connection) -> Result<usize> {
@@ -713,6 +826,8 @@ pub(super) fn clone_git_mirror(
 ) -> Result<()> {
     static NEXT_CLONE_ID: AtomicU64 = AtomicU64::new(0);
     fs::create_dir_all(cache_dir)?;
+    let _cache_lock =
+        crate::refresh_storage::StorageLock::acquire(&cache_dir.join(".git-cache.lock"))?;
     let maximum = crate::refresh_storage::max_git_cache_bytes()?;
     let existing = crate::refresh_storage::git_cache_bytes(cache_dir)?;
     if existing >= maximum {
@@ -1131,16 +1246,20 @@ fn refresh_with_size_limit_and_allowlist(
                     .join("pdf-pages")
                     .join(format!("{source_version}.json"));
                 let pdf_cache_limit = crate::refresh_storage::max_pdf_cache_bytes()?;
+                let cache_read_limit = pdf_cache_limit.min(refresh_memory_bytes.remaining() as u64);
                 c.execute("DELETE FROM temp.import_pdf_pages", [])?;
-                let cached = visit_cache_pages_limited(&cache, pdf_cache_limit, |page, text| {
-                    refresh_memory_bytes.charge_records(1, "PDF page")?;
+                let cached = visit_cache_pages_limited(&cache, cache_read_limit, |page, text| {
+                    refresh_memory_bytes.charge(text.len(), "cached PDF page text")?;
                     c.execute(
                         "INSERT INTO temp.import_pdf_pages(page,text) VALUES(?1,?2)",
                         params![page, text],
                     )?;
+                    refresh_memory_bytes.release(text.len());
                     Ok(())
                 })?;
-                if cached.is_none() {
+                if let Some(page_count) = cached {
+                    refresh_memory_bytes.charge_records(page_count, "PDF page")?;
+                } else {
                     c.execute("DELETE FROM temp.import_pdf_pages", [])?;
                     let mut command = Command::new("pdftotext");
                     command
@@ -1181,18 +1300,12 @@ fn refresh_with_size_limit_and_allowlist(
                 }
                 // Keep the converted snapshot alongside the units. The conversion cache is only
                 // an optimization; it may be deleted without losing the imported representation.
-                let pages = {
-                    let mut statement =
-                        c.prepare("SELECT text FROM temp.import_pdf_pages ORDER BY page")?;
-                    statement
-                        .query_map([], |row| row.get::<_, String>(0))?
-                        .collect::<std::result::Result<Vec<_>, _>>()?
-                };
+                let (representation, extracted_hash) =
+                    pdf_representation_from_temp(c, &mut refresh_memory_bytes)?;
                 if kind == "url" {
-                    let extracted_text = pages.join("\u{c}");
-                    url_version = Some(checksum(extracted_text.as_bytes()));
+                    url_version = Some(extracted_hash);
                 }
-                (source_version, Some(pdf_representation(&pages)?))
+                (source_version, Some(representation))
             } else {
                 // Imported version identity is the original source, not its decoded representation.
                 let source_text = String::from_utf8(source_bytes)?;
@@ -1265,6 +1378,11 @@ fn refresh_with_size_limit_and_allowlist(
             ).into());
             }
             if size_limit != SizeLimit::Ignore {
+                refresh_memory_bytes.reserve_vec(
+                    &mut size_assessments,
+                    1,
+                    "import size assessments",
+                )?;
                 size_assessments.push(assessment);
             }
             let fetched_order: i64 = c.query_row(
@@ -1296,9 +1414,9 @@ fn refresh_with_size_limit_and_allowlist(
                 let mut last_line = 0;
                 while let Some(row) = rows.next()? {
                     let page: usize = row.get(0)?;
-                    let text: String = row.get(1)?;
+                    let text = std::str::from_utf8(row.get_ref(1)?.as_bytes()?)?;
                     let mut failure = None;
-                    crate::segmentation::visit("paragraph", &text, |unit| {
+                    crate::segmentation::visit("paragraph", text, |unit| {
                         let result = (|| -> Result<()> {
                             refresh_memory_bytes.charge_records(1, "PDF indexed unit")?;
                             refresh_memory_bytes
@@ -1461,22 +1579,18 @@ pub fn publish(tx: &rusqlite::Transaction<'_>) -> Result<()> {
         tx.execute(&format!("DELETE FROM {table}"), [])?;
         if table == "imported_versions" {
             tx.execute("INSERT INTO imported_versions(source_id,version,content,fetched_order,first_retrieved_at,last_retrieved_at,final_url,redirect_chain) SELECT source_id,version,content,fetched_order,first_retrieved_at,last_retrieved_at,final_url,redirect_chain FROM temp.import_stage_versions", [])?;
-            let representations = {
-                let mut statement = tx.prepare(
-                    "SELECT source_id,version,content FROM imported_versions WHERE content<>''",
-                )?;
-                statement
-                    .query_map([], |row| {
-                        Ok((
-                            row.get::<_, String>(0)?,
-                            row.get::<_, String>(1)?,
-                            row.get::<_, String>(2)?,
-                        ))
-                    })?
-                    .collect::<std::result::Result<Vec<_>, _>>()?
-            };
-            for (source, version, content) in representations {
-                tx.execute("UPDATE imported_versions SET representation_sha256=?3 WHERE source_id=?1 AND version=?2", params![source, version, checksum(content.as_bytes())])?;
+            let mut statement = tx.prepare(
+                "SELECT source_id,version,content FROM imported_versions WHERE content<>''",
+            )?;
+            let mut rows = statement.query([])?;
+            let mut update = tx.prepare_cached(
+                "UPDATE imported_versions SET representation_sha256=?3 WHERE source_id=?1 AND version=?2",
+            )?;
+            while let Some(row) = rows.next()? {
+                let source: String = row.get(0)?;
+                let version: String = row.get(1)?;
+                let hash = checksum(row.get_ref(2)?.as_bytes()?);
+                update.execute(params![source, version, hash])?;
             }
             continue;
         }
@@ -1876,9 +1990,10 @@ pub fn search(
 mod tests {
     use super::{
         SizeLimit, batch_reader, bounded_command_output_with_input, checksum, configured_url_curl,
-        hydrate_git_unit_with_reader, pdf_representation, refresh_with_size_limit,
-        refresh_with_size_limit_and_allowlist, register, set_url_max_redirects, slice_git_unit,
-        utc_rfc3339_now, visit_cache_pages_limited, write_cache_limited,
+        hydrate_git_unit_with_reader, pdf_representation, pdf_representation_from_temp,
+        refresh_with_size_limit, refresh_with_size_limit_and_allowlist, register,
+        set_url_max_redirects, slice_git_unit, utc_rfc3339_now, visit_cache_pages_limited,
+        write_cache_limited,
     };
     use crate::budget::Budget;
     use rusqlite::Connection;
@@ -2230,6 +2345,41 @@ mod tests {
     }
 
     #[test]
+    fn pdf_page_representation_streams_canonical_json_and_extracted_text_hashes() {
+        let connection = Connection::open_in_memory().unwrap();
+        connection
+            .execute_batch(
+                "CREATE TEMP TABLE import_pdf_pages(page INTEGER PRIMARY KEY,text TEXT NOT NULL);",
+            )
+            .unwrap();
+        let pages = [
+            "first café".to_owned(),
+            "second page".to_owned(),
+            String::new(),
+        ];
+        for (index, page) in pages.iter().enumerate() {
+            connection
+                .execute(
+                    "INSERT INTO temp.import_pdf_pages VALUES(?1,?2)",
+                    rusqlite::params![index + 1, page],
+                )
+                .unwrap();
+        }
+        let mut budget = Budget::new(1024 * 1024, "test PDF representation budget");
+
+        let (representation, extracted_hash) =
+            pdf_representation_from_temp(&connection, &mut budget).unwrap();
+
+        assert_eq!(representation, pdf_representation(&pages).unwrap());
+        assert_eq!(
+            extracted_hash,
+            checksum(pages.join("\x0c").as_bytes()),
+            "URL PDF identity is the joined extracted pages"
+        );
+        assert!(budget.used() >= representation.capacity());
+    }
+
+    #[test]
     fn pdf_representation_keeps_pages_and_detects_tampering() {
         let pages = vec!["first page".to_owned(), "second\npage".to_owned()];
         let representation = pdf_representation(&pages).unwrap();
@@ -2333,7 +2483,11 @@ mod tests {
             "over-budget cache writes are skipped as optional work"
         );
         assert!(!path.exists());
-        assert!(!cache_dir.exists());
+        assert_eq!(
+            std::fs::read_dir(cache_dir).unwrap().count(),
+            1,
+            "only the persistent cooperative cache lock remains"
+        );
     }
 
     #[test]
@@ -2373,9 +2527,49 @@ mod tests {
             "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
         );
         assert_ne!(checksum(b"source one"), checksum(b"source two"));
+        let input = [b'a'; 128];
+        for (length, expected) in [
+            (
+                55,
+                "9f4390f8d30c2dd92ec9f095b65e2b9ae9b0a925a5258e241c9f1e910f734318",
+            ),
+            (
+                56,
+                "b35439a4ac6f0948b6d6f9e3c6af0f5f590ce20f1bde7090ef7970686ec6738a",
+            ),
+            (
+                63,
+                "7d3e74a05d7db15bce4ad9ec0658ea98e3f06eeecf16b4c6fff2da457ddc2f34",
+            ),
+            (
+                64,
+                "ffe054fe7ae0cb6dc65c3af9b61d5209f439851db43d0ba5997337df154668eb",
+            ),
+            (
+                65,
+                "635361c48bb9eab14198e76ea8ab7f1a41685d6ad62aa9146d301d4f17eb0ae0",
+            ),
+            (
+                127,
+                "c57e9278af78fa3cab38667bef4ce29d783787a2f731d4e12200270f0c32320a",
+            ),
+            (
+                128,
+                "6836cf13bac400e9105071cd6af47084dfacad4e5e302c94bfed24e013afb73e",
+            ),
+        ] {
+            assert_eq!(checksum(&input[..length]), expected, "length={length}");
+        }
         assert_eq!(
             checksum(b""),
             "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
         );
+        let input = [b'z'; 1024];
+        let expected = checksum(&input);
+        let mut incremental = super::cache::Sha256::new();
+        for chunk in input.chunks(17) {
+            incremental.update(chunk);
+        }
+        assert_eq!(incremental.finalize(), expected);
     }
 }

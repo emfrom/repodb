@@ -189,38 +189,66 @@ fn collect_preview_files(directory: &Path, files: &mut Vec<PathBuf>) -> Result<(
 }
 
 pub(super) fn init(c: &Connection) -> Result<()> {
+    const SAVEPOINT: &str = "repodb_import_schema_init";
+    c.execute_batch(&format!("SAVEPOINT {SAVEPOINT}"))?;
+    match init_schema(c) {
+        Ok(()) => match c.execute_batch(&format!("RELEASE SAVEPOINT {SAVEPOINT}")) {
+            Ok(()) => Ok(()),
+            Err(error) => rollback_schema_savepoint(c, SAVEPOINT, error.into()),
+        },
+        Err(error) => rollback_schema_savepoint(c, SAVEPOINT, error),
+    }
+}
+
+fn rollback_schema_savepoint(
+    c: &Connection,
+    savepoint: &str,
+    error: Box<dyn std::error::Error>,
+) -> Result<()> {
+    match c.execute_batch(&format!(
+        "ROLLBACK TO SAVEPOINT {savepoint}; RELEASE SAVEPOINT {savepoint}"
+    )) {
+        Ok(()) => Err(error),
+        Err(rollback_error) => Err(format!(
+            "{error}; additionally, import schema rollback failed: {rollback_error}"
+        )
+        .into()),
+    }
+}
+
+fn init_schema(c: &Connection) -> Result<()> {
     c.execute_batch("CREATE TABLE IF NOT EXISTS imported_sources(id TEXT PRIMARY KEY, locator TEXT NOT NULL UNIQUE, kind TEXT NOT NULL, object_store TEXT, fetch_status TEXT, last_fetch_error TEXT, last_fetch_attempt_at TEXT); CREATE TABLE IF NOT EXISTS imported_versions(source_id TEXT NOT NULL, version TEXT NOT NULL, content TEXT NOT NULL, fetched_order INTEGER NOT NULL DEFAULT 0, first_retrieved_at TEXT, last_retrieved_at TEXT, final_url TEXT, redirect_chain TEXT, PRIMARY KEY(source_id,version)); CREATE TABLE IF NOT EXISTS imported_units(source_id TEXT NOT NULL, version TEXT NOT NULL, line INTEGER NOT NULL, text TEXT NOT NULL, vector BLOB, page INTEGER, line_end INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(source_id,version,line,text)); CREATE TABLE IF NOT EXISTS import_config(key TEXT PRIMARY KEY,value TEXT NOT NULL); CREATE TABLE IF NOT EXISTS imported_git_units(source_id TEXT NOT NULL,commit_id TEXT NOT NULL,path TEXT NOT NULL,blob_id TEXT NOT NULL,segmentation_kind TEXT NOT NULL,byte_start INTEGER NOT NULL,byte_end INTEGER NOT NULL,line INTEGER NOT NULL,line_end INTEGER NOT NULL,vector BLOB,PRIMARY KEY(source_id,commit_id,path,byte_start));")?;
     if !column_exists(c, "imported_versions", "representation_sha256")? {
         c.execute(
             "ALTER TABLE imported_versions ADD COLUMN representation_sha256 TEXT",
             [],
         )?;
-        let rows = {
-            let mut statement = c.prepare(
-                "SELECT source_id,version,content FROM imported_versions WHERE content<>''",
-            )?;
-            statement
-                .query_map([], |row| {
-                    Ok((
-                        row.get::<_, String>(0)?,
-                        row.get::<_, String>(1)?,
-                        row.get::<_, String>(2)?,
-                    ))
-                })?
-                .collect::<std::result::Result<Vec<_>, _>>()?
-        };
-        for (source, version, content) in rows {
-            c.execute("UPDATE imported_versions SET representation_sha256=?3 WHERE source_id=?1 AND version=?2", params![source, version, super::cache::checksum(content.as_bytes())])?;
+    }
+    {
+        let mut statement = c.prepare(
+            "SELECT source_id,version,content FROM imported_versions WHERE content<>'' AND representation_sha256 IS NULL",
+        )?;
+        let mut rows = statement.query([])?;
+        let mut update = c.prepare_cached(
+            "UPDATE imported_versions SET representation_sha256=?3 WHERE source_id=?1 AND version=?2",
+        )?;
+        while let Some(row) = rows.next()? {
+            let source: String = row.get(0)?;
+            let version: String = row.get(1)?;
+            let content = row.get_ref(2)?.as_bytes()?;
+            std::str::from_utf8(content)?;
+            let hash = super::cache::checksum(content);
+            update.execute(params![source, version, hash])?;
         }
     }
     {
         let mut statement = c.prepare("SELECT content,representation_sha256 FROM imported_versions WHERE representation_sha256 IS NOT NULL")?;
-        let rows = statement.query_map([], |row| {
-            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-        })?;
-        for row in rows {
-            let (content, expected) = row?;
-            if super::cache::checksum(content.as_bytes()) != expected {
+        let mut rows = statement.query([])?;
+        while let Some(row) = rows.next()? {
+            let content = row.get_ref(0)?.as_bytes()?;
+            std::str::from_utf8(content)?;
+            let expected: String = row.get(1)?;
+            if super::cache::checksum(content) != expected {
                 return Err("imported version representation hash mismatch".into());
             }
         }
@@ -595,6 +623,22 @@ mod tests {
 
         connection
             .execute(
+                "UPDATE imported_versions SET representation_sha256=NULL WHERE source_id='text'",
+                [],
+            )
+            .unwrap();
+        init(&connection).unwrap();
+        let repaired_hash: String = connection
+            .query_row(
+                "SELECT representation_sha256 FROM imported_versions WHERE source_id='text'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(repaired_hash, text_hash);
+
+        connection
+            .execute(
                 "UPDATE imported_versions SET content='tampered' WHERE source_id='text'",
                 [],
             )
@@ -614,6 +658,49 @@ mod tests {
             original_rows, 3,
             "failed integrity migration must not discard versions"
         );
+    }
+
+    #[test]
+    fn failed_import_schema_migration_rolls_back_and_can_be_retried() {
+        let connection = Connection::open_in_memory().unwrap();
+        connection
+            .execute_batch(
+                "CREATE TABLE imported_versions(source_id TEXT,version TEXT,content TEXT);
+                 INSERT INTO imported_versions VALUES('legacy','v1','legacy content');
+                 CREATE TRIGGER fail_representation_backfill
+                 BEFORE UPDATE ON imported_versions
+                 BEGIN SELECT RAISE(ABORT, 'injected migration failure'); END;",
+            )
+            .unwrap();
+
+        let error = init(&connection).unwrap_err().to_string();
+        assert!(error.contains("injected migration failure"));
+        assert!(
+            !super::column_exists(&connection, "imported_versions", "representation_sha256")
+                .unwrap()
+        );
+        assert!(!super::column_exists(&connection, "imported_sources", "id").unwrap());
+        assert_eq!(
+            connection
+                .query_row("SELECT content FROM imported_versions", [], |row| row
+                    .get::<_, String>(0))
+                .unwrap(),
+            "legacy content"
+        );
+
+        connection
+            .execute_batch("DROP TRIGGER fail_representation_backfill")
+            .unwrap();
+        init(&connection).unwrap();
+        let expected = super::super::cache::checksum(b"legacy content");
+        let actual: String = connection
+            .query_row(
+                "SELECT representation_sha256 FROM imported_versions WHERE source_id='legacy'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(actual, expected);
     }
 
     #[test]

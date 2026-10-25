@@ -2089,12 +2089,7 @@ fn execute() -> Result<()> {
                 budget::check_refresh_deadline()?;
                 tx.commit()?;
             }
-            for pruned in imports::pruning_report(&db)? {
-                println!(
-                    "pruned {} historical version(s) for {}",
-                    pruned.count, pruned.source
-                );
-            }
+            imports::print_pruning_report(&db)?;
             for assessment in size_assessments
                 .into_iter()
                 .filter(|assessment| assessment.warn_large)

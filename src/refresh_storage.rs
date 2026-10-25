@@ -29,6 +29,48 @@ pub(crate) fn max_pdf_cache_bytes() -> crate::Result<u64> {
     configured_limit("REPODB_MAX_PDF_CACHE_BYTES", DEFAULT_MAX_PDF_CACHE_BYTES)
 }
 
+pub(crate) struct StorageLock(std::fs::File);
+
+impl StorageLock {
+    pub(crate) fn acquire(path: &std::path::Path) -> crate::Result<Self> {
+        use std::os::fd::AsRawFd;
+
+        let file = std::fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .read(true)
+            .write(true)
+            .open(path)?;
+        loop {
+            // SAFETY: `file` remains open for the lifetime of the lock.
+            let result = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
+            if result == 0 {
+                return Ok(Self(file));
+            }
+            let error = std::io::Error::last_os_error();
+            if error.kind() == std::io::ErrorKind::WouldBlock
+                || error.kind() == std::io::ErrorKind::Interrupted
+            {
+                crate::budget::check_refresh_deadline()?;
+                std::thread::sleep(std::time::Duration::from_millis(10));
+                continue;
+            }
+            return Err(error.into());
+        }
+    }
+}
+
+impl Drop for StorageLock {
+    fn drop(&mut self) {
+        use std::os::fd::AsRawFd;
+
+        // SAFETY: the file descriptor is valid until this wrapper is dropped.
+        unsafe {
+            libc::flock(self.0.as_raw_fd(), libc::LOCK_UN);
+        }
+    }
+}
+
 pub(crate) fn git_cache_bytes(cache_root: &std::path::Path) -> crate::Result<u64> {
     let entries = match std::fs::read_dir(cache_root) {
         Ok(entries) => entries,
@@ -128,6 +170,30 @@ fn set_page_limit(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn storage_lock_serializes_writers_across_file_descriptors() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("cache.lock");
+        let first = StorageLock::acquire(&path).unwrap();
+        let (acquired, received) = std::sync::mpsc::channel();
+        let worker_path = path.clone();
+        let worker = std::thread::spawn(move || {
+            let _second = StorageLock::acquire(&worker_path).unwrap();
+            acquired.send(()).unwrap();
+        });
+
+        assert!(
+            received
+                .recv_timeout(std::time::Duration::from_millis(50))
+                .is_err()
+        );
+        drop(first);
+        received
+            .recv_timeout(std::time::Duration::from_secs(1))
+            .unwrap();
+        worker.join().unwrap();
+    }
 
     #[test]
     fn temporary_staging_database_cannot_exceed_its_page_limit() {
