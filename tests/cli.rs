@@ -3061,7 +3061,7 @@ fn interrupting_refresh_terminates_child_and_preserves_the_published_snapshot() 
     let done = root.join("converter-finished");
     fs::write(
         &converter,
-        format!("#!/bin/sh\ncat >/dev/null\ntouch '{}'\nprintf '%s' \"$$\" > '{}'\nsleep 30\ntouch '{}'\n", marker.display(), group_pid.display(), done.display()),
+        format!("#!/bin/sh\ncat >/dev/null\nprintf '%s' \"$$\" > '{}'\ntouch '{}'\nsleep 30\ntouch '{}'\n", group_pid.display(), marker.display(), done.display()),
     )
     .unwrap();
     let config_home = test_config_home(root);
@@ -5218,6 +5218,81 @@ fn failed_changed_refresh_keeps_the_previous_snapshot() {
     assert_eq!(search_json(root, &["TARGET", "--commit", &parent]).len(), 1);
     assert!(search_json(root, &["abort scoped marker"]).is_empty());
     assert!(search_json(root, &["abort scoped marker", "--all-history"]).is_empty());
+}
+
+#[test]
+fn changed_refresh_sql_failures_at_each_publish_boundary_preserve_snapshot() {
+    let repo = repository();
+    let root = repo.path();
+    assert!(run(root, &["init"]).0);
+    let original_commit = git_text(root, &["rev-parse", "HEAD"]);
+    assert_eq!(search_json(root, &["Exact [literal] TARGET"]).len(), 1);
+
+    fs::write(
+        root.join("published.txt"),
+        "pending publication boundary marker\n",
+    )
+    .unwrap();
+    git(root, &["add", "published.txt"]);
+    git(root, &["commit", "-qm", "pending publication boundary"]);
+
+    let database = Connection::open(root.join(".git/repodb.sqlite")).unwrap();
+    let boundaries = [
+        ("git_commits", "INSERT"),
+        ("blob_contents", "INSERT"),
+        ("indexed_units", "INSERT"),
+        ("git_blob_units", "INSERT"),
+        ("unit_embeddings", "INSERT"),
+        ("git_occurrences", "INSERT"),
+        ("embedding_config", "UPDATE"),
+    ];
+    for (table, operation) in boundaries {
+        let trigger = format!("injected_failure_{table}");
+        database
+            .execute_batch(&format!(
+                "CREATE TRIGGER {trigger} BEFORE {operation} ON {table}
+                 BEGIN SELECT RAISE(ABORT, 'injected publication boundary failure'); END;"
+            ))
+            .unwrap();
+        let (ok, output) = run(root, &["refresh", "--changed"]);
+        assert!(
+            !ok,
+            "{table} fault injection unexpectedly succeeded: {output}"
+        );
+        assert_eq!(
+            search_json(
+                root,
+                &["Exact [literal] TARGET", "--commit", &original_commit]
+            )
+            .len(),
+            1,
+            "{table} failure changed the previously published snapshot"
+        );
+        assert!(
+            search_json(
+                root,
+                &["pending publication boundary marker", "--history=all"]
+            )
+            .is_empty()
+        );
+        let commit_count: i64 = database
+            .query_row("SELECT count(*) FROM git_commits", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(commit_count, 1, "{table} failure published partial history");
+        database
+            .execute_batch(&format!("DROP TRIGGER {trigger}"))
+            .unwrap();
+    }
+
+    let (ok, output) = run(root, &["refresh", "--changed"]);
+    assert!(
+        ok,
+        "refresh should succeed after removing injected failures: {output}"
+    );
+    assert_eq!(
+        search_json(root, &["pending publication boundary marker"]).len(),
+        1
+    );
 }
 
 #[test]
