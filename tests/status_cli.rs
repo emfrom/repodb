@@ -104,37 +104,41 @@ fn status_rejects_a_corrupted_database_without_replacing_it() {
 
 #[test]
 fn status_rejects_a_structurally_corrupted_database_without_replacing_it() {
-    let repo = repo();
-    let root = repo.path();
-    let embedder = root.join("embedder");
-    fs::write(&embedder, "#!/bin/sh\ncat >/dev/null\nprintf '[1,0]'\n").unwrap();
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        fs::set_permissions(&embedder, fs::Permissions::from_mode(0o755)).unwrap();
-    }
-    let cfg = config(root, embedder.to_str().unwrap());
-    let initialized = run(root, &["init"], &cfg);
-    assert!(
-        initialized.status.success(),
-        "{}",
-        String::from_utf8_lossy(&initialized.stderr)
-    );
-    let database = root.join(".git/repodb.sqlite");
-    let connection = rusqlite::Connection::open(&database).unwrap();
-    connection
-        .execute_batch("PRAGMA foreign_keys=OFF; DROP TABLE indexed_units")
-        .unwrap();
-    drop(connection);
-    let corrupted_database = fs::read(&database).unwrap();
+    for missing_table in ["indexed_units", "blob_contents"] {
+        let repo = repo();
+        let root = repo.path();
+        let embedder = root.join("embedder");
+        fs::write(&embedder, "#!/bin/sh\ncat >/dev/null\nprintf '[1,0]'\n").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&embedder, fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        let cfg = config(root, embedder.to_str().unwrap());
+        let initialized = run(root, &["init"], &cfg);
+        assert!(
+            initialized.status.success(),
+            "{}",
+            String::from_utf8_lossy(&initialized.stderr)
+        );
+        let database = root.join(".git/repodb.sqlite");
+        let connection = rusqlite::Connection::open(&database).unwrap();
+        connection
+            .execute_batch(&format!(
+                "PRAGMA foreign_keys=OFF; DROP TABLE {missing_table}"
+            ))
+            .unwrap();
+        drop(connection);
+        let corrupted_database = fs::read(&database).unwrap();
 
-    let output = run(root, &["status", "--json"], &cfg);
-    assert!(
-        !output.status.success(),
-        "status must reject a database with a missing required table: {}",
-        String::from_utf8_lossy(&output.stdout)
-    );
-    assert_eq!(fs::read(&database).unwrap(), corrupted_database);
+        let output = run(root, &["status", "--json"], &cfg);
+        assert!(
+            !output.status.success(),
+            "status must reject a database missing {missing_table}: {}",
+            String::from_utf8_lossy(&output.stdout)
+        );
+        assert_eq!(fs::read(&database).unwrap(), corrupted_database);
+    }
 }
 
 #[test]

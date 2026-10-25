@@ -47,24 +47,26 @@ mod tests {
 
     #[test]
     fn all_utf8_byte_ranges_match_independent_slice_validation() {
-        let source = "Aé🦀\nZ";
-        let bytes = source.as_bytes();
-        let boundaries = source
-            .char_indices()
-            .map(|(offset, _)| offset)
-            .chain([bytes.len()])
-            .collect::<Vec<_>>();
-        for start in 0..=bytes.len() {
-            for end in 0..=bytes.len() {
-                if start > end || !boundaries.contains(&start) || !boundaries.contains(&end) {
-                    assert!(slice_utf8(bytes, "blob", start, end, "indexed").is_err());
-                    continue;
+        for source in ["", "ASCII", "aéz", "Aé🦀\nZ", "e\u{301}\0\r\n👩‍💻"] {
+            let bytes = source.as_bytes();
+            let boundaries = source
+                .char_indices()
+                .map(|(offset, _)| offset)
+                .chain([bytes.len()])
+                .collect::<Vec<_>>();
+            for start in 0..=bytes.len() {
+                for end in 0..=bytes.len() {
+                    if start > end || !boundaries.contains(&start) || !boundaries.contains(&end) {
+                        assert!(slice_utf8(bytes, "blob", start, end, "indexed").is_err());
+                        continue;
+                    }
+                    let expected = std::str::from_utf8(&bytes[start..end]).unwrap();
+                    assert_eq!(
+                        slice_utf8(bytes, "blob", start, end, "indexed").unwrap(),
+                        expected,
+                        "source={source:?}, range={start}..{end}"
+                    );
                 }
-                let expected = std::str::from_utf8(&bytes[start..end]).unwrap();
-                assert_eq!(
-                    slice_utf8(bytes, "blob", start, end, "indexed").unwrap(),
-                    expected
-                );
             }
         }
     }

@@ -3,11 +3,16 @@ name = "repodb"
 version = "0.3.1"
 edition = "2024"
 license = "GPL-2.0-only"
+description = "Repository search across source code, Git history, and imported documents."
+homepage = "https://github.com/emfrom/repodb"
+documentation = "https://github.com/emfrom/repodb#readme"
+repository = "https://github.com/emfrom/repodb"
 exclude = [
     ".scratch/**",
     "AGENTS.md",
     "benchmarks/**",
     "docs/issue-*",
+    "docs/repodb-0.3.2-pre-spec.md",
     "docs/research/**",
     "docs/reviews/security/**",
     "docs/reviews/standards/**",
