@@ -8,6 +8,25 @@ I built RepoDB to help agents understand codebases and work with them more quick
 
 See [CHANGELOG.md](CHANGELOG.md) for version history. Release-review cadence: before 1.0.0, reviews are mandatory for major/minor version increases; from 1.0.0 onward, they are mandatory before every release. See [docs/reviews](docs/reviews/README.md).
 
+## Install from source
+
+From a checkout of the exact RepoDB version you want (for example, a versioned
+release tag), install with Cargo:
+
+```sh
+cargo install --path . --locked
+```
+
+Cargo installs the `repodb` executable under its configured binary directory
+(usually `~/.cargo/bin`). To upgrade, check out the newer version and rerun the
+command. To roll back, check out the earlier version and run
+`cargo install --path . --locked --force`; `--force` is needed when replacing a
+newer installed version with an older one. Remove the executable with
+`cargo uninstall repodb`. Uninstalling does not remove repository databases or
+import caches. The v0.3.1 install/upgrade/rollback/uninstall flow was verified
+from local source checkouts on Linux x86_64; registry distribution and other
+platforms are not claimed as verified.
+
 Custom embedding commands receive each text on stdin and must print a JSON numeric vector on stdout. RepoDB invokes them directly (not through a shell) as `COMMAND --json -` and sets `REPODB_EMBEDDING_MODEL` to the configured model ID for every indexing and query invocation. Commands must produce vectors consistent with that model ID. The built-in [`~/bin/generate_embeddings`](https://github.com/emfrom/generate_embeddings) supports only `all-MiniLM-L6-v2`.
 
 Configured embedders, segmenters, and parser/converter tools are trusted executables: they inherit RepoDB's process environment, and source content may be supplied via stdin or a temporary file. RepoDB cannot prevent a configured tool from transmitting that content elsewhere; inspect its path, environment, and behavior before indexing sensitive material. Some failure diagnostics include a bounded excerpt of a tool's stderr. Worktree semantic search does not send staged or live worktree text to the embedder; it maps indexed HEAD vectors to live text. The index database and imported caches can contain source-derived text. On Unix, new PDF page-cache entries are created without group/world permissions, and existing entries with such permissions are discarded rather than read. Other storage follows the selected path's ownership, permissions, and umask; RepoDB does not guarantee user-private isolation, so protect those paths on shared hosts.

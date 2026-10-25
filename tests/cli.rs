@@ -4927,6 +4927,86 @@ fn url_history_limit_keeps_two_distinct_snapshots_and_reports_pruning() {
 }
 
 #[test]
+fn generated_history_states_match_git_trees_across_repeated_full_refreshes() {
+    let repo = repository();
+    let root = repo.path();
+    assert!(run(root, &["init"]).0);
+
+    let paths = ["alpha.txt", "nested/beta.txt", "src/gamma.rs", "delta.txt"];
+    let mut commits = vec![git_text(root, &["rev-parse", "HEAD"])];
+    for step in 0..24 {
+        // Deterministic generated transitions cover additions, updates and deletions
+        // without introducing a property-testing dependency.
+        let path = root.join(paths[(step * 7 + 3) % paths.len()]);
+        if step % 5 == 3 && path.exists() {
+            fs::remove_file(&path).unwrap();
+        } else {
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(&path, format!("generated state marker {step:02}\n")).unwrap();
+        }
+        git(root, &["add", "-A"]);
+        git(
+            root,
+            &["commit", "-qm", &format!("generated transition {step:02}")],
+        );
+        commits.push(git_text(root, &["rev-parse", "HEAD"]));
+    }
+
+    let indexed_trees = || {
+        let database = Connection::open(root.join(".git/repodb.sqlite")).unwrap();
+        commits
+            .iter()
+            .map(|commit| {
+                let mut statement = database
+                    .prepare(
+                        "SELECT blob_id,path FROM git_occurrences WHERE commit_id=?1 ORDER BY path",
+                    )
+                    .unwrap();
+                statement
+                    .query_map([commit], |row| {
+                        Ok((row.get::<_, String>(0)?, row.get::<_, Vec<u8>>(1)?))
+                    })
+                    .unwrap()
+                    .map(Result::unwrap)
+                    .collect::<Vec<_>>()
+            })
+            .collect::<Vec<_>>()
+    };
+
+    let (ok, output) = run(root, &["refresh"]);
+    assert!(ok, "first generated-history refresh failed: {output}");
+    let first_snapshot = indexed_trees();
+
+    for (commit, indexed) in commits.iter().zip(&first_snapshot) {
+        let output = Command::new("git")
+            .args(["ls-tree", "-r", "--full-tree", commit])
+            .current_dir(root)
+            .output()
+            .unwrap();
+        assert!(output.status.success());
+        let mut expected = String::from_utf8(output.stdout)
+            .unwrap()
+            .lines()
+            .map(|line| {
+                let (header, path) = line.split_once('\t').unwrap();
+                let mut fields = header.split_whitespace();
+                let _mode = fields.next().unwrap();
+                let kind = fields.next().unwrap();
+                let oid = fields.next().unwrap();
+                assert_eq!(kind, "blob");
+                (oid.to_owned(), path.as_bytes().to_vec())
+            })
+            .collect::<Vec<_>>();
+        expected.sort_by(|left, right| left.1.cmp(&right.1));
+        assert_eq!(indexed, &expected, "indexed tree mismatch at {commit}");
+    }
+
+    let (ok, output) = run(root, &["refresh"]);
+    assert!(ok, "repeated generated-history refresh failed: {output}");
+    assert_eq!(indexed_trees(), first_snapshot);
+}
+
+#[test]
 fn scoped_refresh_indexes_commit_changes_and_reuses_unchanged_units() {
     use std::os::unix::fs::PermissionsExt;
 
