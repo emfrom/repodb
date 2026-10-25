@@ -375,6 +375,179 @@ fn git_import_accepts_one_optional_revision_and_pins_it_to_the_resolved_commit()
 }
 
 #[test]
+fn git_import_errors_do_not_expose_embedded_credentials_or_git_stderr() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let repo = repository();
+    let root = repo.path();
+    let fake_bin = root.join("fake-bin");
+    fs::create_dir_all(&fake_bin).unwrap();
+    let real_git = std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default())
+        .map(|directory| directory.join("git"))
+        .find(|path| path.is_file())
+        .and_then(|path| fs::canonicalize(path).ok())
+        .expect("real git executable on PATH");
+    let marker = root.join("clone-called");
+    let fake_git = fake_bin.join("git");
+    fs::write(
+        &fake_git,
+        format!(
+            r#"#!/bin/sh
+if [ "$1" = clone ]; then
+  printf '%s' GIT_ERROR_SENTINEL_614D >&2
+  printf x > "$GIT_WRAPPER_MARKER"
+  exit 128
+fi
+exec '{}' "$@"
+"#,
+            real_git.display()
+        ),
+    )
+    .unwrap();
+    fs::set_permissions(&fake_git, fs::Permissions::from_mode(0o755)).unwrap();
+    let config_home = test_config_home(root);
+    let run_import = |locator: &str| {
+        Command::new(env!("CARGO_BIN_EXE_repodb"))
+            .args(["import", locator])
+            .current_dir(root)
+            .env(
+                "REPODB_SEMGREP_CORE",
+                semgrep_corpus::required_semgrep_core(),
+            )
+            .env("XDG_CONFIG_HOME", &config_home)
+            .env("REPODB_URL_PRIVATE_ALLOWLIST", "127.0.0.1")
+            .env("GIT_WRAPPER_MARKER", &marker)
+            .env("PATH", &fake_bin)
+            .output()
+            .unwrap()
+    };
+
+    let credentialed = run_import("https://test-user@example.invalid/private.git");
+    let clone_ran_for_credentialed_locator = marker.exists();
+    let public = run_import("https://example.invalid/public.git");
+    let credentialed_stderr = String::from_utf8_lossy(&credentialed.stderr);
+    let public_stderr = String::from_utf8_lossy(&public.stderr);
+
+    assert!(!credentialed.status.success());
+    assert!(
+        credentialed_stderr.contains("credentials"),
+        "credentialed URL should be rejected: {credentialed_stderr}"
+    );
+    assert!(
+        !credentialed_stderr.contains("test-user"),
+        "credentialed locator leaked to stderr: {credentialed_stderr}"
+    );
+    assert!(
+        !clone_ran_for_credentialed_locator,
+        "credentialed locator reached git clone"
+    );
+    assert!(!public.status.success());
+    assert!(
+        !public_stderr.contains("GIT_ERROR_SENTINEL_614D"),
+        "Git stderr leaked through RepoDB: {public_stderr}"
+    );
+}
+
+#[test]
+fn search_redacts_credentials_from_legacy_import_metadata() {
+    let repo = repository();
+    let root = repo.path();
+    let database = root.join(".git/legacy-imports.db");
+    let database_arg = database.to_str().unwrap();
+    assert!(run_with_env(root, &["--database", database_arg, "init"], &[]).0);
+
+    let connection = Connection::open(&database).unwrap();
+    connection
+        .execute(
+            "INSERT INTO imported_sources(id, locator, kind, fetch_status, last_fetch_error) VALUES (?1, ?2, 'url', 'failed', ?3)",
+            rusqlite::params![
+                "legacy-source",
+                "https://alice:supersecret@example.invalid/private",
+                "failed to fetch https://alice:supersecret@example.invalid/private"
+            ],
+        )
+        .unwrap();
+    connection
+        .execute(
+            "INSERT INTO imported_versions(source_id, version, content, final_url, redirect_chain) VALUES (?1, 'v1', 'legacy credential marker', ?2, ?3)",
+            rusqlite::params![
+                "legacy-source",
+                "https://alice:supersecret@example.invalid/redirected",
+                r#"["https://alice:supersecret@example.invalid/private"]"#
+            ],
+        )
+        .unwrap();
+    connection
+        .execute(
+            "INSERT INTO imported_units(source_id, version, line, text, line_end) VALUES ('legacy-source', 'v1', 1, 'legacy credential marker', 1)",
+            [],
+        )
+        .unwrap();
+    drop(connection);
+
+    let (ok, output) = run(
+        root,
+        &[
+            "--database",
+            database_arg,
+            "search",
+            "--json",
+            "legacy credential marker",
+        ],
+    );
+    assert!(ok, "search failed: {output}");
+    assert!(
+        !output.contains("alice"),
+        "username leaked in search output: {output}"
+    );
+    assert!(
+        !output.contains("supersecret"),
+        "password leaked in search output: {output}"
+    );
+    assert!(
+        output.contains("[redacted]"),
+        "redacted URL missing: {output}"
+    );
+
+    let (refresh_ok, refresh_output) = run(root, &["--database", database_arg, "refresh"]);
+    assert!(
+        !refresh_ok,
+        "legacy credential-bearing source unexpectedly refreshed: {refresh_output}"
+    );
+}
+
+#[test]
+fn url_import_rejects_embedded_credentials_without_registering_them() {
+    let repo = repository();
+    let root = repo.path();
+    let config_home = test_config_home(root);
+    let locator = "https://test-user@example.invalid/private.txt";
+    let output = Command::new(env!("CARGO_BIN_EXE_repodb"))
+        .args(["import", locator])
+        .current_dir(root)
+        .env(
+            "REPODB_SEMGREP_CORE",
+            semgrep_corpus::required_semgrep_core(),
+        )
+        .env("XDG_CONFIG_HOME", &config_home)
+        .env("REPODB_URL_PRIVATE_ALLOWLIST", "127.0.0.1")
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    assert!(!output.status.success());
+    assert!(stderr.contains("credentials"), "{stderr}");
+    assert!(!stderr.contains("test-user"), "credential leaked: {stderr}");
+    let database = Connection::open(root.join(".git/repodb.sqlite")).unwrap();
+    let count: i64 = database
+        .query_row("SELECT count(*) FROM imported_sources", [], |row| {
+            row.get(0)
+        })
+        .unwrap_or(0);
+    assert_eq!(count, 0);
+}
+
+#[test]
 fn import_preview_reports_selected_files_sizes_and_exclusions_without_db_side_effects() {
     use std::os::unix::fs::symlink;
 

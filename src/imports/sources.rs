@@ -415,6 +415,21 @@ fn identity(locator: &str) -> String {
     )
 }
 
+fn git_remote_has_embedded_credentials(locator: &str) -> bool {
+    let Some((scheme, rest)) = locator.split_once("://") else {
+        return false;
+    };
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or_default();
+    let Some((userinfo, _)) = authority.rsplit_once('@') else {
+        return false;
+    };
+    match scheme {
+        "http" | "https" | "git" | "file" => true,
+        "ssh" => userinfo.contains(':'),
+        _ => false,
+    }
+}
+
 pub(crate) fn register(c: &Connection, locator: &str, revision: Option<&str>) -> Result<()> {
     let is_remote_git = locator.starts_with("ssh://")
         || locator.starts_with("git@")
@@ -422,8 +437,17 @@ pub(crate) fn register(c: &Connection, locator: &str, revision: Option<&str>) ->
         || locator.starts_with("file://")
         || locator.starts_with("http://") && locator.ends_with(".git")
         || locator.starts_with("https://") && locator.ends_with(".git");
+    if is_remote_git && git_remote_has_embedded_credentials(locator) {
+        return Err(
+            "Git remote URLs must not contain embedded credentials; use a Git credential helper instead"
+                .into(),
+        );
+    }
     let is_url =
         !is_remote_git && (locator.starts_with("http://") || locator.starts_with("https://"));
+    if is_url {
+        crate::url_security::parse_http_url(locator)?;
+    }
     let path = Path::new(locator);
     let is_git = is_remote_git
         || path.is_dir()
@@ -506,9 +530,14 @@ pub(crate) fn register(c: &Connection, locator: &str, revision: Option<&str>) ->
                     .arg("--git-dir")
                     .arg(&mirror)
                     .args(["fetch", "--prune", "origin"])
+                    .stdout(Stdio::null())
+                    .stderr(Stdio::null())
                     .status()?;
                 if !status.success() {
-                    return Err(format!("git fetch failed for {locator}").into());
+                    return Err(
+                        "Git fetch failed; check remote access and Git authentication configuration"
+                            .into(),
+                    );
                 }
             }
             mirror.to_string_lossy().into_owned()
@@ -575,8 +604,29 @@ pub(crate) fn set_retention(c: &Connection, value: &str) -> Result<usize> {
 
 #[cfg(test)]
 mod tests {
-    use super::init;
+    use super::{git_remote_has_embedded_credentials, init};
     use rusqlite::Connection;
+
+    #[test]
+    fn git_remote_credential_check_rejects_uri_userinfo_without_blocking_ssh_usernames() {
+        for (locator, expected) in [
+            ("https://user:token@example.com/repo.git", true),
+            ("https://token@example.com/repo.git", true),
+            ("http://user:token@example.com/repo.git", true),
+            ("git://user@example.com/repo.git", true),
+            ("file://user@example.com/repo.git", true),
+            ("ssh://user:token@example.com/repo.git", true),
+            ("https://example.com/repo.git", false),
+            ("ssh://git@example.com/repo.git", false),
+            ("git@example.com:owner/repo.git", false),
+        ] {
+            assert_eq!(
+                git_remote_has_embedded_credentials(locator),
+                expected,
+                "{locator}"
+            );
+        }
+    }
 
     #[test]
     fn init_marks_unrecoverable_legacy_pdf_and_backfills_text_hashes() {

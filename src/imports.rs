@@ -482,6 +482,11 @@ fn table_exists(c: &Connection, table: &str) -> Result<bool> {
     )?)
 }
 
+fn local_file_memory_size(size: u64) -> Result<usize> {
+    usize::try_from(size)
+        .map_err(|_| "local import is too large for this platform's address space".into())
+}
+
 fn read_all(reader: impl Read, byte_limit: u64) -> Result<Vec<u8>> {
     let read_limit = byte_limit.saturating_add(1);
     let mut bytes = Vec::new();
@@ -847,17 +852,15 @@ pub(super) fn clone_git_mirror(
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
         let mut child = process::spawn_in_process_group_with_file_limit(&mut command, remaining)?;
-        let (status, _, stderr) = bounded_command_output(
+        let (status, _, _) = bounded_command_output(
             &mut child,
             budget.remaining().saturating_sub(MAX_COMMAND_STDERR_BYTES),
             budget,
         )?;
         if !status.success() {
-            return Err(format!(
-                "git clone failed for {locator}: {}",
-                String::from_utf8_lossy(&stderr)
-            )
-            .into());
+            return Err(
+                "Git clone failed; check remote access and Git authentication configuration".into(),
+            );
         }
         let total = crate::refresh_storage::git_cache_bytes(cache_dir)?;
         if total > maximum {
@@ -990,6 +993,14 @@ fn refresh_with_size_limit_and_allowlist(
     c.execute_batch("DROP TABLE IF EXISTS temp.import_pdf_pages; CREATE TEMP TABLE import_pdf_pages(page INTEGER PRIMARY KEY,text TEXT NOT NULL);")?;
     // This conservative cumulative accounting includes buffers and representations materialized during preparation.
     for (id, locator, kind) in source_rows {
+        if matches!(kind.as_str(), "git" | "url")
+            && crate::url_security::redact_userinfo(&locator) != locator
+        {
+            return Err(
+                "Stored imported source contains embedded credentials; remove it and re-add it using a credential helper"
+                    .into(),
+            );
+        }
         if kind == "git" {
             let repository = if Path::new(&locator).is_dir() {
                 locator.clone()
@@ -1177,7 +1188,7 @@ fn refresh_with_size_limit_and_allowlist(
                     );
                 }
                 let size = fs::metadata(&locator)?.len();
-                refresh_memory_bytes.charge(size as usize, "local import input")?;
+                refresh_memory_bytes.charge(local_file_memory_size(size)?, "local import input")?;
                 Some(size)
             } else {
                 None
@@ -1768,11 +1779,20 @@ pub fn search(
             fetch_status,
             fetch_error,
         ) = row?;
-        let requested_url = (source_kind == "url").then(|| locator.clone());
+        let display_locator = crate::url_security::redact_userinfo(&locator);
+        let requested_url = (source_kind == "url").then(|| display_locator.clone());
         let redirect_chain = redirect_chain_json
             .as_deref()
-            .map(serde_json::from_str)
-            .transpose()?;
+            .map(serde_json::from_str::<Vec<String>>)
+            .transpose()?
+            .map(|chain| {
+                chain
+                    .into_iter()
+                    .map(|url| crate::url_security::redact_userinfo(&url))
+                    .collect()
+            });
+        let final_url = final_url.map(|url| crate::url_security::redact_userinfo(&url));
+        let fetch_error = fetch_error.map(|error| error.replace(&locator, &display_locator));
         if semantic {
             if let (Some(v), Some(q)) = (stored.as_deref(), vector.as_deref()) {
                 if v.len() != q.len() {
@@ -1785,7 +1805,7 @@ pub fn search(
                 out.push((
                     d,
                     SearchResult {
-                        path: locator.clone(),
+                        path: display_locator.clone(),
                         line_start: line,
                         line_end,
                         text,
@@ -1811,7 +1831,7 @@ pub fn search(
             out.push((
                 0.0,
                 SearchResult {
-                    path: locator,
+                    path: display_locator.clone(),
                     line_start: line,
                     line_end,
                     text,
@@ -1872,6 +1892,7 @@ pub fn search(
             stored,
             legacy_text,
         ) = row?;
+        let repo_id = crate::url_security::redact_userinfo(&repo_id);
         let deferred = semantic && mode != "combined" && blob_id.is_some();
         let deferred_payload = if deferred {
             let (Some(blob), Some(start), Some(end)) = (blob_id.clone(), byte_start, byte_end)
@@ -1988,10 +2009,10 @@ pub fn search(
 mod tests {
     use super::{
         SizeLimit, batch_reader, bounded_command_output_with_input, checksum, configured_url_curl,
-        hydrate_git_unit_with_reader, pdf_representation, pdf_representation_from_temp,
-        refresh_with_size_limit, refresh_with_size_limit_and_allowlist, register,
-        set_url_max_redirects, slice_git_unit, utc_rfc3339_now, visit_cache_pages_limited,
-        write_cache_limited,
+        hydrate_git_unit_with_reader, local_file_memory_size, pdf_representation,
+        pdf_representation_from_temp, refresh_with_size_limit,
+        refresh_with_size_limit_and_allowlist, register, set_url_max_redirects, slice_git_unit,
+        utc_rfc3339_now, visit_cache_pages_limited, write_cache_limited,
     };
     use crate::budget::Budget;
     use rusqlite::Connection;
@@ -2001,6 +2022,14 @@ mod tests {
         os::unix::fs::PermissionsExt,
         process::{Command, Stdio},
     };
+
+    #[test]
+    fn local_file_size_conversion_rejects_values_above_addressable_range() {
+        let maximum = usize::MAX as u64;
+        assert_eq!(local_file_memory_size(maximum).unwrap(), usize::MAX);
+        #[cfg(target_pointer_width = "32")]
+        assert!(local_file_memory_size(maximum + 1).is_err());
+    }
 
     #[test]
     fn url_curl_pins_validated_answers_and_disables_proxy_configuration() {

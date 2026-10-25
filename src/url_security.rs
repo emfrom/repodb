@@ -25,6 +25,22 @@ pub(crate) struct Endpoint {
     pub port: u16,
 }
 
+pub(crate) fn redact_userinfo(input: &str) -> String {
+    let Some((scheme, remainder)) = input.split_once("://") else {
+        return input.to_owned();
+    };
+    let authority_end = remainder.find(['/', '?', '#']).unwrap_or(remainder.len());
+    let authority = &remainder[..authority_end];
+    let Some((_, host)) = authority.rsplit_once('@') else {
+        return input.to_owned();
+    };
+    format!(
+        "{scheme}://[redacted]@{}{suffix}",
+        host,
+        suffix = &remainder[authority_end..]
+    )
+}
+
 pub(crate) fn parse_http_url(url: &str) -> crate::Result<Endpoint> {
     let (scheme, remainder) = url.split_once("://").ok_or("URL must use HTTP or HTTPS")?;
     let scheme = scheme.to_ascii_lowercase();
@@ -324,6 +340,23 @@ mod tests {
             let address = address.parse().unwrap();
             assert!(is_public_address(address), "{address} must be public");
         }
+    }
+
+    #[test]
+    fn userinfo_redaction_preserves_the_url_without_exposing_credentials() {
+        assert_eq!(
+            redact_userinfo("https://alice:secret@example.com/path?q=1"),
+            "https://[redacted]@example.com/path?q=1"
+        );
+        assert_eq!(
+            redact_userinfo("ssh://git@example.com/repo"),
+            "ssh://[redacted]@example.com/repo"
+        );
+        assert_eq!(
+            redact_userinfo("https://example.com/path"),
+            "https://example.com/path"
+        );
+        assert_eq!(redact_userinfo("local/path"), "local/path");
     }
 
     #[test]
