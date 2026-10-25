@@ -13,7 +13,7 @@
 
 ## Historical failure and supported fallback
 
-The v0.3.0 review recorded one default-parallel failure in `git_objects::tests::oversized_batch_response_kills_child_before_waiting_for_stdout`: spawning its executable fixture returned `ExecutableFileBusy`. The full evidence and exact tagged-checkout command are in `docs/reviews/standards/repodb-0.3.0.md` under TB-97-2. Subsequent default-parallel runs, including the current clean-target run above, passed; the original failure has not been reproduced and its cause is not established.
+The v0.3.1 review recorded one default-parallel failure in `git_objects::tests::oversized_batch_response_kills_child_before_waiting_for_stdout`: spawning its executable fixture returned `ExecutableFileBusy`. The full evidence and exact tagged-checkout command are in `docs/reviews/standards/repodb-0.3.1.md` under TB-97-2. Subsequent default-parallel runs, including the current clean-target run above, passed; the original failure has not been reproduced and its cause is not established.
 
 The supported conservative fallback is:
 

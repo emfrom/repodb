@@ -1,12 +1,12 @@
-# RepoDB 0.3.0 security and release-readiness review
+# RepoDB 0.3.1 security and release-readiness review
 
 - Status: **BLOCKED — retrospective review; not release authorization.** Unresolved security findings and missing adversarial/limit evidence prevent a security pass under this review rubric. No release owner go/no-go is issued here.
-- Target commit/tag: `v0.3.0`, `f7cc6bc5451204c5696f1bbef7e5575772820f47`
-- Commit range: `v0.2.2..v0.3.0` for the implementation reviewed; the final tag commit's parent is `099f4ccd7a1814df4111f66fc09d51add055b587`. Final commit is release/documentation changes, but substantive release additions occur earlier in the range.
+- Target commit/tag: `v0.3.1`, `f7cc6bc5451204c5696f1bbef7e5575772820f47`
+- Commit range: `v0.2.2..v0.3.1` for the implementation reviewed; the final tag commit's parent is `099f4ccd7a1814df4111f66fc09d51add055b587`. Final commit is release/documentation changes, but substantive release additions occur earlier in the range.
 - Release date: 2026-10-21 (tag/release records)
 - Supported platforms: Linux x86_64, verified on Ubuntu 26.04.1 LTS. Windows, macOS, and other architectures are explicitly out of scope (N/A), not asserted supported or tested.
 - Release owner: not identified in the reviewed evidence.
-- Review type: retrospective, evidence-bounded assessment of the immutable release tag against `docs/reviews/SECURITY.md` and the cited review records. The standard and parts of the rubric postdate v0.3.0; their use here does not imply they governed release publication. This record neither authorizes nor retrospectively reauthorizes release. Later integration changes are not fixes in the tagged source and do not close tag findings.
+- Review type: retrospective, evidence-bounded assessment of the immutable release tag against `docs/reviews/SECURITY.md` and the cited review records. The standard and parts of the rubric postdate v0.3.1; their use here does not imply they governed release publication. This record neither authorizes nor retrospectively reauthorizes release. Later integration changes are not fixes in the tagged source and do not close tag findings.
 
 ## Scope and threat model
 
@@ -19,13 +19,13 @@ High-level flow: CLI selection and source registration feed local/Git/URL import
 ### Security, scope and data flow
 - [x] Status: **Fail / blocked**
 - Scope / owner: retrospective reviewer; import, URL fetch, Git/process, file access, refresh and output paths.
-- Evidence: direct tagged-source inspection recorded in `docs/reviews/standards/repodb-0.3.0.md` (security/resource section); tag-specific test/build evidence in `docs/reviews/security/issue-120-v0.3.0-verification.md`; target identity verified as above.
+- Evidence: direct tagged-source inspection recorded in `docs/reviews/standards/repodb-0.3.1.md` (security/resource section); tag-specific test/build evidence in `docs/reviews/security/issue-120-v0.3.1-verification.md`; target identity verified as above.
 - Findings / rationale: subprocesses in inspected paths use argument arrays, not shell-composed commands. URL fetching uses curl with a 30-second timeout, redirect cap, HTTP(S)-only redirect protocols and effective-status checks; this does not enforce destination-address policy. Temporary URL headers use unique files, Unix mode 0600, and cleanup. Directory previews skip symlinks and `.git`; worktree live reads have an 8 MiB per-file cap. These controls do not resolve the unbounded aggregate import/resource risk or redirect SSRF finding below. Reviewed `gmtime_r` unsafe use is narrow; SQLite vector registration also uses FFI/transmute and a complete safety invariant was not established. Output/log secrecy and all error paths were not exhaustively audited.
 
 ### Dependencies and supply chain
 - [x] Status: **Partial pass; policy scope limited**
 - Scope / owner: release lockfile and production/development dependency graph on declared Linux x86_64 target.
-- Evidence: `issue-120-v0.3.0-verification.md` records Rust/Cargo 1.99.0, cargo-audit 0.22.2, cargo-deny 0.20.2. On the exact tag, cargo-audit scanned 52 locked crate dependencies with no vulnerability findings; configured cargo-deny passed advisories, bans, licenses and sources. Its configured license allowlist is not a legal compatibility opinion; the duplicate hashbrown 0.14.5/0.17.1 warning is visible. The initial default cargo-deny run was unconfigured and failed; the documented follow-up used a temporary policy for exact-tag verification. No dependency tools were installed for this review.
+- Evidence: `issue-120-v0.3.1-verification.md` records Rust/Cargo 1.99.0, cargo-audit 0.22.2, cargo-deny 0.20.2. On the exact tag, cargo-audit scanned 52 locked crate dependencies with no vulnerability findings; configured cargo-deny passed advisories, bans, licenses and sources. Its configured license allowlist is not a legal compatibility opinion; the duplicate hashbrown 0.14.5/0.17.1 warning is visible. The initial default cargo-deny run was unconfigured and failed; the documented follow-up used a temporary policy for exact-tag verification. No dependency tools were installed for this review.
 - Findings / rationale: those checks provide bounded dependency evidence only, not supply-chain provenance/signing, artifact identity, legal advice, or checks for other platforms. The record is not evidence of a signed/reproducible published artifact.
 
 ### Static analysis and security-sensitive code
@@ -44,7 +44,7 @@ High-level flow: CLI selection and source registration feed local/Git/URL import
 - [x] Status: **Partial pass; security gaps remain**
 - Scope / owner: full test suite and selected persistence/security regressions.
 - Evidence: in this session, from clean `/tmp/repodb-030` at exact immutable release tag `f7cc6bc5451204c5696f1bbef7e5575772820f47`, ran `CARGO_NET_OFFLINE=true CARGO_TARGET_DIR=/tmp/repodb-120-target cargo test --all-targets --all-features`; passed, with one ignored test. Also ran `cargo fmt --all -- --check`; passed. The test command was run here on the release-tag checkout, not inferred from later integration. Historical #120 verification records a complete all-target test pass and one ignored worktree race-child test. Tests provide executable evidence but do not demonstrate untested hostile-input, resource-limit, or every data invariant.
-- Findings / rationale: tests for failed import refresh and publication exist, but the tagged flow can mutate some source metadata outside the content publication transaction (S-92-1), so preservation of all durable metadata on failure is not established. Follow-up integration evidence says Git pin state was later staged transactionally and URL fetch status/error/attempt-time is explicitly attempt-state; these later semantics are not changes to v0.3.0 and do not close the tag finding. No property-based/fuzz/mutation/security regression run is evidenced.
+- Findings / rationale: tests for failed import refresh and publication exist, but the tagged flow can mutate some source metadata outside the content publication transaction (S-92-1), so preservation of all durable metadata on failure is not established. Follow-up integration evidence says Git pin state was later staged transactionally and URL fetch status/error/attempt-time is explicitly attempt-state; these later semantics are not changes to v0.3.1 and do not close the tag finding. No property-based/fuzz/mutation/security regression run is evidenced.
 
 ### Failure recovery
 - [x] Status: **Fail / partial evidence**
@@ -112,13 +112,13 @@ No exception in this record converts an unresolved finding or unrun check into a
 - Structure: concerns documented; no release-tag complexity analysis sufficient to pass this gate.
 - Performance: **NOT ESTABLISHED**; release baseline/threshold work explicitly waived and not equivalent to a measurement pass.
 - Reproducibility: exact-tag Linux x86_64 build evidence is recorded in #120; formatting and all-target tests rerun here. Artifact provenance/signing/reproducible-build properties are not established. Other platforms are N/A/out of scope.
-- Decision and rationale: **BLOCKED; retrospective record only, no release authorization.** The two security findings have concrete acceptance criteria and no evidenced exception. Additional recovery, artifact, and adversarial verification gaps remain. Later integration fixes do not alter v0.3.0.
+- Decision and rationale: **BLOCKED; retrospective record only, no release authorization.** The two security findings have concrete acceptance criteria and no evidenced exception. Additional recovery, artifact, and adversarial verification gaps remain. Later integration fixes do not alter v0.3.1.
 - Release owner / date: no release-owner decision is made; review record prepared retrospectively.
 
 ## Evidence and limitations
 
-- On 2026-10-21 UTC, this session ran `cargo fmt --all -- --check` (pass; Cargo 1.99.0, rustfmt 1.10.0-stable), `CARGO_NET_OFFLINE=true CARGO_TARGET_DIR=/tmp/repodb-120-target cargo test --all-targets --all-features` (pass; one ignored test; Cargo/Rust 1.99.0), and `CARGO_NET_OFFLINE=true CARGO_TARGET_DIR=/tmp/repodb-120-target cargo clippy --all-targets --all-features -- -D warnings` (fail, exit 101; five diagnostics listed above; Clippy 0.1.99, Rust 1.99.0) from clean `/tmp/repodb-030`, the immutable `v0.3.0` tag checkout at the exact SHA above. These results are from the release-tag checkout, not later integration.
-- Additional exact-tag evidence (build, audit, configured deny) is reported in `issue-120-v0.3.0-verification.md`; it is attributed to that record, not claimed as rerun here. Tool versions/environment are given there (Ubuntu 26.04.1 LTS, Linux x86_64, Rust/Cargo 1.99.0, cargo-audit 0.22.2, cargo-deny 0.20.2).
-- Security findings are based on the tagged-source review documented in `docs/reviews/standards/repodb-0.3.0.md`, not successful exploit reproduction. No source fixes, ticket closure, GitHub contact, network access, dependency installation, or adversarial exploit test is claimed.
+- On 2026-10-21 UTC, this session ran `cargo fmt --all -- --check` (pass; Cargo 1.99.0, rustfmt 1.10.0-stable), `CARGO_NET_OFFLINE=true CARGO_TARGET_DIR=/tmp/repodb-120-target cargo test --all-targets --all-features` (pass; one ignored test; Cargo/Rust 1.99.0), and `CARGO_NET_OFFLINE=true CARGO_TARGET_DIR=/tmp/repodb-120-target cargo clippy --all-targets --all-features -- -D warnings` (fail, exit 101; five diagnostics listed above; Clippy 0.1.99, Rust 1.99.0) from clean `/tmp/repodb-030`, the immutable `v0.3.1` tag checkout at the exact SHA above. These results are from the release-tag checkout, not later integration.
+- Additional exact-tag evidence (build, audit, configured deny) is reported in `issue-120-v0.3.1-verification.md`; it is attributed to that record, not claimed as rerun here. Tool versions/environment are given there (Ubuntu 26.04.1 LTS, Linux x86_64, Rust/Cargo 1.99.0, cargo-audit 0.22.2, cargo-deny 0.20.2).
+- Security findings are based on the tagged-source review documented in `docs/reviews/standards/repodb-0.3.1.md`, not successful exploit reproduction. No source fixes, ticket closure, GitHub contact, network access, dependency installation, or adversarial exploit test is claimed.
 - RepoDB search was attempted but unavailable (`repodb: no embeddings; run refresh`); no index refresh was performed. Source evidence was read directly.
 - This review does not verify a particular deployment's caller permissions, egress controls, container/resource limits, release artifact provenance, or historical release authorization. Such controls could reduce exposure but are not credited without evidence.

@@ -1,6 +1,6 @@
 # Issue #117 — Strict Clippy baseline
 
-This records the strict Clippy gate for RepoDB 0.3.0-era code after addressing the findings in `TB-97-1`.
+This records the strict Clippy gate for RepoDB 0.3.1-era code after addressing the findings in `TB-97-1`.
 
 ## Verified target
 
