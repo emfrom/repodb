@@ -203,6 +203,41 @@ mod tests {
         time::{Duration, Instant},
     };
 
+    fn fake_batch_reader(script_output: &str) -> (tempfile::TempDir, GitBlobReader) {
+        use std::os::unix::fs::PermissionsExt;
+
+        let root = tempfile::tempdir().unwrap();
+        let fake_git = root.path().join("git");
+        fs::write(
+            &fake_git,
+            format!("#!/bin/sh\nIFS= read -r _\n{script_output}\n"),
+        )
+        .unwrap();
+        fs::set_permissions(&fake_git, fs::Permissions::from_mode(0o755)).unwrap();
+        let mut child = Command::new(&fake_git)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let stderr = child
+            .stderr
+            .take()
+            .map(|stderr| thread::spawn(move || drain_stderr(stderr)));
+        let reader = GitBlobReader {
+            stdin: child.stdin.take(),
+            stdout: BufReader::new(child.stdout.take().unwrap()),
+            child,
+            stderr,
+            deadline: None,
+            cache: HashMap::new(),
+            cached_bytes: 0,
+            large_blob: None,
+            finished: false,
+        };
+        (root, reader)
+    }
+
     fn git(root: &std::path::Path, args: &[&str]) -> String {
         let output = Command::new("git")
             .arg("-C")
@@ -351,6 +386,30 @@ mod tests {
             "child was not reaped"
         );
         assert!(reader.finished);
+    }
+
+    #[test]
+    fn batch_reader_rejects_malformed_headers_and_payloads() {
+        for (response, expected) in [
+            (
+                "printf 'not a batch response\\n'",
+                "malformed git batch response",
+            ),
+            ("printf '\\377\\n'", "malformed git batch header"),
+            (
+                "printf 'deadbeef blob invalid\\n'",
+                "invalid git batch object size",
+            ),
+            (
+                "printf 'deadbeef blob 3\\nabcX'",
+                "malformed git batch payload",
+            ),
+        ] {
+            let (_root, mut reader) = fake_batch_reader(response);
+            let error = reader.blob("deadbeef").unwrap_err().to_string();
+            assert!(error.contains(expected), "{error}");
+            reader.finish().unwrap();
+        }
     }
 
     #[test]

@@ -46,6 +46,30 @@ mod tests {
     }
 
     #[test]
+    fn all_utf8_byte_ranges_match_independent_slice_validation() {
+        let source = "Aé🦀\nZ";
+        let bytes = source.as_bytes();
+        let boundaries = source
+            .char_indices()
+            .map(|(offset, _)| offset)
+            .chain([bytes.len()])
+            .collect::<Vec<_>>();
+        for start in 0..=bytes.len() {
+            for end in 0..=bytes.len() {
+                if start > end || !boundaries.contains(&start) || !boundaries.contains(&end) {
+                    assert!(slice_utf8(bytes, "blob", start, end, "indexed").is_err());
+                    continue;
+                }
+                let expected = std::str::from_utf8(&bytes[start..end]).unwrap();
+                assert_eq!(
+                    slice_utf8(bytes, "blob", start, end, "indexed").unwrap(),
+                    expected
+                );
+            }
+        }
+    }
+
+    #[test]
     fn rejects_out_of_bounds_and_non_character_boundaries() {
         for (start, end) in [(0, 9), (2, 3)] {
             assert!(

@@ -1,8 +1,9 @@
 use rusqlite::Connection;
 use std::{
     fs,
+    io::Write,
     path::{Path, PathBuf},
-    process::Command,
+    process::{Command, Stdio},
 };
 
 fn git(repo: &Path, args: &[&str]) {
@@ -3026,6 +3027,38 @@ fn timed_out_history_git_process_preserves_the_published_snapshot() {
 }
 
 #[test]
+fn malformed_pdf_converter_output_preserves_the_published_snapshot() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let repo = repository();
+    let root = repo.path();
+    assert!(run(root, &["init"]).0);
+    let pdf = root.join("manual.pdf");
+    fs::write(&pdf, b"%PDF-initial").unwrap();
+    let bin = root.join("bin");
+    fs::create_dir(&bin).unwrap();
+    let converter = bin.join("pdftotext");
+    fs::write(
+        &converter,
+        "#!/bin/sh\ncat >/dev/null\nprintf 'previous PDF marker'\n",
+    )
+    .unwrap();
+    fs::set_permissions(&converter, fs::Permissions::from_mode(0o755)).unwrap();
+    let path = format!("{}:{}", bin.display(), std::env::var("PATH").unwrap());
+    let locator = pdf.to_string_lossy().into_owned();
+    assert!(run_with_env(root, &["import", &locator], &[("PATH", &path)]).0);
+    assert!(run_with_env(root, &["refresh"], &[("PATH", &path)]).0);
+    assert_eq!(search_json(root, &["previous PDF marker"]).len(), 1);
+
+    fs::write(&pdf, b"%PDF-changed").unwrap();
+    fs::write(&converter, "#!/bin/sh\ncat >/dev/null\nprintf '\\377'\n").unwrap();
+    let (success, _) = run_with_env(root, &["refresh"], &[("PATH", &path)]);
+    assert!(!success, "invalid UTF-8 converter output must be rejected");
+    assert_eq!(search_json(root, &["previous PDF marker"]).len(), 1);
+    assert!(search_json(root, &["replacement PDF marker"]).is_empty());
+}
+
+#[test]
 fn pdf_conversion_larger_than_previous_limit_refreshes() {
     use std::os::unix::fs::PermissionsExt;
     let repo = repository();
@@ -4867,6 +4900,43 @@ fn scoped_refresh_indexes_commit_changes_and_reuses_unchanged_units() {
             .unwrap()
             .is_empty()
     );
+}
+
+#[test]
+fn malformed_git_tree_fails_refresh_without_replacing_the_snapshot() {
+    let repo = repository();
+    let root = repo.path();
+    assert!(run(root, &["init"]).0);
+    let prior = search_json(root, &["Exact [literal] TARGET"]);
+    assert_eq!(prior.len(), 1);
+    let parent = git_text(root, &["rev-parse", "HEAD"]);
+
+    let mut write_tree = Command::new("git")
+        .args(["hash-object", "--literally", "-w", "-t", "tree", "--stdin"])
+        .current_dir(root)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    write_tree
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(b"not a valid tree record")
+        .unwrap();
+    let tree = write_tree.wait_with_output().unwrap();
+    assert!(tree.status.success());
+    let tree = String::from_utf8(tree.stdout).unwrap().trim().to_owned();
+    let commit = git_text(
+        root,
+        &["commit-tree", &tree, "-p", &parent, "-m", "malformed tree"],
+    );
+    git(root, &["update-ref", "refs/heads/malformed-tree", &commit]);
+
+    let (success, _) = run(root, &["refresh"]);
+    assert!(!success);
+    assert_eq!(search_json(root, &["Exact [literal] TARGET"]), prior);
 }
 
 #[test]
