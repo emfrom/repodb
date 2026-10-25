@@ -2482,6 +2482,11 @@ mod tests {
         let path = temp_dir.path().join("cache.json");
         let json = format!("[{}]", vec!["\"\""; 1000].join(","));
         std::fs::write(&path, &json).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        }
         let mut pages = 0;
         let count = visit_cache_pages_limited(&path, u64::MAX, |_, page| {
             assert!(page.is_empty());
@@ -2535,6 +2540,28 @@ mod tests {
         assert!(!path.exists(), "invalid cache is disposable");
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn pdf_cache_with_non_private_permissions_is_discarded_before_reading() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let temp_dir = tempfile::tempdir().unwrap();
+        let path = temp_dir.path().join("cache.json");
+        std::fs::write(&path, r#"["private page"]"#).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+        let mut visited = false;
+
+        let cached = visit_cache_pages_limited(&path, u64::MAX, |_, _| {
+            visited = true;
+            Ok(())
+        })
+        .unwrap();
+
+        assert_eq!(cached, None);
+        assert!(!visited, "a non-private cache must not be read");
+        assert!(!path.exists(), "the disposable cache should be removed");
+    }
+
     #[test]
     fn cache_writer_streams_page_iterator_as_compatible_json() {
         let temp_dir = tempfile::tempdir().unwrap();
@@ -2545,6 +2572,18 @@ mod tests {
 
         let decoded: Vec<String> = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
         assert_eq!(decoded, pages);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn pdf_cache_is_created_with_private_permissions() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let temp_dir = tempfile::tempdir().unwrap();
+        let path = temp_dir.path().join("cache.json");
+        assert!(write_cache_limited(&path, ["private page"], u64::MAX).unwrap());
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode & 0o077, 0, "PDF cache must be private to its owner");
     }
 
     #[test]

@@ -140,6 +140,15 @@ pub(super) fn visit_cache_pages_limited(
         fs::remove_file(cache)?;
         return Ok(None);
     }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if file.metadata()?.permissions().mode() & 0o077 != 0 {
+            drop(file);
+            fs::remove_file(cache)?;
+            return Ok(None);
+        }
+    }
     let mut deserializer = serde_json::Deserializer::from_reader(BufReader::new(file));
     let mut callback_error = None;
     struct PageVisitor<'a, F> {
@@ -222,10 +231,14 @@ pub(super) fn write_cache_limited<'a>(
         NEXT_TEMP.fetch_add(1, Ordering::Relaxed),
     ));
     let result = (|| -> Result<()> {
-        let mut file = fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&temp)?;
+        let mut options = fs::OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        let mut file = options.open(&temp)?;
         serialize_pages(&mut file, pages)?;
         file.sync_all()?;
         fs::rename(&temp, cache)?;
