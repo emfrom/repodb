@@ -6,7 +6,7 @@
 - Add opt-in staged/worktree search with explicit provenance and semantic mapping to live text; expose capability and coverage status in machine-readable output.
 - Bound and paginate search responses, group related change evidence, and provide focused agent skills for search, history, status, and imports.
 - Make single-URL website snapshots explicitly refreshed, versioned and searchable offline; add import-size modes and preserve the last successful snapshot on fetch failure. Link crawling remains deferred.
-- **Release verification exception:** the operator explicitly waived the 0.3.1 baseline-derived numeric quality/performance gates for this release. #83 and #84 were closed as superseded, not passed. No baseline comparison or benchmark-backed performance/quality claim is made; see `docs/repodb-0.3.1-spec.md`. The separate v0.3.1 baseline gate for 0.3.1 remains in effect.
+- **Release verification exception:** the operator explicitly waived the 0.3.1 baseline-derived numeric quality/performance gates for this release. #83 and #84 were closed as superseded, not passed. No baseline comparison or benchmark-backed performance/quality claim is made; see `docs/repodb-0.3.1-spec.md`. The separate v0.3.1 baseline gate for 0.3.2 remains in effect; see `docs/repodb-0.3.2-pre-spec.md`.
 
 ## v0.2.3
 
