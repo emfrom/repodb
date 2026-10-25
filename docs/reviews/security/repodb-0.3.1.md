@@ -24,8 +24,8 @@ Scope owner and release owner: emfrom. Exact changed-component inventory, candid
 ### Dependencies and supply chain
 - [ ] Status: In progress
 - Scope / owner: Complete Linux-target locked production, development, build, and platform-specific dependency graph / emfrom.
-- Evidence: At exact HEAD `d90772e` (`Cargo.lock` SHA-256 `995fd7c15706d241afa6249d7cdf8ce4e795fca4`), with Cargo 1.99.0, `CARGO_NET_OFFLINE=true /home/emfrom/opt/rust/cargo/bin/cargo-audit audit --no-fetch` (cargo-audit 0.22.2; 1,348 cached advisories; 52 locked dependencies; exit 0, no findings) and `CARGO_NET_OFFLINE=true /home/emfrom/opt/rust/cargo/bin/cargo-deny check advisories bans licenses sources` (cargo-deny 0.20.2; all checks passed). Existing duplicate-`hashbrown` warning is reported (0.14.5 via hashlink/rusqlite, 0.17.1 via indexmap/toml). `Cargo.toml`, `Cargo.lock`, and `deny.toml` are unchanged from `592a042`.
-- Findings / rationale: Offline audit covers only the local advisory cache; source checksum/provenance and legal compatibility are not established by these checks. No artifact provenance is established here.
+- Evidence: At exact progress HEAD `23f677a` (`Cargo.lock` SHA-256 `995fd7c15706d241afa6249d7cdf8ce4e795fca4`), with Cargo 1.99.0, `CARGO_NET_OFFLINE=true /home/emfrom/opt/rust/cargo/bin/cargo-audit audit --no-fetch` (cargo-audit 0.22.2; 1,348 cached advisories; 52 locked packages; exit 0, no findings) and `CARGO_NET_OFFLINE=true /home/emfrom/opt/rust/cargo/bin/cargo-deny check advisories bans licenses sources` (cargo-deny 0.20.2; all checks passed). Cargo metadata lists 51 crates from crates.io and no Git sources. Existing duplicate-`hashbrown` warning is reported (0.14.5 via hashlink/rusqlite, 0.17.1 via indexmap/toml). `Cargo.toml`, `Cargo.lock`, and `deny.toml` are unchanged from `592a042`.
+- Findings / rationale: Offline audit covers only the local advisory cache; source checksum/provenance and legal compatibility are not established by these checks. No artifact provenance is established here; rerun if the frozen candidate changes dependency inputs.
 
 ### Static analysis and security-sensitive code
 - [ ] Status: In progress
