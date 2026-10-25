@@ -8,7 +8,9 @@ I built RepoDB to help agents understand codebases and work with them more quick
 
 See [CHANGELOG.md](CHANGELOG.md) for version history. Release-review cadence: before 1.0.0, reviews are mandatory for major/minor version increases; from 1.0.0 onward, they are mandatory before every release. See [docs/reviews](docs/reviews/README.md).
 
-Custom embedding commands receive each text on stdin and must print a JSON numeric vector on stdout. RepoDB invokes them as `COMMAND --json -` and sets `REPODB_EMBEDDING_MODEL` to the configured model ID for every indexing and query invocation. Commands must produce vectors consistent with that model ID. The built-in [`~/bin/generate_embeddings`](https://github.com/emfrom/generate_embeddings) supports only `all-MiniLM-L6-v2`.
+Custom embedding commands receive each text on stdin and must print a JSON numeric vector on stdout. RepoDB invokes them directly (not through a shell) as `COMMAND --json -` and sets `REPODB_EMBEDDING_MODEL` to the configured model ID for every indexing and query invocation. Commands must produce vectors consistent with that model ID. The built-in [`~/bin/generate_embeddings`](https://github.com/emfrom/generate_embeddings) supports only `all-MiniLM-L6-v2`.
+
+Configured embedders, segmenters, and parser/converter tools are trusted executables: they inherit RepoDB's process environment, and source content may be supplied via stdin or a temporary file. RepoDB cannot prevent a configured tool from transmitting that content elsewhere; inspect its path, environment, and behavior before indexing sensitive material. Some failure diagnostics include a bounded excerpt of a tool's stderr. Worktree semantic search does not send staged or live worktree text to the embedder; it maps indexed HEAD vectors to live text.
 
 ## Git history and scopes
 
