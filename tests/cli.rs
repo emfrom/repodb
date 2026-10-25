@@ -2247,6 +2247,46 @@ fn import_publication_sql_failure_preserves_the_previous_snapshot() {
 }
 
 #[test]
+fn post_publication_report_failure_does_not_revert_the_committed_snapshot() {
+    let repo = repository();
+    let root = repo.path();
+    assert!(run(root, &["init"]).0);
+    let source_dir = tempfile::tempdir().unwrap();
+    let source = source_dir.path().join("document.txt");
+    fs::write(&source, "first publication marker\n").unwrap();
+    let locator = source.to_string_lossy().into_owned();
+    assert!(run(root, &["import", &locator]).0);
+    assert!(run(root, &["retention", "2"]).0);
+    assert!(run(root, &["refresh", "--imports"]).0);
+
+    fs::write(&source, "second publication marker\n").unwrap();
+    assert!(run(root, &["refresh", "--imports"]).0);
+    fs::write(&source, "third publication marker\n").unwrap();
+
+    let config_home = test_config_home(root);
+    let output = Command::new(env!("CARGO_BIN_EXE_repodb"))
+        .args(["refresh", "--imports"])
+        .current_dir(root)
+        .env(
+            "REPODB_SEMGREP_CORE",
+            semgrep_corpus::required_semgrep_core(),
+        )
+        .env("XDG_CONFIG_HOME", config_home)
+        .stdout(
+            std::fs::OpenOptions::new()
+                .write(true)
+                .open("/dev/full")
+                .unwrap(),
+        )
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).starts_with("repodb: "));
+    assert_eq!(search_json(root, &["third publication marker"]).len(), 1);
+    assert_eq!(search_json(root, &["first publication marker"]).len(), 0);
+}
+
+#[test]
 fn failed_url_publication_rolls_back_source_attempt_and_version_metadata() {
     use std::{
         io::{Read, Write},

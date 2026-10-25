@@ -732,9 +732,7 @@ pub fn print_pruning_report(c: &Connection) -> Result<()> {
     while let Some(row) = rows.next()? {
         let source: String = row.get(0)?;
         let count: usize = row.get(1)?;
-        if writeln!(output, "pruned {count} historical version(s) for {source}").is_err() {
-            break;
-        }
+        writeln!(output, "pruned {count} historical version(s) for {source}")?;
     }
     Ok(())
 }
