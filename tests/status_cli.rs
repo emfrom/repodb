@@ -82,6 +82,27 @@ fn status_json_reports_missing_index_without_creating_or_refreshing_it() {
 }
 
 #[test]
+fn status_rejects_a_corrupted_database_without_replacing_it() {
+    let repo = repo();
+    let root = repo.path();
+    let embedder = root.join("embedder");
+    fs::write(&embedder, "#!/bin/sh\ncat >/dev/null\nprintf '[1,0]'\n").unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&embedder, fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    let cfg = config(root, embedder.to_str().unwrap());
+    assert!(run(root, &["init"], &cfg).status.success());
+    let database = root.join(".git/repodb.sqlite");
+    fs::write(&database, b"not a valid SQLite database").unwrap();
+
+    let output = run(root, &["status", "--json"], &cfg);
+    assert!(!output.status.success());
+    assert_eq!(fs::read(&database).unwrap(), b"not a valid SQLite database");
+}
+
+#[test]
 fn status_human_output_explains_readiness_and_freshness() {
     let repo = repo();
     let cfg = config(repo.path(), "/definitely/missing/embedder");
