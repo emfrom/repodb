@@ -34,7 +34,7 @@ The user explicitly prohibited local agents/subagents. Accordingly, self-review 
 ## Sub-review 4 — State, data flow, and persistence
 - Status: **PASS**
 - Evidence: Existing transactional publication and `PRAGMA data_version` checks preserve the last usable snapshot. Named tests cover import/publication SQL failure, URL metadata rollback, migration rollback/retry, failed Git pin publication, post-commit reporting failure, concurrent model changes, interruption, and corrupted database rejection without replacement. New credential checks run before registration/network use; legacy credential metadata is redacted from search output and refresh refuses to reuse credential-bearing legacy sources. PDF cache readers discard non-private cache files before deserialization.
-- Findings / rationale: Durable database/cache paths still follow their selected ownership/permissions/umask and README warns operators to protect shared-host data. No partial-publication defect was observed in the exact suite. The #127 verification deliverable is closed with those limits documented; arbitrary crash-at-every-write-boundary and general repair remain unproven and require #132 owner disposition.
+- Findings / rationale: Durable database/cache paths still follow their selected ownership/permissions/umask and README warns operators to protect shared-host data. No partial-publication defect was observed in the exact suite. The #127 verification deliverable is closed with those limits documented; arbitrary crash-at-every-write-boundary and general repair remain unproven and were accepted only under the time-bounded #132 exception, for gate closure rather than as a pass.
 
 ## Sub-review 5 — Security and resource safety
 - Status: **PASS**
@@ -63,7 +63,7 @@ The user explicitly prohibited local agents/subagents. Accordingly, self-review 
 
 ## Sub-review 10 — Quality gates
 - Status: **FAIL**
-- Evidence: Supported Linux build, format, strict Clippy, test, package verification, clean archived-source rebuild, and isolated local Cargo install/upgrade/rollback/uninstall pass. The release gate is not complete: #127's test deliverable closed with crash/repair limits still requiring #132 owner disposition; #128's focused evidence is complete but whole-upstream FFI auditing is not claimed; #130's evidence deliverable is complete, but provenance/signing/reporting/incident-plan gaps remain as explicit risks for #132 owner review; #132 owner go/no-go is pending.
+- Evidence: Supported Linux build, format, strict Clippy, test, package verification, clean archived-source rebuild, and isolated local Cargo install/upgrade/rollback/uninstall pass. The release gate is not complete: #127's test deliverable closed with crash/repair limits accepted only under the time-bounded #132 exception; #128's focused evidence is complete but whole-upstream FFI auditing is not claimed; #130's evidence deliverable is complete, but provenance/signing/reporting/incident-plan gaps remain explicit risks. The owner later directed GO WITH EXCEPTIONS, recorded in the security review; it does not make these checks pass.
 - Findings / rationale: Hard release gates are blocked by the explicit unresolved items, including public registry/tag distribution and owner-dependent operational controls; no exception or release approval is inferred.
 
 ## Sub-review 11 — Independent comprehension review
@@ -108,8 +108,8 @@ The user explicitly prohibited local agents/subagents. Accordingly, self-review 
 - Clean-checkout reproducibility: **PASS** — exact `git archive` tree (130 paths) passed format, Clippy, tests, and release build; binary hash reproduced.
 - Supported platforms: **PASS** — Linux x86_64 scope only; no claim for other platforms.
 - Dependency/security review: **BLOCKED** — prior offline cargo-audit/cargo-deny/checksum evidence is limited by advisory-cache freshness; broader FFI audit and GitHub controls remain open.
-- Recovery, interface, performance, limitations: **BLOCKED** — #127's documented crash/repair limits still require #132 owner disposition; benchmark timing variance and documented trust/storage limits remain. Local source-checkout installation behavior is verified; published channel and database rollback are not.
+- Recovery, interface, performance, limitations: **BLOCKED** — #127's documented crash/repair limits remain unproven and were excepted for candidate-gate closure under #132; benchmark timing variance and documented trust/storage limits remain. Local source-checkout installation behavior is verified; published channel and database rollback are not.
 
 ## Final verdict
 
-**BLOCKED.** The coding-standards review was performed against the frozen verification candidate, with subreviews explicitly marked PASS/NOT RUN/FAIL and one newly discovered low-severity cache confidentiality issue fixed and tested. Independent reviewer checks, residual security/integrity evidence, operational release controls, public registry/tag channel and provenance, and release-owner go/no-go remain unresolved. This is not a release approval or a claim that unavailable checks passed.
+**BLOCKED.** This coding-standards review was performed against the frozen verification candidate, with subreviews explicitly marked PASS/NOT RUN/FAIL and one newly discovered low-severity cache confidentiality issue fixed and tested. At the 2026-10-25 review date, independent reviewer checks, residual security/integrity evidence, operational release controls, public registry/tag channel and provenance, and release-owner go/no-go were unresolved. The owner later directed GO WITH EXCEPTIONS on 2026-10-26 as recorded in the security review; that decision does not convert this standards verdict into a PASS or claim unavailable checks passed.
