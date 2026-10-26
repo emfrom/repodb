@@ -4,6 +4,16 @@ Security reviews are mandatory on the cadence defined in [`README.md`](README.md
 
 Create one master review record per version and maintain it in place as review work proceeds. Start from the template in **Versioned review record**. Record the exact version, commit range, target commit/tag, release date, supported platforms, scope, owners, and findings. Include every required review area; note conditionals that do not apply and why. The master record must make status and evidence easy to audit. Do not represent an unrun check as passed.
 
+## Audit, remediation, and re-audit
+
+For each release subject to security review, read and update [`THREAT_MODEL.md`](THREAT_MODEL.md) before assessing findings. Record the model's reviewed revision in the versioned review record. The threat model defines assumptions and boundaries; the versioned record contains release-specific evidence, findings, and the decision. If a boundary or assumption is unknown, record it as unknown and assess the resulting exposure rather than assuming a protective control exists.
+
+Use a repeatable loop: assess the candidate and record findings; define testable acceptance criteria; implement and test fixes; independently verify each disposition; then re-audit the final candidate. A fix on another branch does not close a finding against an immutable tag. Keep historical results visible, and distinguish tests run before a fix from tests run afterward.
+
+Assign a separate adversarial review agent, outside the implementation agent's context, to verify material security findings and the final candidate's key safety and integrity claims. Use a capable frontier model; it may be the same model as the implementer, but it must start from an independent context and evidence path. Give it the frozen candidate, threat model, acceptance criteria, and evidence pointers, not only the implementer's account. Direct it to try to falsify each assigned claim through source inspection and safe, bounded reproductions or targeted test reruns. Record the agent's model and role, candidate commit, claims challenged, commands/results, counterexamples, and unverified claims in the versioned record. Endorsement of the implementer's summary alone is not verification.
+
+Freeze the final candidate's commit, lockfile, toolchain, supported-platform scope, and intended artifacts before final verification. Record commands, versions, environment, outcomes, and durable evidence locations against that candidate. Re-run affected checks when the candidate changes; run the final security review after other release reviews and remediations, as required by [`README.md`](README.md). The release owner signs off only on the candidate actually reviewed.
+
 The release owner makes the final go/no-go decision from the evidence in the versioned record. Release is blocked until required checks have evidence and a clear pass, or an authorized, explicit, time-bounded exception and mitigation. A scanner's clean output alone is not a security review. If a finding requires remediation, document it in the record with a reproducible scenario, severity, affected invariant/component, proposed fix, and acceptance test; do not create a separate issue for the finding.
 
 ## Audit model
@@ -32,6 +42,7 @@ For each release subject to the review cadence, review and record these areas. C
 **Acceptance criteria**
 - Record the exact commit range and enumerate changed components, dependencies, build/release workflows, configuration, and public interfaces.
 - Identify trust boundaries and attacker-controlled inputs affected by the change; consider local files, Git repositories/objects, imported URLs/content, CLI arguments, environment/configuration, and persisted database data as applicable.
+- Compare the release against `THREAT_MODEL.md`: record changed assumptions, entry points, assets, attacker capabilities, deployment constraints, and controls. Cite evidence for controls relied on to reduce severity or close a finding.
 - Review security-sensitive changes for authorization, validation, path/URL handling, subprocess use, resource limits, unsafe code, and error behavior. State why each area is in or out of scope.
 - Record new or changed threats, mitigations, residual risks, and links to fixes/findings. Confirm the release notes do not overstate security properties.
 - Map each major operation end-to-end from input through read/validation/decoding, transformations (including segmentation/embedding where applicable), persistence, and observable output. At each boundary record preconditions, postconditions, ownership, and failure propagation; identify any untraced path.
@@ -159,7 +170,7 @@ Create `docs/reviews/security/repodb-<version>.md` from this structure and amend
 - Release owner:
 
 ## Scope and threat model
-<changed components, trust boundaries, inputs, exclusions and rationale>
+<changed components, trust boundaries, inputs, exclusions and rationale; THREAT_MODEL.md revision reviewed, changes made, unknown assumptions, and affected threat IDs>
 
 ## Review areas
 ### Security, scope and data flow
@@ -191,6 +202,12 @@ Create `docs/reviews/security/repodb-<version>.md` from this structure and amend
 
 ### Conditional reviews
 <repeat a section for each applicable trigger; record N/A and rationale for others>
+
+## Adversarial verification
+- Adversarial review agent (model, role, independent context) and target commit:
+- Claims challenged and falsification method (source paths, reproductions, commands and results):
+- Counterexamples or newly opened findings; fixes and retest evidence:
+- Claims not reproduced or verified, with reason and release-gate disposition:
 
 ## Findings and exceptions
 <finding, severity, reproducible scenario, affected invariant/component, disposition, mitigation, owner, due date; exceptions include approver and expiry>
