@@ -16,6 +16,10 @@ Issues and specs live in GitHub Issues. See `docs/agents/issue-tracker.md`.
 
 Security reviews follow the release cadence in `docs/reviews/README.md`. For review-required releases, follow `docs/reviews/SECURITY.md` and record the review plan, evidence, findings, and release decision in `docs/reviews/security/repodb-<version>.md`. Agents do not create or output tickets.
 
+### Version bumps
+
+When changing a project/package version, follow `docs/agents/versioning.md`; a checked, reviewed version bump must be merged to `main` before it is complete.
+
 ### Triage labels
 
 Use the five default triage labels. See `docs/agents/triage-labels.md`.
