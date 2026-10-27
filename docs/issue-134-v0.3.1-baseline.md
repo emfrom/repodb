@@ -1,6 +1,6 @@
 # Issue #134: v0.3.1 baseline for RepoDB 0.3.2
 
-**Status: baseline gate closed per owner direction.** This is the pre-implementation baseline only. No 0.3.2 candidate was measured and no improvement is claimed. Issue #134 was closed after this evidence was published; this does not authorize implementation or claim a measured improvement.
+**Status: baseline gate closed per owner direction.** This is the pre-implementation baseline only. No 0.3.2 candidate was measured and no improvement is claimed. Issue #134 was closed after this evidence was published, completing the baseline gate. Dependent implementation tickets may proceed in their dependency order; no improvement claim is supported until a paired candidate comparison passes the accepted criteria.
 
 ## Pinned builds and workloads
 
@@ -70,4 +70,4 @@ These criteria are accepted for the candidate comparison per the owner-directed 
 - The throughput runner is `docs/issue-134/run-baseline.py`; the primary wall-time series used its equivalent 50-ms RSS/timeout measurement path with parser-stage sampling disabled. The current script adds optional `--measure-parser-stage` diagnostics and incremental raw-file persistence; neither changes the primary timing logic. The baseline used the v0.3.1 binary, `--repeat 3 --process-timeout 900 --timeout 1800`, and the pinned repo/scaled-corpus commits listed above. `environment.json` and raw command arrays record binary, tool, and model provenance. Evidence files are checksum-listed in [`SHA256SUMS.txt`](issue-134/evidence/SHA256SUMS.txt).
 - The primary source history is one fixed 231-commit history. No candidate was measured, no cold-cache results exist, and no claim is made about general semantic relevance, per-query GPU memory, embedding work counts, or parser CPU time.
 
-**Decision:** the timing and baseline search evidence are published and #134 is closed per owner direction. No candidate was measured; do not claim improvement or start implementation before following the accepted comparison criteria.
+**Decision:** the timing and baseline search evidence are published and #134 is closed per owner direction, completing its baseline gate. Implementation proceeds only through the dependent tickets; no improvement claim is warranted until a candidate comparison satisfies the accepted criteria.
