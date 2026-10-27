@@ -1,0 +1,51 @@
+{
+  "status": "accepted for candidate comparison per owner-directed closure of issue #134",
+  "pairing": {
+    "pair_count": 5,
+    "order": [
+      "v0.3.1 then candidate",
+      "candidate then v0.3.1",
+      "v0.3.1 then candidate",
+      "candidate then v0.3.1",
+      "v0.3.1 then candidate"
+    ],
+    "pairing_unit": "One independent fresh clone/database per binary in each pair, from identical pinned history and configuration; publish every raw measurement.",
+    "cache_policy": "Warm-cache only. Before each runner invocation, warm the same real embedder with two fixed strings; do not reset filesystem/model caches between paired commands.",
+    "timeouts_seconds": {
+      "repodb_refresh": 900,
+      "outer_command": 1800
+    },
+    "ratio": "candidate elapsed seconds / v0.3.1 elapsed seconds",
+    "baseline_binary": "Use the subsequently rebuilt, verified v0.3.1 binary at source commit f0a6b5d13ef3f8c5a4196aa655255a8f4f5d934d (SHA-256 a7fa5ee72e5ff83419918275c8eb813891a5e942997133ad99bcb2bffb395f9a) for all paired observations, and record its hash with every raw pair. The unpaired historical timings used an earlier binary hash recorded separately in environment.json."
+  },
+  "primary_performance_gate": {
+    "workload": "Fresh full init of the 231-commit RepoDB history rooted at v0.3.0 commit f7cc6bc5451204c5696f1bbef7e5575772820f47.",
+    "median_paired_ratio_max": 0.9,
+    "uncertainty_rule": {
+      "statistic": "geometric mean of paired ratios",
+      "method": "100000 paired bootstrap resamples of the five pair ratios with replacement; Python random.Random seed 134032; nearest-rank one-sided 95th-percentile upper bound.",
+      "upper_bound_must_be_below": 1.0,
+      "failed_or_timed_out_measurement": "comparison is inconclusive/fails; do not drop or replace an unfavorable pair"
+    }
+  },
+  "secondary_nonregression_gates": {
+    "median_paired_ratio_max": 1.05,
+    "workloads": [
+      "Fresh full refresh of the combined 26-language, two-commit corpus.",
+      "Full unchanged refresh command `refresh` on the RepoDB and combined-26 corpora.",
+      "Changed/no-op refresh command `refresh --changed` on the RepoDB and combined-26 corpora."
+    ],
+    "individual_pair_investigation_trigger": 1.15,
+    "outlier_policy": "Publish all pairs. Any individual ratio above 1.15 triggers an investigation and prevents a pass until explained; do not trim it. A documented external interruption may justify a complete, separately reported five-pair rerun, not a selective retry."
+  },
+  "quality_and_reference_floors": {
+    "exact_positive": "52/52 V1/V2 language-marker queries must retrieve the expected exact content and correct commit/path/line; every returned reference must resolve to matching source text.",
+    "exact_negative": "26/26 generated absent-marker controls must return zero results.",
+    "duplicate_explore": "Enumerate all 30 results over pagination, with stable snapshot identity and unique reference IDs; include all 10 expected JavaScript paths and verify every reference against its referenced source lines.",
+    "semantic_26": "At least 11/26 language targets at top-5, and preserve target retrieval for every language that passes at baseline. Baseline 33/78 repeats is reported as 11/26 language probes passing on all three repeats, not 78 independent trials. This is a narrow marker-based regression check, not a general semantic-quality claim.",
+    "issue_83_source_tasks": "For each of the 14 frozen tasks, do not reduce the per-task median source-recall, source-reference-correctness, or answer-correctness scores in semantic or combined mode. Also do not reduce the baseline aggregate 3/42 source-reference-correct and 9/42 answer-correct outcomes per mode. The suite is sparse and not representative; these are regression floors only, not a general relevance claim.",
+    "references": "Every returned reference in all quality tasks must resolve to the pinned Git source and its claimed line range; where result text is present, it must match the source excerpt (content) or occur in the referenced diff-side excerpt. Text omitted by the CLI byte budget is checked by source path/range only."
+  },
+  "resource_reporting": "Report the sampled whole-refresh process-tree peak RSS (including the persistent embedder daemon) and database bytes for every pair. There is no numeric memory pass/fail ceiling; investigate unexpected increases. Persisted vector-row counts are reported, but embedder calls/batches and GPU telemetry are unavailable.",
+  "interpretation": "Observed baseline timings and rankings are measurements, not acceptance thresholds. No candidate result or improvement claim exists yet."
+}

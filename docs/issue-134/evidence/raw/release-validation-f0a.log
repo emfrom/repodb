@@ -1,0 +1,486 @@
+source_commit=f0a6b5d13ef3f8c5a4196aa655255a8f4f5d934d
+source_status=0
+   Compiling proc-macro2 v1.0.107
+   Compiling quote v1.0.47
+   Compiling unicode-ident v1.0.27
+   Compiling shlex v2.0.1
+   Compiling find-msvc-tools v0.1.14
+   Compiling serde_core v1.0.229
+   Compiling zerocopy v0.8.63
+   Compiling version_check v0.9.5
+   Compiling serde v1.0.229
+   Compiling cc v1.8.0
+   Compiling once_cell v1.21.4
+   Compiling cfg-if v1.0.5
+   Compiling vcpkg v0.2.15
+   Compiling ahash v0.8.12
+   Compiling pkg-config v0.3.34
+   Compiling zmij v1.0.23
+   Compiling hashbrown v0.17.1
+   Compiling equivalent v1.0.3
+   Compiling libc v0.2.190
+   Compiling serde_json v1.0.154
+   Compiling winnow v0.7.15
+   Compiling toml_write v0.1.2
+   Compiling syn v3.0.9
+   Compiling memchr v2.8.3
+   Compiling indexmap v2.14.2
+   Compiling itoa v1.0.18
+   Compiling fallible-streaming-iterator v0.1.9
+   Compiling fallible-iterator v0.3.0
+   Compiling libsqlite3-sys v0.30.1
+   Compiling sqlite-vec v0.1.9
+   Compiling bitflags v2.13.2
+   Compiling smallvec v1.16.3
+   Compiling serde_derive v1.0.229
+   Compiling hashbrown v0.14.5
+   Compiling hashlink v0.9.1
+   Compiling toml_datetime v0.6.11
+   Compiling serde_spanned v0.6.9
+   Compiling toml_edit v0.22.27
+   Compiling toml v0.8.23
+   Compiling rusqlite v0.32.1
+   Compiling repodb v0.3.1 (/tmp/repodb-031-baseline-worktree)
+    Finished `release` profile [optimized] target(s) in 1m 41s
+release_binary_sha256=a7fa5ee72e5ff83419918275c8eb813891a5e942997133ad99bcb2bffb395f9a
+release_binary_version=repodb 0.3.1
+   Compiling proc-macro2 v1.0.107
+   Compiling quote v1.0.47
+   Compiling unicode-ident v1.0.27
+   Compiling serde_core v1.0.229
+   Compiling shlex v2.0.1
+   Compiling find-msvc-tools v0.1.14
+   Compiling cfg-if v1.0.5
+   Compiling zerocopy v0.8.63
+   Compiling version_check v0.9.5
+   Compiling serde v1.0.229
+   Compiling cc v1.8.0
+   Compiling once_cell v1.21.4
+   Compiling vcpkg v0.2.15
+   Compiling ahash v0.8.12
+   Compiling pkg-config v0.3.34
+   Compiling libc v0.2.190
+   Compiling zmij v1.0.23
+   Compiling hashbrown v0.17.1
+   Compiling equivalent v1.0.3
+   Compiling bitflags v2.13.2
+   Compiling winnow v0.7.15
+   Compiling syn v3.0.9
+   Compiling toml_write v0.1.2
+   Compiling indexmap v2.14.2
+   Compiling serde_json v1.0.154
+   Compiling memchr v2.8.3
+   Compiling fallible-streaming-iterator v0.1.9
+   Compiling fallible-iterator v0.3.0
+   Compiling smallvec v1.16.3
+   Compiling rustix v1.1.5
+   Compiling libsqlite3-sys v0.30.1
+   Compiling sqlite-vec v0.1.9
+   Compiling getrandom v0.4.3
+   Compiling itoa v1.0.18
+   Compiling linux-raw-sys v0.12.1
+   Compiling fastrand v2.5.0
+   Compiling serde_derive v1.0.229
+   Compiling hashbrown v0.14.5
+   Compiling hashlink v0.9.1
+   Compiling tempfile v3.27.0
+   Compiling serde_spanned v0.6.9
+   Compiling toml_datetime v0.6.11
+   Compiling toml_edit v0.22.27
+   Compiling toml v0.8.23
+   Compiling rusqlite v0.32.1
+   Compiling repodb v0.3.1 (/tmp/repodb-031-baseline-worktree)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 27.98s
+     Running unittests src/lib.rs (/home/emfrom/.cache/repodb-baseline-031/target-verified-f0a/debug/deps/repodb-1ce2a1009f9dc6fb)
+
+running 5 tests
+test semgrep_languages::tests::ast_token_mismatch_or_invalid_position_is_rejected ... ok
+test semgrep_languages::tests::ast_tokens_create_syntax_units_and_preserve_every_gap_byte ... ok
+test semgrep_languages::tests::runtime_parser_inventory_has_41_dedicated_oss_languages ... ok
+test semgrep_languages::tests::yaml_rejects_mismatching_origin_token_outside_container_delimiters ... ok
+test semgrep_languages::tests::yaml_skips_only_structural_container_delimiter_slots ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/main.rs (/home/emfrom/.cache/repodb-baseline-031/target-verified-f0a/debug/deps/repodb-e21496ac57cfe48d)
+
+running 76 tests
+test budget::tests::cumulative_charges_reject_growth_beyond_the_aggregate_limit ... ok
+test budget::tests::cumulative_record_limit_rejects_growth_beyond_the_configured_cap ... ok
+test budget::tests::refresh_accounting_ceiling_is_finite ... ok
+test budget::tests::refresh_record_ceiling_is_finite ... ok
+test budget::tests::reserve_vec_charges_capacity_and_rolls_back_rejected_growth ... ok
+test git_objects::tests::batch_reader_rejects_malformed_headers_and_payloads ... ok
+test git_objects::tests::batch_reader_reports_missing_indexed_objects ... ok
+test git_objects::tests::batch_reader_reuses_blob_and_preserves_binary_bytes ... ok
+test git_objects::tests::batch_reader_reuses_large_blob_across_many_units_with_bounded_retention ... ok
+test git_objects::tests::oversized_batch_response_kills_child_before_waiting_for_stdout ... ok
+test git_objects::tests::persistent_reader_timeout_kills_the_process_group ... ok
+test git_objects::tests::stderr_drainer_retains_only_a_bounded_excerpt_while_draining ... ok
+test git_ranges::tests::all_utf8_byte_ranges_match_independent_slice_validation ... ok
+test git_ranges::tests::rejects_out_of_bounds_and_non_character_boundaries ... ok
+test git_ranges::tests::slices_valid_utf8_byte_ranges ... ok
+test git_ranges::tests::validates_order_before_utf8_and_preserves_contextual_errors ... ok
+test history::tests::all_occurrence_search_returns_every_matching_commit_path_reference ... ok
+test history::tests::changed_diff_lines_obey_the_refresh_record_limit ... ok
+test history::tests::commit_message_search_fails_when_indexed_git_object_is_missing ... ok
+test history::tests::commit_message_search_hydrates_exact_and_semantic_hits_from_git ... ok
+test history::tests::full_refresh_indexes_added_and_removed_diff_references ... ok
+test history::tests::full_refresh_indexes_only_modified_hunk_sides_with_blob_relative_ranges ... ok
+test history::tests::full_refresh_indexes_root_and_each_merge_parent ... ok
+test history::tests::full_refresh_records_heuristic_rename_copy_and_merge_parent_metadata ... ok
+test history::tests::full_refresh_skips_gitlink_diff_entries_without_aborting ... ok
+test history::tests::git_capture_limits_reserve_stderr_and_use_remaining_budget ... ok
+test history::tests::history_vector_row_capacity_obeys_budget_boundary ... ok
+test history::tests::selection_uses_topology_path_scope_and_heuristic_rename_links ... ok
+test history::tests::tree_record_budget_caps_append_and_rolls_back_after_visit ... ok
+test history::tests::tree_record_vector_capacity_is_charged_before_growth_and_released ... ok
+test history::tests::vectors_reserve_short_numeric_json_decoding_and_encoding_memory ... ok
+test imports::sources::tests::failed_import_schema_migration_rolls_back_and_can_be_retried ... ok
+test imports::sources::tests::init_marks_unrecoverable_legacy_pdf_and_backfills_text_hashes ... ok
+test imports::sources::tests::init_migrates_legacy_unit_keys_without_losing_rows ... ok
+test imports::tests::cache_writer_streams_page_iterator_as_compatible_json ... ok
+test imports::tests::cached_pages_above_the_old_aggregate_budget_are_read ... ok
+test imports::tests::callable_size_policy_rejects_atomically_warns_and_ignores_without_temp_files ... ok
+test imports::tests::callable_url_refresh_enforces_a_configured_redirect_limit ... ok
+test imports::tests::checksum_is_sha256_and_distinguishes_cache_inputs ... ok
+test imports::tests::command_stderr_over_capture_size_is_drained_without_rejection ... ok
+test imports::tests::command_stdout_and_stderr_capture_fit_remaining_budget_together ... ok
+test imports::tests::git_unit_slice_validates_utf8_byte_ranges ... ok
+test imports::tests::oversized_pdf_cache_is_removed_before_deserialization ... ok
+test imports::tests::pdf_cache_write_skips_when_the_configured_storage_budget_would_be_exceeded ... ok
+test imports::tests::pdf_page_representation_streams_canonical_json_and_extracted_text_hashes ... ok
+test imports::tests::pdf_representation_keeps_pages_and_detects_tampering ... ok
+test imports::tests::repeated_reembed_units_from_one_blob_share_an_operation_scoped_reader ... ok
+test imports::tests::size_error_policy_never_gates_git_import_content ... ok
+test imports::tests::size_policy_does_not_claim_zero_growth_for_a_different_source ... ok
+test imports::tests::timestamp_formatter_returns_a_valid_utc_rfc3339_value ... ok
+test imports::tests::url_curl_pins_validated_answers_and_disables_proxy_configuration ... ok
+test process::tests::bounded_drain_capacity_never_exceeds_limit ... ok
+test process::tests::drains_output_while_feeding_large_stdin ... ok
+test process::tests::line_capture_timeout_terminates_hung_embedding_child ... ok
+test process::tests::streamed_stdout_handles_ten_thousand_records_and_large_stdin ... ok
+test process::tests::subprocess_output_floods_are_drained_with_bounded_retention ... ok
+test process::tests::timeout_kills_descendants_holding_capture_pipes ... ok
+test process::tests::unbounded_capture_drains_output_while_feeding_large_stdin ... ok
+test refresh_storage::tests::storage_lock_serializes_writers_across_file_descriptors ... ok
+test refresh_storage::tests::temporary_staging_database_cannot_exceed_its_page_limit ... ok
+test segmentation::tests::ambiguous_and_unavailable_extensions_keep_fallback ... ok
+test segmentation::tests::move_parser_results_require_consensus_or_one_success ... ok
+test segmentation::tests::parser_ranges_split_losslessly_at_utf8_boundaries ... ok
+test segmentation::tests::selected_semgrep_languages_are_routed_by_source_extension ... ok
+test segmentation::tests::visitor_can_stop_before_later_units_are_staged ... ok
+test semgrep_languages::tests::ast_token_mismatch_or_invalid_position_is_rejected ... ok
+test semgrep_languages::tests::ast_tokens_create_syntax_units_and_preserve_every_gap_byte ... ok
+test semgrep_languages::tests::runtime_parser_inventory_has_41_dedicated_oss_languages ... ok
+test semgrep_languages::tests::yaml_rejects_mismatching_origin_token_outside_container_delimiters ... ok
+test semgrep_languages::tests::yaml_skips_only_structural_container_delimiter_slots ... ok
+test url_security::tests::dns_result_wait_respects_the_supplied_deadline ... ok
+test url_security::tests::mixed_dns_answers_fail_unless_each_private_ip_is_explicitly_trusted ... ok
+test url_security::tests::public_address_filter_rejects_restricted_ipv4_and_ipv6_ranges ... ok
+test url_security::tests::redirects_must_be_revalidated_against_each_resolved_address_set ... ok
+test url_security::tests::resolve_entries_pin_every_address_and_format_ipv6 ... ok
+test url_security::tests::url_parser_rejects_credentials_unsupported_schemes_and_ambiguous_hosts ... ok
+
+test result: ok. 76 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 5.87s
+
+     Running tests/agent_skills.rs (/home/emfrom/.cache/repodb-baseline-031/target-verified-f0a/debug/deps/agent_skills-632389f2776def87)
+
+running 5 tests
+test distributed_skills_match_the_repo_local_pi_skills ... ok
+test exact_search_finds_unique_content_in_an_indexed_test_file ... ok
+test focused_skills_match_final_cli_help_and_status_provenance ... ok
+test pi_package_exposes_only_the_enabler_globally ... ok
+test semantic_search_finds_test_file_content_by_meaning ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.40s
+
+     Running tests/cli.rs (/home/emfrom/.cache/repodb-baseline-031/target-verified-f0a/debug/deps/cli-1df38c99fa2cb606)
+
+running 193 tests
+test built_in_embedding_command_rejects_unsupported_model_before_execution ... ok
+test changed_refresh_does_not_refresh_registered_non_git_imports ... ok
+test changed_refresh_indexes_all_changes_since_the_last_indexed_commit ... ok
+test changed_refresh_indexes_the_initial_branch_commit ... ok
+test changed_refresh_scans_the_next_batch_while_embedding_is_in_flight ... ok
+test changed_refresh_uses_bounded_batches_and_keeps_vectors_with_their_units ... ok
+test changed_refresh_uses_the_first_parent_for_merge_commits ... ok
+test coarse_history_selectors_distinguish_refs_reachable_paths_and_imports ... ok
+test combined_cli_reserves_exact_and_semantic_only_commit_slots_with_qualified_distance ... ok
+test combined_search_merges_imported_candidates_before_global_limit ... ok
+test combined_search_ranks_exact_hits_by_their_stored_vectors ... ok
+test commit_message_search_is_exposed_with_message_provenance_and_unscored_exact_hits ... ok
+test commit_message_search_reports_missing_git_objects_instead_of_partial_results ... ok
+test configured_history_record_limit_preserves_the_published_snapshot ... ok
+test configured_record_limit_covers_raw_history_diff_records ... ok
+test configured_record_limit_rejects_import_units_and_preserves_the_snapshot ... ok
+test configured_refresh_memory_budget_rejects_inputs_and_preserves_the_snapshot ... ok
+test database_and_temporary_storage_caps_preserve_the_published_snapshot ... ok
+test database_option_resolves_relative_to_cwd_and_rejects_missing_paths ... ok
+test default_embedding_batch_handles_ten_thousand_vectors ... ok
+test default_embedding_command_is_used_on_first_scan_and_saved_for_search ... ok
+test default_xdg_config_path_uses_home_dot_config ... ok
+test deleted_refs_are_pruned_only_on_refresh_while_shared_reachable_blobs_survive ... ok
+test diff_search_cli_exposes_added_and_removed_hits_with_bounded_paired_references ... ok
+test diff_search_json_reports_merge_parent_and_heuristic_identity ... ok
+test diff_search_shell_safely_dumps_files_with_unusual_path_bytes ... ok
+test document_paragraph_units_preserve_literal_text_and_inclusive_source_ranges ... ok
+test embedding_model_selects_vectors_for_indexing_and_querying ... ok
+test empty_repository_can_initialize_then_index_its_first_commit ... ok
+test exact_commit_inclusion_and_exclusion_select_before_all_search_modes ... ok
+test exact_search_hydrates_multiple_units_from_one_git_blob_in_source_order ... ok
+test explicit_database_paths_keep_independent_history_and_preserve_default ... ok
+test explicit_import_rejects_the_selected_database_but_accepts_other_local_files ... ok
+test explore_defaults_to_fifty_references_when_byte_budget_allows ... ok
+test explore_pages_every_historical_occurrence_as_references_only ... ok
+test failed_changed_refresh_keeps_the_previous_snapshot ... ok
+test failed_import_refresh_does_not_publish_resolved_git_pin_or_content ... ok
+test failed_imports_only_refresh_preserves_published_imports_and_history ... ok
+test failed_reembed_preserves_previous_vectors_and_configuration ... ok
+test failed_refresh_keeps_exact_and_semantic_snapshot_and_model_dimension ... ok
+test failed_url_publication_rolls_back_source_attempt_and_version_metadata ... ok
+test full_refresh_scans_the_next_batch_while_embedding_is_in_flight ... ok
+test full_refresh_uses_bounded_batches_and_keeps_vectors_with_their_units ... ok
+test git_import_accepts_one_optional_revision_and_pins_it_to_the_resolved_commit ... ok
+test git_mirror_clone_respects_the_configured_cache_size_limit ... ok
+test git_repository_refresh_is_not_restricted_by_size_limit ... ok
+test git_snapshot_stores_ranges_not_verbatim_text_and_hydrates_search_results ... ok
+test help_documents_shipped_commands_options_and_no_crawl_behavior_without_initializing ... ok
+test history_and_import_dimension_mismatch_fails_when_model_dimension_is_unknown ... ok
+test history_blob_larger_than_previous_limit_refreshes ... ok
+test history_human_output_identifies_commit_blob_and_line_range ... ok
+test history_import_dimension_mismatch_keeps_prior_snapshot_and_model_dimension ... ok
+test history_refresh_streams_large_commit_history_with_fake_embeddings ... ok
+test history_search_preserves_blob_and_line_references_without_broadening_default_scope ... ok
+test history_search_reports_non_utf8_paths_losslessly_without_changing_utf8_paths ... ok
+test html_import_discards_unclosed_script_and_style_contents ... ok
+test html_import_excludes_script_and_style_contents_from_search ... ok
+test html_import_preserves_heading_link_target_and_table_context_in_searchable_text ... ok
+test html_import_versions_hash_original_bytes_and_preserve_distinct_sources ... ok
+test identical_blob_units_collapse_after_filtering_before_semantic_limit_and_combined_union ... ok
+test import_preview_absolute_warning_threshold_uses_decimal_megabytes ... ok
+test import_preview_reports_selected_files_sizes_and_exclusions_without_db_side_effects ... ok
+test import_preview_warns_when_source_exceeds_twice_existing_database_size ... ok
+test import_publication_sql_failure_preserves_the_previous_snapshot ... ok
+test imported_files_keep_line_references_for_paragraph_and_bounded_units ... ok
+test imported_files_refresh_with_references_and_both_retention_policies ... ok
+test imported_git_repository_refreshes_with_identity_commit_path_and_line_refs ... ok
+test imported_git_retention_all_keeps_only_the_imported_commit_pin ... ok
+test imported_git_semantic_search_hydrates_distinct_rust_units_on_one_line ... ok
+test imported_git_semantic_top_n_does_not_hydrate_nonselected_blob ... ok
+test imported_git_units_reject_mixed_embedding_dimensions_atomically ... ok
+test imported_pdf_splits_paragraphs_with_shared_page_metadata ... ok
+test imported_pdfs_preserve_pages_cache_conversions_and_refresh_versions ... ok
+test imported_text_and_git_blobs_use_document_and_source_units_with_line_ranges ... ok
+test imported_url_and_semantic_search_use_loopback_and_fake_embeddings ... ok
+test imported_url_fetch_accepts_large_data_and_disables_proxy_redirect_following ... ok
+test imported_url_versions_follow_latest_and_all_hash_retention ... ok
+test imports_only_dimension_mismatch_preserves_published_imports_and_history ... ok
+test imports_only_refresh_indexes_files_without_mutating_history_snapshot ... ok
+test imports_retain_latest_fetch_and_reembed_backfills_and_refreshes_vectors ... ok
+test indexed_git_snapshot_excludes_a_tracked_selected_database_file ... ok
+test init_and_refresh_populate_semantic_vectors_automatically ... ok
+test init_refresh_search_and_json_are_repository_local_and_exact ... ok
+test interrupting_refresh_terminates_child_and_preserves_the_published_snapshot ... repodb: refresh cancelled by interrupt signal
+ok
+test large_history_tree_refreshes_incrementally_and_keeps_the_snapshot_atomic ... ok
+test latest_retention_skips_unreachable_legacy_git_rows_with_missing_blobs ... ok
+test legacy_cli_snapshot_remains_searchable_until_successful_atomic_history_migration ... ok
+test local_document_formats_import_searchable_text_and_reject_unsupported_files ... ok
+test local_file_larger_than_previous_limit_refreshes ... ok
+test local_text_and_imported_git_dimension_mismatch_when_model_dimension_is_unknown ... ok
+test local_text_and_pdf_dimension_mismatch_when_model_dimension_is_unknown ... ok
+test long_document_units_are_bounded_lossless_and_use_unicode_safe_source_ranges ... ok
+test long_file_git_locator_uses_bounded_mirror_directory_name ... ok
+test malformed_git_tree_fails_refresh_without_replacing_the_snapshot ... ok
+test malformed_pdf_converter_output_preserves_the_published_snapshot ... ok
+test malformed_rust_and_unsupported_source_keep_comments_imports_and_unparsed_text ... ok
+test newest_reference_uses_timestamp_then_commit_id_then_path_including_detached_head ... ok
+test noisy_history_git_stderr_is_drained_without_rejecting_output ... ok
+test noisy_pdf_converter_stderr_is_drained_without_rejecting_output ... ok
+test non_success_redirect_response_preserves_the_last_successful_snapshot ... ok
+test occurrence_path_kind_is_selected_after_filters_before_units_top_n_and_combined_union ... ok
+test optional_segmenter_rejects_utf8_split_and_falls_back ... ok
+test optional_segmenter_uses_byte_partition_and_falls_back_on_invalid_output ... ok
+test oversized_import_embedding_output_does_not_replace_imported_snapshot ... ok
+test oversized_local_import_is_rejected_without_replacing_the_published_snapshot ... ok
+test path_history_labels_detected_rename_links_in_json_and_human_output ... ok
+test pdf_conversion_larger_than_previous_limit_refreshes ... ok
+test populated_legacy_imported_git_migrates_under_latest_retention_and_preserves_vector ... ok
+test populated_v3_history_migrates_atomically_to_range_only_schema ... ok
+test post_commit_hook_refreshes_and_missing_hook_guidance_is_explicit ... ok
+test post_publication_report_failure_does_not_revert_the_committed_snapshot ... ok
+test real_curl_fetches_localhost_without_using_configured_proxies ... ok
+test refresh_does_not_publish_vectors_over_a_concurrently_changed_model ... ok
+test refresh_keeps_history_and_imports_atomic_when_import_preparation_fails ... ok
+test refresh_keeps_imports_atomic_when_history_preparation_fails ... ok
+test refresh_preserves_legacy_snapshot_when_pinned_commit_blob_is_missing ... ok
+test refresh_size_limit_modes_report_fallback_and_control_local_imports ... ok
+test refresh_update_embedding_failure_preserves_the_published_snapshot ... ok
+test refresh_update_indexes_an_unreachable_commit_additively ... ok
+test refresh_update_indexes_the_full_tree_of_a_merge_commit ... ok
+test refresh_update_rejects_non_commit_ids_without_changing_searchable_content ... ok
+test rust_spans_handle_bom_shebang_and_bound_large_constructs_without_text_loss ... ok
+test rust_top_level_constructs_are_embedded_individually_with_source_references ... ok
+test rust_top_level_syntax_preserves_nested_items_attributes_comments_and_source_gaps ... ok
+test scoped_refresh_indexes_commit_changes_and_reuses_unchanged_units ... ok
+test search_and_explore_default_to_combined_and_keep_explicit_mode_selectors ... ok
+test search_byte_budget_omits_whole_text_and_rejects_impossible_references ... ok
+test search_response_defaults_to_five_results_and_pages_with_stable_cursors ... ok
+test search_scope_filters_repo_and_document_sources_for_all_modes ... ok
+test search_type_sets_label_grouped_evidence_and_exact_fallback ... ok
+test semantic_commit_message_search_returns_distance_without_confidence_claim ... ok
+test semantic_search_covers_source_and_documentation_with_returned_provenance ... ok
+test semantic_search_reports_unavailable_embedding_capability_without_exact_fallback ... ok
+test semantic_search_uses_configured_fake_embeddings_and_precise_refs ... ok
+test semgrep_core_is_required_and_uses_real_ast ... ok
+test semgrep_corpus::all_languages_keep_both_markers_in_reachable_history ... ok
+test semgrep_corpus::bash ... ok
+test semgrep_corpus::c ... ok
+test semgrep_corpus::clojure ... ok
+test semgrep_corpus::cpp ... ok
+test semgrep_corpus::csharp ... ok
+test semgrep_corpus::dart ... ok
+test semgrep_corpus::go ... ok
+test semgrep_corpus::html ... ok
+test semgrep_corpus::java ... ok
+test semgrep_corpus::javascript ... ok
+test semgrep_corpus::julia ... ok
+test semgrep_corpus::kotlin ... ok
+test semgrep_corpus::lisp ... ok
+test semgrep_corpus::lua ... ok
+test semgrep_corpus::move_aptos ... ok
+test semgrep_corpus::move_sui ... ok
+test semgrep_corpus::ocaml ... ok
+test semgrep_corpus::php ... ok
+test semgrep_corpus::python ... ok
+test semgrep_corpus::r ... ok
+test semgrep_corpus::ruby ... ok
+test semgrep_corpus::rust ... ok
+test semgrep_corpus::scala ... ok
+test semgrep_corpus::semgrep_languages::tests::ast_token_mismatch_or_invalid_position_is_rejected ... ok
+test semgrep_corpus::semgrep_languages::tests::ast_tokens_create_syntax_units_and_preserve_every_gap_byte ... ok
+test semgrep_corpus::semgrep_languages::tests::runtime_parser_inventory_has_41_dedicated_oss_languages ... ok
+test semgrep_corpus::semgrep_languages::tests::yaml_rejects_mismatching_origin_token_outside_container_delimiters ... ok
+test semgrep_corpus::semgrep_languages::tests::yaml_skips_only_structural_container_delimiter_slots ... ok
+test semgrep_corpus::solidity ... ok
+test semgrep_corpus::swift ... ok
+test semgrep_corpus::typescript ... ok
+test status_reports_missing_database_as_distinct_from_empty_coverage ... ok
+test timed_out_history_git_process_preserves_the_published_snapshot ... ok
+test timed_out_import_subprocess_preserves_the_published_snapshot ... ok
+test uncommitted_phrase_is_not_searchable ... ok
+test url_history_limit_keeps_two_distinct_snapshots_and_reports_pruning ... ok
+test url_import_preview_reports_body_size_without_import_side_effects ... ok
+test url_import_preview_warns_using_source_bytes_when_growth_is_unknown ... ok
+test url_parse_and_embedding_failures_preserve_the_published_snapshot_and_timestamps ... ok
+test url_preview_does_not_follow_redirects_to_private_destinations ... ok
+test url_redirect_to_private_address_is_rejected_before_the_next_request ... ok
+test url_refresh_fetches_only_the_selected_page_and_search_stays_offline ... ok
+test url_refresh_keeps_legacy_first_timestamp_unknown ... ok
+test url_refresh_rejects_loopback_without_an_explicit_private_allowlist ... ok
+test url_refresh_size_limit_warn_continues_with_source_byte_fallback ... ok
+test url_snapshot_uses_extracted_text_hash_and_retains_redirect_provenance ... ok
+test v2_cli_snapshot_keeps_line_units_until_successful_atomic_segmentation_refresh ... ok
+test version_flag_prints_package_version_without_database_side_effects ... ok
+test worktree_search_does_not_return_deleted_head_matches ... ok
+test worktree_search_excludes_ignored_files_and_includes_git_visible_untracked_text ... ok
+test worktree_search_rejects_stale_and_alternate_start_heads_without_refreshing ... ok
+test worktree_search_returns_live_provenance_without_refreshing_the_index ... ok
+test worktree_semantic_search_counts_mapped_text_and_metadata_in_the_response_budget ... ok
+test worktree_semantic_search_discloses_live_text_and_indexed_head_score ... ok
+test worktree_semantic_search_keeps_head_reference_for_deleted_or_ambiguous_ranges ... ok
+test worktree_semantic_search_rejects_a_stale_active_head ... ok
+test xdg_config_supplies_semgrep_core_and_environment_override_wins ... ok
+
+test result: ok. 193 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 399.50s
+
+     Running tests/pagination.rs (/home/emfrom/.cache/repodb-baseline-031/target-verified-f0a/debug/deps/pagination-e1fc6283908839bc)
+
+running 6 tests
+test oversized_text_is_omitted_whole_and_minimal_reference_limit_errors ... ok
+test pages_with_stable_cursor_and_snapshot_and_known_total ... ok
+test preserves_each_duplicate_eligible_occurrence_across_pages ... ok
+test reference_only_pages_enumerate_duplicate_refs_without_text ... ok
+test rejects_changed_snapshot_cursor_and_zero_limits ... ok
+test worktree_observation_time_does_not_invalidate_same_snapshot_cursor ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/ranking.rs (/home/emfrom/.cache/repodb-baseline-031/target-verified-f0a/debug/deps/ranking-d653b62e6e064931)
+
+running 7 tests
+test all_mode_groups_overlapping_content_and_diff_with_diff_primary ... ok
+test combined_mode_merges_exact_and_semantic_views_of_the_same_reference ... ok
+test combined_mode_reserves_exact_semantic_only_and_distinct_diff_evidence ... ok
+test commit_message_lifts_all_parent_diffs_and_keeps_message_only_changes ... ok
+test exact_mode_uses_available_semantic_scores_or_deterministic_fallback ... ok
+test stable_ties_use_source_commit_parent_path_side_and_range ... ok
+test type_sets_select_the_specified_components ... ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/status_cli.rs (/home/emfrom/.cache/repodb-baseline-031/target-verified-f0a/debug/deps/status_cli-b0ec98cb67d5d058)
+
+running 4 tests
+test status_distinguishes_ready_stale_and_dirty_without_refreshing ... ok
+test status_human_output_explains_readiness_and_freshness ... ok
+test status_json_reports_missing_index_without_creating_or_refreshing_it ... ok
+test status_rejects_a_corrupted_database_without_replacing_it ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.45s
+
+     Running tests/worktree.rs (/home/emfrom/.cache/repodb-baseline-031/target-verified-f0a/debug/deps/worktree-7a97888e0d98967e)
+
+running 11 tests
+test a_file_removed_after_git_discovery_is_reported_as_best_effort_coverage ... ok
+test exact_worktree_search_includes_git_visible_untracked_and_reports_exclusions ... ok
+test exact_worktree_search_rejects_unindexed_and_stale_heads ... ok
+test exact_worktree_search_removes_head_matches_when_the_live_file_is_deleted ... ok
+test exact_worktree_search_reports_head_staged_and_live_provenance ... ok
+test ignored_files_staged_for_removal_are_not_mistaken_for_live_text ... ok
+test semantic_range_restored_after_staged_deletion_is_ambiguous ... ok
+test semantic_ranges_map_across_staged_and_live_line_shifts_without_new_embeddings ... ok
+test semantic_ranges_report_deleted_and_ambiguous_without_guessing ... ok
+test worktree_exact_results_have_a_reported_per_file_limit ... ok
+test worktree_race_child ... ignored
+
+test result: ok. 10 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 0.98s
+
+    Checking cfg-if v1.0.5
+    Checking once_cell v1.21.4
+    Checking serde_core v1.0.229
+    Checking zerocopy v0.8.63
+    Checking equivalent v1.0.3
+    Checking bitflags v2.13.2
+    Checking hashbrown v0.17.1
+    Checking libc v0.2.190
+    Checking winnow v0.7.15
+    Checking toml_write v0.1.2
+    Checking zmij v1.0.23
+    Checking libsqlite3-sys v0.30.1
+    Checking itoa v1.0.18
+    Checking fallible-iterator v0.3.0
+    Checking fallible-streaming-iterator v0.1.9
+    Checking memchr v2.8.3
+    Checking smallvec v1.16.3
+    Checking indexmap v2.14.2
+    Checking sqlite-vec v0.1.9
+    Checking linux-raw-sys v0.12.1
+    Checking fastrand v2.5.0
+    Checking getrandom v0.4.3
+    Checking rustix v1.1.5
+    Checking serde v1.0.229
+    Checking serde_json v1.0.154
+    Checking toml_datetime v0.6.11
+    Checking serde_spanned v0.6.9
+    Checking tempfile v3.27.0
+    Checking toml_edit v0.22.27
+    Checking ahash v0.8.12
+    Checking hashbrown v0.14.5
+    Checking toml v0.8.23
+    Checking hashlink v0.9.1
+    Checking rusqlite v0.32.1
+    Checking repodb v0.3.1 (/tmp/repodb-031-baseline-worktree)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 11.35s
+validation=passed

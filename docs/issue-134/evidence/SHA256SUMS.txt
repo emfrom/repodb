@@ -1,0 +1,15 @@
+6fae81946475750c74f1e4753698ea04bf6ca0b823a5574e296585c1a520e28c  ./comparison-criteria.json
+dc49e9667b36a6460c75f381e811c5887860ec8077aefe4df801af071d794b81  ./corpus/combined-26-manifest.txt
+3bffa2222e82b78038d48b2e842f4605333810129950320bc9e74c3d5664da53  ./environment.json
+42247aea7315e594d156379922003f02f0b8d9999a289a87a768cc2eb89194db  ./raw/parser-diagnostic.json
+9f249f659aa0977c0ff0107f184f304e06483a84806896589b8ebdc20c6ad802  ./raw/quality/changed-noop.json
+4a9ad63e1130687bffc9400c46fb5c34f810ab7389e24b16b64ab96b02078ed5  ./raw/quality/exact-negative-and-explore.json
+3f9a732ba9b3c06169d959f5bb722abf5c6852a00ccbf6b79b95c54e59420584  ./raw/quality/exact-positive-run-1.json
+dee5c35192e357bcefb58c9772e65e4754e52a2dd8aa593a9f2ee5648825bb54  ./raw/quality/exact-positive-run-2.json
+ef7a63df67ab6554724f642d77d772e569244eafdec2629f2c768df81529bea1  ./raw/quality/exact-positive-run-3.json
+bd03c9d2a0a2977b43ab9526071793cfc6e57af2c9901a4f99119ce157fc6153  ./raw/quality/issue-83-vetted.json
+387033fd798e80e44bcd9e6d734cfcab341d09cef1073ebf353978b43063fa2e  ./raw/quality/query-resources.json
+81fb9150537252c31d40a0c59a847ab08c62b4e9934c6275265b7308664f8643  ./raw/quality/semantic-26.json
+fa79fd34579611b4f1071954bef8dadbac7a3a55b8682487cf59643762c8ed10  ./raw/release-validation-f0a.log
+7ad5ceaec40fece54d43387b919cc24fa146299e793f8c5cd02c75add5d7804b  ./raw/throughput-preplanned-3.json
+293408c0650f78ee9146ca80cab954f5d587043755657ac3d6eb9a94b8db09a1  ./raw/throughput-supplemental-run-4.json

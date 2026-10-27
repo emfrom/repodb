@@ -1,0 +1,357 @@
+{
+  "schema_version": 1,
+  "binary": {
+    "path": "/tmp/repodb-0.3.2-baseline-20261026/target-pinned/release/repodb",
+    "version": "repodb 0.3.1",
+    "sha256": "91ad2c7977d80580da35c2c8f851b1691d7519718299d40c35894e68e87e651f"
+  },
+  "repo_pin": "f7cc6bc5451204c5696f1bbef7e5575772820f47",
+  "process_timeout_seconds": 900,
+  "outer_command_timeout_seconds": 1800,
+  "scaled_head": "6740e8af4d89bbb1b2b3577749fbf499d6c15e5e",
+  "embedder": {
+    "path": "/home/emfrom/src/projects/generate_embeddings/generate_embeddings",
+    "version": "1.0.0",
+    "sha256": "9216649f498981fe2b1a1a85a2677b0611a9a060dda75b7a585095b3bca5df1d",
+    "daemon_sha256": "838e05f224f491a10fc641b9c065a411c23a23d9e43b7b3f0f160f644a201628",
+    "daemon_pid": 1502572,
+    "model_revision": "1110a243fdf4706b3f48f1d95db1a4f5529b4d41",
+    "warmup_seconds_excluded": ""
+  },
+  "semgrep_core": {
+    "path": "/home/emfrom/.local/share/uv/tools/semgrep/lib/python3.13/site-packages/semgrep/bin/semgrep-core",
+    "version": "semgrep-core version: 1.181.0 (0f6e09374a)",
+    "sha256": "14f4b18720d881156bc0cc507b19130aa8d8db0882a5a479fb3919aadefca857"
+  },
+  "collection_note": "Three preplanned runs: first run from pilot-scale10; runs 2-3 from repeats-2-3. Same binary/model/tool pins and timing code. The only measurement-code update between the first runs and the later file was incremental JSON persistence; timing/RSS measurement logic was unchanged.",
+  "refresh": {
+    "repodb": {
+      "pin": "f7cc6bc5451204c5696f1bbef7e5575772820f47",
+      "runs": [
+        {
+          "baseline_sample": 1,
+          "source_artifact": "pilot-scale10/raw-baseline.json",
+          "collection_label": "pilot-scale10 (preplanned repeat 1)",
+          "repeat": 1,
+          "fresh_refresh": {
+            "command": [
+              "/tmp/repodb-0.3.2-baseline-20261026/target-pinned/release/repodb",
+              "--database",
+              "/tmp/repodb-0.3.2-baseline-20261026/pilot-scale10/repodb/run-01/repodb.sqlite",
+              "init"
+            ],
+            "elapsed_seconds": 360.43764880500385,
+            "sampled_process_tree_peak_rss_kib": 1592648,
+            "returncode": 0,
+            "stdout_tail": "",
+            "stderr_tail": "",
+            "database_bytes": 107868160,
+            "table_counts": {
+              "embedding_config": 3,
+              "imported_sources": 0,
+              "imported_versions": 0,
+              "imported_units": 0,
+              "import_config": 3,
+              "imported_git_units": 0,
+              "git_commits": 231,
+              "blob_contents": 649,
+              "git_occurrences": 14649,
+              "indexed_units": 46681,
+              "git_blob_units": 38866,
+              "commit_message_units": 236,
+              "diff_references": 7579,
+              "diff_file_changes": 909,
+              "diff_detection_settings": 1,
+              "unit_embeddings": 46681
+            }
+          },
+          "unchanged_refresh": {
+            "command": [
+              "/tmp/repodb-0.3.2-baseline-20261026/target-pinned/release/repodb",
+              "--database",
+              "/tmp/repodb-0.3.2-baseline-20261026/pilot-scale10/repodb/run-01/repodb.sqlite",
+              "refresh"
+            ],
+            "elapsed_seconds": 364.07606170498184,
+            "sampled_process_tree_peak_rss_kib": 1599020,
+            "returncode": 0,
+            "stdout_tail": "",
+            "stderr_tail": "",
+            "database_bytes": 107868160
+          },
+          "database_bytes_after_refresh": 107868160
+        },
+        {
+          "baseline_sample": 2,
+          "source_artifact": "repeats-2-3/raw-baseline.json",
+          "collection_label": "repeats-2-3 (preplanned repeats 2 and 3)",
+          "repeat": 1,
+          "fresh_refresh": {
+            "command": [
+              "/tmp/repodb-0.3.2-baseline-20261026/target-pinned/release/repodb",
+              "--database",
+              "/tmp/repodb-0.3.2-baseline-20261026/repeats-2-3/repodb/run-01/repodb.sqlite",
+              "init"
+            ],
+            "elapsed_seconds": 365.15702485499787,
+            "sampled_process_tree_peak_rss_kib": 1595752,
+            "returncode": 0,
+            "stdout_tail": "",
+            "stderr_tail": "",
+            "database_bytes": 107868160,
+            "table_counts": {
+              "embedding_config": 3,
+              "imported_sources": 0,
+              "imported_versions": 0,
+              "imported_units": 0,
+              "import_config": 3,
+              "imported_git_units": 0,
+              "git_commits": 231,
+              "blob_contents": 649,
+              "git_occurrences": 14649,
+              "indexed_units": 46681,
+              "git_blob_units": 38866,
+              "commit_message_units": 236,
+              "diff_references": 7579,
+              "diff_file_changes": 909,
+              "diff_detection_settings": 1,
+              "unit_embeddings": 46681
+            }
+          },
+          "unchanged_refresh": {
+            "command": [
+              "/tmp/repodb-0.3.2-baseline-20261026/target-pinned/release/repodb",
+              "--database",
+              "/tmp/repodb-0.3.2-baseline-20261026/repeats-2-3/repodb/run-01/repodb.sqlite",
+              "refresh"
+            ],
+            "elapsed_seconds": 374.4021849850251,
+            "sampled_process_tree_peak_rss_kib": 1576436,
+            "returncode": 0,
+            "stdout_tail": "",
+            "stderr_tail": "",
+            "database_bytes": 107868160
+          },
+          "database_bytes_after_refresh": 107868160
+        },
+        {
+          "baseline_sample": 3,
+          "source_artifact": "repeats-2-3/raw-baseline.json",
+          "collection_label": "repeats-2-3 (preplanned repeats 2 and 3)",
+          "repeat": 2,
+          "fresh_refresh": {
+            "command": [
+              "/tmp/repodb-0.3.2-baseline-20261026/target-pinned/release/repodb",
+              "--database",
+              "/tmp/repodb-0.3.2-baseline-20261026/repeats-2-3/repodb/run-02/repodb.sqlite",
+              "init"
+            ],
+            "elapsed_seconds": 368.5217543800245,
+            "sampled_process_tree_peak_rss_kib": 1538252,
+            "returncode": 0,
+            "stdout_tail": "",
+            "stderr_tail": "",
+            "database_bytes": 107868160,
+            "table_counts": {
+              "embedding_config": 3,
+              "imported_sources": 0,
+              "imported_versions": 0,
+              "imported_units": 0,
+              "import_config": 3,
+              "imported_git_units": 0,
+              "git_commits": 231,
+              "blob_contents": 649,
+              "git_occurrences": 14649,
+              "indexed_units": 46681,
+              "git_blob_units": 38866,
+              "commit_message_units": 236,
+              "diff_references": 7579,
+              "diff_file_changes": 909,
+              "diff_detection_settings": 1,
+              "unit_embeddings": 46681
+            }
+          },
+          "unchanged_refresh": {
+            "command": [
+              "/tmp/repodb-0.3.2-baseline-20261026/target-pinned/release/repodb",
+              "--database",
+              "/tmp/repodb-0.3.2-baseline-20261026/repeats-2-3/repodb/run-02/repodb.sqlite",
+              "refresh"
+            ],
+            "elapsed_seconds": 384.66676647702116,
+            "sampled_process_tree_peak_rss_kib": 1523380,
+            "returncode": 0,
+            "stdout_tail": "",
+            "stderr_tail": "",
+            "database_bytes": 107868160
+          },
+          "database_bytes_after_refresh": 107868160
+        }
+      ]
+    },
+    "combined_26": {
+      "pin": "6740e8af4d89bbb1b2b3577749fbf499d6c15e5e",
+      "runs": [
+        {
+          "baseline_sample": 1,
+          "source_artifact": "pilot-scale10/raw-baseline.json",
+          "collection_label": "pilot-scale10 (preplanned repeat 1)",
+          "repeat": 1,
+          "fresh_refresh": {
+            "command": [
+              "/tmp/repodb-0.3.2-baseline-20261026/target-pinned/release/repodb",
+              "--database",
+              "/tmp/repodb-0.3.2-baseline-20261026/pilot-scale10/combined_26/run-01/repodb.sqlite",
+              "init"
+            ],
+            "elapsed_seconds": 105.34405718601192,
+            "sampled_process_tree_peak_rss_kib": 1279016,
+            "returncode": 0,
+            "stdout_tail": "",
+            "stderr_tail": "",
+            "database_bytes": 6709248,
+            "table_counts": {
+              "embedding_config": 3,
+              "imported_sources": 0,
+              "imported_versions": 0,
+              "imported_units": 0,
+              "import_config": 3,
+              "imported_git_units": 0,
+              "git_commits": 2,
+              "blob_contents": 521,
+              "git_occurrences": 522,
+              "indexed_units": 2782,
+              "git_blob_units": 2000,
+              "commit_message_units": 2,
+              "diff_references": 780,
+              "diff_file_changes": 521,
+              "diff_detection_settings": 1,
+              "unit_embeddings": 2782
+            }
+          },
+          "unchanged_refresh": {
+            "command": [
+              "/tmp/repodb-0.3.2-baseline-20261026/target-pinned/release/repodb",
+              "--database",
+              "/tmp/repodb-0.3.2-baseline-20261026/pilot-scale10/combined_26/run-01/repodb.sqlite",
+              "refresh"
+            ],
+            "elapsed_seconds": 104.88738867401844,
+            "sampled_process_tree_peak_rss_kib": 1286492,
+            "returncode": 0,
+            "stdout_tail": "",
+            "stderr_tail": "",
+            "database_bytes": 6709248
+          },
+          "database_bytes_after_refresh": 6709248
+        },
+        {
+          "baseline_sample": 2,
+          "source_artifact": "repeats-2-3/raw-baseline.json",
+          "collection_label": "repeats-2-3 (preplanned repeats 2 and 3)",
+          "repeat": 1,
+          "fresh_refresh": {
+            "command": [
+              "/tmp/repodb-0.3.2-baseline-20261026/target-pinned/release/repodb",
+              "--database",
+              "/tmp/repodb-0.3.2-baseline-20261026/repeats-2-3/combined_26/run-01/repodb.sqlite",
+              "init"
+            ],
+            "elapsed_seconds": 113.63235586302471,
+            "sampled_process_tree_peak_rss_kib": 1189540,
+            "returncode": 0,
+            "stdout_tail": "",
+            "stderr_tail": "",
+            "database_bytes": 6709248,
+            "table_counts": {
+              "embedding_config": 3,
+              "imported_sources": 0,
+              "imported_versions": 0,
+              "imported_units": 0,
+              "import_config": 3,
+              "imported_git_units": 0,
+              "git_commits": 2,
+              "blob_contents": 521,
+              "git_occurrences": 522,
+              "indexed_units": 2782,
+              "git_blob_units": 2000,
+              "commit_message_units": 2,
+              "diff_references": 780,
+              "diff_file_changes": 521,
+              "diff_detection_settings": 1,
+              "unit_embeddings": 2782
+            }
+          },
+          "unchanged_refresh": {
+            "command": [
+              "/tmp/repodb-0.3.2-baseline-20261026/target-pinned/release/repodb",
+              "--database",
+              "/tmp/repodb-0.3.2-baseline-20261026/repeats-2-3/combined_26/run-01/repodb.sqlite",
+              "refresh"
+            ],
+            "elapsed_seconds": 107.5433766010101,
+            "sampled_process_tree_peak_rss_kib": 1167332,
+            "returncode": 0,
+            "stdout_tail": "",
+            "stderr_tail": "",
+            "database_bytes": 6709248
+          },
+          "database_bytes_after_refresh": 6709248
+        },
+        {
+          "baseline_sample": 3,
+          "source_artifact": "repeats-2-3/raw-baseline.json",
+          "collection_label": "repeats-2-3 (preplanned repeats 2 and 3)",
+          "repeat": 2,
+          "fresh_refresh": {
+            "command": [
+              "/tmp/repodb-0.3.2-baseline-20261026/target-pinned/release/repodb",
+              "--database",
+              "/tmp/repodb-0.3.2-baseline-20261026/repeats-2-3/combined_26/run-02/repodb.sqlite",
+              "init"
+            ],
+            "elapsed_seconds": 107.90493455601973,
+            "sampled_process_tree_peak_rss_kib": 1170020,
+            "returncode": 0,
+            "stdout_tail": "",
+            "stderr_tail": "",
+            "database_bytes": 6709248,
+            "table_counts": {
+              "embedding_config": 3,
+              "imported_sources": 0,
+              "imported_versions": 0,
+              "imported_units": 0,
+              "import_config": 3,
+              "imported_git_units": 0,
+              "git_commits": 2,
+              "blob_contents": 521,
+              "git_occurrences": 522,
+              "indexed_units": 2782,
+              "git_blob_units": 2000,
+              "commit_message_units": 2,
+              "diff_references": 780,
+              "diff_file_changes": 521,
+              "diff_detection_settings": 1,
+              "unit_embeddings": 2782
+            }
+          },
+          "unchanged_refresh": {
+            "command": [
+              "/tmp/repodb-0.3.2-baseline-20261026/target-pinned/release/repodb",
+              "--database",
+              "/tmp/repodb-0.3.2-baseline-20261026/repeats-2-3/combined_26/run-02/repodb.sqlite",
+              "refresh"
+            ],
+            "elapsed_seconds": 121.56097128501278,
+            "sampled_process_tree_peak_rss_kib": 1139240,
+            "returncode": 0,
+            "stdout_tail": "",
+            "stderr_tail": "",
+            "database_bytes": 6709248
+          },
+          "database_bytes_after_refresh": 6709248
+        }
+      ]
+    }
+  }
+}

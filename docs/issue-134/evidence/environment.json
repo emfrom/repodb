@@ -1,0 +1,99 @@
+{
+  "baseline_binary": {
+    "version": "repodb 0.3.1",
+    "source_commit": "f0a6b5d13ef3f8c5a4196aa655255a8f4f5d934d",
+    "source_tag": "v0.3.1",
+    "measurement_binary_sha256": "91ad2c7977d80580da35c2c8f851b1691d7519718299d40c35894e68e87e651f",
+    "artifact_path_at_measurement": "/tmp/repodb-0.3.2-baseline-20261026/target-pinned/release/repodb",
+    "measurement_artifact_retained_at_original_path": false,
+    "subsequent_verified_rebuild": {
+      "path": "/home/emfrom/.cache/repodb-baseline-031/target-verified-f0a/release/repodb",
+      "sha256": "a7fa5ee72e5ff83419918275c8eb813891a5e942997133ad99bcb2bffb395f9a",
+      "source_commit": "f0a6b5d13ef3f8c5a4196aa655255a8f4f5d934d",
+      "validation_log": "docs/issue-134/evidence/raw/release-validation-f0a.log",
+      "note": "Built and validated from the clean detached f0a worktree after the original target directory was moved. The exact historical measurement binary is no longer retained; use this verified hash for any new paired before/candidate run and record it in that raw output."
+    }
+  },
+  "required_repo_workload": {
+    "commit": "f7cc6bc5451204c5696f1bbef7e5575772820f47",
+    "tag": "v0.3.0",
+    "reachable_commit_count": 231,
+    "refs_in_benchmark_clone": [
+      "refs/heads/benchmark-corpus"
+    ],
+    "rationale": "The 0.3.2 spec explicitly anchors the full-refresh improvement workload at the peeled v0.3.0 RepoDB commit; the indexed binary is the pinned v0.3.1 build."
+  },
+  "combined_26_workload": {
+    "generator": "docs/issue-134/generate-corpus.py",
+    "generator_sha256": "5024ea3fb18f2c3d5779804c6ba53b6ad4d7d3a1647b12d751bfe4b5422c3cc1",
+    "fixture_source_commit": "55a722572845ff8556c6be2e7efdcf7d441fdf6e",
+    "fixture_input_sha256": "eb7a15ae2f7ebb0dbd749a748af079cc216d75f78a9a3aa601c16f3a8faf5df1",
+    "fixture_count": 26,
+    "copies_per_fixture": 10,
+    "files_per_commit": 260,
+    "commits": [
+      "f2edfb8ae8d7e4c489e364deeaf7f15a833983f9",
+      "6740e8af4d89bbb1b2b3577749fbf499d6c15e5e"
+    ],
+    "head": "6740e8af4d89bbb1b2b3577749fbf499d6c15e5e",
+    "tracked_source_bytes": 23630
+  },
+  "embedder": {
+    "version": "1.0.0",
+    "repository_commit": "1a2f677af874180fa663426ba7d8ec4c1c15f80d",
+    "repository_worktree_note": "The worktree had one unrelated modification at tests/test_daemon_cli.py. The two executable scripts used by the benchmark were byte-identical to their committed blobs; no executable-source modification was present.",
+    "generate_embeddings_sha256": "9216649f498981fe2b1a1a85a2677b0611a9a060dda75b7a585095b3bca5df1d",
+    "generate_embeddings_daemon_sha256": "838e05f224f491a10fc641b9c065a411c23a23d9e43b7b3f0f160f644a201628"
+  },
+  "model": {
+    "name": "sentence-transformers/all-MiniLM-L6-v2",
+    "huggingface_revision": "1110a243fdf4706b3f48f1d95db1a4f5529b4d41",
+    "offline_mode": true,
+    "model_safetensors_sha256": "53aa51172d142c89d9012cce15ae4d6cc0ca6895895114379cacb4fab128d9db",
+    "tokenizer_json_sha256": "be50c3628f2bf5bb5e3a7f17b1f74611b2561a3a27eeab05e5aa30f411572037",
+    "vocab_txt_sha256": "07eced375cec144d27c900241f3e339478dec958f92fddbc551f295c992038a3"
+  },
+  "semgrep_core": {
+    "version": "1.181.0 (0f6e09374a)",
+    "sha256": "14f4b18720d881156bc0cc507b19130aa8d8db0882a5a479fb3919aadefca857"
+  },
+  "host": {
+    "os_kernel": "Linux 7.0.0-38-generic x86_64",
+    "cpu": "13th Gen Intel(R) Core(TM) i5-13450HX",
+    "logical_cpus_visible": 16,
+    "measurement_environment": "Shared host; no CPU affinity, governor, cgroup quota, or system-load trace was recorded. No cold-cache runs were captured."
+  },
+  "refresh_protocol": {
+    "warm_cache": true,
+    "embedding_warmup": "Two strings through the real embedder before each runner invocation; warmup excluded from measured command time.",
+    "offline_model_downloads": true,
+    "repo_refresh_timeout_seconds": 900,
+    "outer_command_timeout_seconds": 1800,
+    "memory_sampling_interval_seconds": 0.05,
+    "process_tree_rss_includes_persistent_embedder_daemon": true,
+    "embedding_work_measurement": "Fresh-index unit_embeddings row counts are recorded in raw table_counts and equal indexed_units; this is the persisted-vector count. Embedder process invocation/batch counts were not instrumented.",
+    "parser_stage_proxy": "Optional --measure-parser-stage diagnostic uses 50 ms process sampling to measure the union of wall-clock intervals with a semgrep-core process active under the refresh process. This includes process startup/teardown, adds sampler overhead, and is not parser CPU time. The primary wall-time series does not enable this option."
+  },
+  "benchmark_scripts": {
+    "run-baseline.py": "03631af2be44110512ce10cb423d7f955fa1dbea1928148dea05b3a47b23b583",
+    "generate-corpus.py": "5024ea3fb18f2c3d5779804c6ba53b6ad4d7d3a1647b12d751bfe4b5422c3cc1",
+    "measure-nochange.py": "bd7d382268c2eab4a16898cf706ac23ae106324c0e1178c755eadff823d9d6ff",
+    "measure-quality.py": "02d30aeed60ae98f902eccef0c12e99cf805365f113575a6b13ec09bcf0bf048",
+    "check-26-exact.py": "a242aedc7ba3295c35f58baedf138a35bc231ce3975109f4152332d7e77f44c8",
+    "measure-26-semantic.py": "8eff525e0e64c778692fa4caaee6d8e8408de1da6a23717adcf70000b4c3814d",
+    "check-exact-controls.py": "2b8fe9097a4a0e3debc7fd5a48fa5388a60b222df9c67150e251e7ad611a0999",
+    "measure-query-resources.py": "daea3b85eed0e96b6a2fb883c2ca415eed9557a0f7e007edad6b5847adba1283",
+    "issue-83/tasks.json": "7643f7ceadad52989124a9e6211dcd3e4bfdc8e64b14308cd2803575eadc1384"
+  },
+  "baseline_test_results": {
+    "source_worktree": "/tmp/repodb-031-baseline-worktree",
+    "source_commit": "f0a6b5d13ef3f8c5a4196aa655255a8f4f5d934d",
+    "worktree_clean": true,
+    "release_build": "passed; see raw/release-validation-f0a.log",
+
+    "cargo_test_all_targets": "passed from the clean f0a worktree with --test-threads=1; 306 passed, 1 ignored",
+    "clippy_all_targets": "passed",
+    "rustfmt_check": "passed",
+    "git_diff_check": "passed"
+  }
+}
