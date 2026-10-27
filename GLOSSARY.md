@@ -44,3 +44,6 @@ _Avoid_: keyword search
 **Embedding search**:
 A search that finds content by semantic similarity using generated embeddings and ranks results by embedding distance.
 _Avoid_: vector search (when referring to the user-visible search capability)
+
+**Model identity**:
+The identity of an embedding space whose vectors can be meaningfully compared in one index. Sharing a model name alone does not establish the same model identity.
