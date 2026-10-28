@@ -10020,3 +10020,382 @@ fn native_parser_deadline_aborts_without_retry_and_preserves_snapshot() {
     );
     assert!(search_json(root, &["deadline_marker"]).is_empty());
 }
+
+#[cfg(unix)]
+#[test]
+fn native_parser_workers_keep_order_duplicates_and_embedding_associations_stable() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let repo = repository();
+    let root = repo.path();
+    let slow_source = r#"const ALPHA_VECTOR: &str = "SLOW_EARLY";
+"#;
+    fs::write(root.join("src/a_slow.rs"), slow_source).unwrap();
+    fs::write(root.join("src/a_slow_copy.rs"), slow_source).unwrap();
+    fs::write(
+        root.join("src/b_fast.rs"),
+        r#"const BETA_VECTOR: &str = "FAST_B";
+"#,
+    )
+    .unwrap();
+    fs::write(
+        root.join("src/c_fast.rs"),
+        r#"const GAMMA_VECTOR: &str = "FAST_C";
+"#,
+    )
+    .unwrap();
+    git(
+        root,
+        &[
+            "add",
+            "src/a_slow.rs",
+            "src/a_slow_copy.rs",
+            "src/b_fast.rs",
+            "src/c_fast.rs",
+        ],
+    );
+    git(root, &["commit", "-qm", "concurrent parser fixtures"]);
+
+    let (semgrep, attempts) = fake_semgrep_core(root, "");
+    let semgrep = semgrep.to_string_lossy().into_owned();
+    let completion_log = root.join(".git/parser-completion-order");
+    let log = completion_log.to_string_lossy();
+    fs::write(
+        &semgrep,
+        format!(
+            "#!/bin/sh\\nif [ \\\"$1\\\" = \\\"-version\\\" ]; then echo 'semgrep-core 1.181.0'; exit 0; fi\\ncount_file='{}'\\ncount=0\\n[ ! -f \\\"$count_file\\\" ] || count=$(cat \\\"$count_file\\\")\\ncount=$((count + 1))\\nprintf '%s\\\\n' \\\"$count\\\" > \\\"$count_file\\\"\\nif grep -q SLOW_EARLY \\\"$6\\\"; then sleep 0.4; printf 'E\\\\n' >> '{}'; exit 17; fi\\nif grep -q FAST_B \\\"$6\\\"; then printf 'B\\\\n' >> '{}'; elif grep -q FAST_C \\\"$6\\\"; then printf 'C\\\\n' >> '{}'; else printf 'M\\\\n' >> '{}'; fi\\nprintf '%s\\\\n' '{{\\\"unsupported\\\":true}}'\\n",
+            attempts.display(),
+            log,
+            log,
+            log,
+            log
+        ),
+    )
+    .unwrap();
+    fs::write(
+        &semgrep,
+        format!(
+            r#"#!/bin/sh
+if [ "$1" = "-version" ]; then echo 'semgrep-core 1.181.0'; exit 0; fi
+count_file='{}'
+count=0
+[ ! -f "$count_file" ] || count=$(cat "$count_file")
+count=$((count + 1))
+printf '%s\n' "$count" > "$count_file"
+if grep -q SLOW_EARLY "$6"; then sleep 0.4; printf 'E\n' >> '{}'; exit 17; fi
+if grep -q FAST_B "$6"; then printf 'B\n' >> '{}'; elif grep -q FAST_C "$6"; then printf 'C\n' >> '{}'; else printf 'M\n' >> '{}'; fi
+printf '%s\n' '{{"unsupported":true}}'
+"#,
+            attempts.display(), log, log, log, log
+        ),
+    )
+    .unwrap();
+    fs::set_permissions(&semgrep, fs::Permissions::from_mode(0o755)).unwrap();
+
+    let embedder = root.join(".git/deterministic-test-embedder");
+    fs::write(
+        &embedder,
+        "#!/bin/sh\\ninput=$(cat)\\ncase \\\"$input\\\" in *ALPHA_VECTOR*) printf '[1,0]' ;; *BETA_VECTOR*) printf '[0,1]' ;; *GAMMA_VECTOR*) printf '[0.5,0.5]' ;; *) printf '[0,1]' ;; esac\\n",
+    )
+    .unwrap();
+    fs::write(
+        &embedder,
+        r#"#!/bin/sh
+input=$(cat)
+case "$input" in *ALPHA_VECTOR*) printf '[1,0]' ;; *BETA_VECTOR*) printf '[0,1]' ;; *GAMMA_VECTOR*) printf '[0.5,0.5]' ;; *) printf '[0,1]' ;; esac
+"#,
+    )
+    .unwrap();
+    fs::set_permissions(&embedder, fs::Permissions::from_mode(0o755)).unwrap();
+    let config_home = test_config_home(root);
+    let config_file = config_home.join("repodb/config.toml");
+    let head = String::from_utf8(
+        Command::new("git")
+            .args(["rev-parse", "HEAD"])
+            .current_dir(root)
+            .output()
+            .unwrap()
+            .stdout,
+    )
+    .unwrap()
+    .trim()
+    .to_owned();
+
+    let mut snapshots = Vec::new();
+    let mut semantic_paths = Vec::new();
+    for workers in [1, 3] {
+        fs::write(&attempts, "0").unwrap();
+        fs::write(&completion_log, "").unwrap();
+        fs::write(
+            &config_file,
+            format!(
+                "[tools]\\nembedding_command = {:?}\\n\\n[refresh]\\nsemgrep_workers = {workers}\\n",
+                embedder.to_string_lossy()
+            ),
+        )
+        .unwrap();
+        fs::write(
+            &config_file,
+            format!(
+                "[tools]\nembedding_command = {:?}\n\n[refresh]\nsemgrep_workers = {workers}\n",
+                embedder.to_string_lossy()
+            ),
+        )
+        .unwrap();
+        let database = root.join(format!(".git/native-workers-{workers}.db"));
+        let database_arg = database.to_string_lossy().into_owned();
+        let output = Command::new(env!("CARGO_BIN_EXE_repodb"))
+            .args(["--database", &database_arg, "init"])
+            .current_dir(root)
+            .env("REPODB_SEMGREP_CORE", &semgrep)
+            .env("XDG_CONFIG_HOME", &config_home)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "init with {workers} workers failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert_eq!(fs::read_to_string(&attempts).unwrap().trim(), "5");
+
+        let completion_order = fs::read_to_string(&completion_log).unwrap();
+        let early = completion_order.find('E').unwrap();
+        let fast_b = completion_order.find('B').unwrap();
+        let fast_c = completion_order.find('C').unwrap();
+        if workers == 1 {
+            assert!(
+                early < fast_b && early < fast_c,
+                "serial order: {completion_order:?}"
+            );
+        } else {
+            assert!(
+                fast_b < early && fast_c < early,
+                "parallel order: {completion_order:?}"
+            );
+        }
+
+        let connection = Connection::open(&database).unwrap();
+        let mut statement = connection
+            .prepare(
+                "SELECT CAST(o.path AS TEXT),u.unit_id,u.byte_start,u.byte_end,u.line_start,u.line_end,e.vector
+                 FROM git_occurrences o
+                 JOIN git_blob_units b ON b.blob_id=o.blob_id AND b.segmentation_kind=o.segmentation_kind
+                 JOIN indexed_units u ON u.unit_id=b.unit_id
+                 JOIN unit_embeddings e ON e.unit_id=u.unit_id
+                 WHERE o.commit_id=?1 ORDER BY u.unit_id,o.path",
+            )
+            .unwrap();
+        let indexed = statement
+            .query_map([&head], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, usize>(2)?,
+                    row.get::<_, usize>(3)?,
+                    row.get::<_, usize>(4)?,
+                    row.get::<_, usize>(5)?,
+                    row.get::<_, Vec<u8>>(6)?,
+                ))
+            })
+            .unwrap()
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .unwrap();
+        let slow = indexed
+            .iter()
+            .filter(|(path, ..)| path.starts_with("src/a_slow"))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            slow.len(),
+            2,
+            "both paths should reference the deduplicated units"
+        );
+        assert_eq!(
+            slow[0].1, slow[1].1,
+            "duplicate source paths share unit identity"
+        );
+        let beta_vector = indexed
+            .iter()
+            .find(|(path, ..)| path == "src/b_fast.rs")
+            .unwrap()
+            .6
+            .clone();
+        assert_ne!(
+            slow[0].6, beta_vector,
+            "source vectors stay with their own units"
+        );
+        snapshots.push(indexed);
+
+        let output = Command::new(env!("CARGO_BIN_EXE_repodb"))
+            .args([
+                "--database",
+                &database_arg,
+                "search",
+                "--semantic",
+                "--json",
+                "--limit",
+                "10",
+                "ALPHA_VECTOR",
+            ])
+            .current_dir(root)
+            .env("XDG_CONFIG_HOME", &config_home)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "semantic query failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        semantic_paths.push(
+            parse_search_results(&String::from_utf8(output.stdout).unwrap())
+                .iter()
+                .map(|result| result["path"].as_str().unwrap().to_owned())
+                .collect::<Vec<_>>(),
+        );
+    }
+    assert_eq!(
+        snapshots[0], snapshots[1],
+        "worker count changes no indexed IDs or vectors"
+    );
+    assert_eq!(
+        semantic_paths[0], semantic_paths[1],
+        "worker count changes no tie ordering"
+    );
+    let alpha_paths = semantic_paths[0]
+        .iter()
+        .filter(|path| path.starts_with("src/a_slow"))
+        .cloned()
+        .collect::<Vec<_>>();
+    assert_eq!(
+        alpha_paths.first().map(String::as_str),
+        Some("src/a_slow.rs")
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn worker_parser_subprocesses_inherit_full_and_scoped_refresh_deadlines() {
+    let repo = repository();
+    let root = repo.path();
+    let config_home = test_config_home(root);
+    let config_file = config_home.join("repodb/config.toml");
+    let embedder = root.join(".git/repodb-test-embedder");
+    let (semgrep, _) = fake_semgrep_core(
+        root,
+        r#"if grep -q "$REPODB_TEST_SLOW_MARKER" "$6"; then sleep 5; fi
+printf '%s\n' '{"unsupported":true}'"#,
+    );
+    let configure = |workers: usize| {
+        fs::write(
+            &config_file,
+            format!(
+                r#"[tools]
+embedding_command = {:?}
+
+[refresh]
+semgrep_workers = {workers}
+"#,
+                embedder.to_string_lossy()
+            ),
+        )
+        .unwrap();
+    };
+    configure(3);
+    let initial = Command::new(env!("CARGO_BIN_EXE_repodb"))
+        .args(["init"])
+        .current_dir(root)
+        .env("REPODB_SEMGREP_CORE", &semgrep)
+        .env("XDG_CONFIG_HOME", &config_home)
+        .output()
+        .unwrap();
+    assert!(
+        initial.status.success(),
+        "initialization failed: {}",
+        String::from_utf8_lossy(&initial.stderr)
+    );
+    assert_eq!(search_json(root, &["Exact [literal] TARGET"]).len(), 1);
+
+    let refresh_with_marker = |args: &[&str], marker: &str| {
+        let started = std::time::Instant::now();
+        let output = Command::new(env!("CARGO_BIN_EXE_repodb"))
+            .args(args)
+            .current_dir(root)
+            .env("REPODB_SEMGREP_CORE", &semgrep)
+            .env("XDG_CONFIG_HOME", &config_home)
+            .env("REPODB_REFRESH_TIMEOUT_SECS", "30")
+            .env("REPODB_MAX_REFRESH_DURATION_SECS", "2")
+            .env("REPODB_TEST_SLOW_MARKER", marker)
+            .output()
+            .unwrap();
+        (output, started.elapsed())
+    };
+
+    fs::write(root.join("src/a_slow_full.rs"), "SLOW_FULL marker\n").unwrap();
+    fs::write(root.join("src/b_fast_full.rs"), "FAST_FULL_B marker\n").unwrap();
+    fs::write(root.join("src/c_fast_full.rs"), "FAST_FULL_C marker\n").unwrap();
+    git(
+        root,
+        &[
+            "add",
+            "src/a_slow_full.rs",
+            "src/b_fast_full.rs",
+            "src/c_fast_full.rs",
+        ],
+    );
+    git(root, &["commit", "-qm", "slow full refresh fixture"]);
+    let (full, full_elapsed) = refresh_with_marker(&["refresh"], "SLOW_FULL");
+    assert!(
+        !full.status.success(),
+        "full worker refresh should fail at its total deadline"
+    );
+    let full_error = String::from_utf8_lossy(&full.stderr);
+    assert!(
+        full_error.contains("process timed out")
+            || full_error.contains("total wall-clock deadline"),
+        "full refresh failed for an unexpected reason: {full_error}"
+    );
+    assert!(
+        full_elapsed < std::time::Duration::from_secs(5),
+        "full worker parser escaped the refresh deadline: {full_elapsed:?}"
+    );
+    assert_eq!(
+        search_json(root, &["Exact [literal] TARGET", "--all-history"]).len(),
+        1
+    );
+    assert!(search_json(root, &["SLOW_FULL marker", "--all-history"]).is_empty());
+
+    configure(3);
+    fs::write(root.join("src/0_slow_scoped.rs"), "SLOW_SCOPED marker\n").unwrap();
+    fs::write(root.join("src/d_fast_scoped.rs"), "FAST_SCOPED_D marker\n").unwrap();
+    fs::write(root.join("src/e_fast_scoped.rs"), "FAST_SCOPED_E marker\n").unwrap();
+    git(
+        root,
+        &[
+            "add",
+            "src/0_slow_scoped.rs",
+            "src/d_fast_scoped.rs",
+            "src/e_fast_scoped.rs",
+        ],
+    );
+    git(root, &["commit", "-qm", "slow scoped refresh fixture"]);
+    let (scoped, scoped_elapsed) = refresh_with_marker(&["refresh", "--changed"], "SLOW_SCOPED");
+    assert!(
+        !scoped.status.success(),
+        "scoped worker refresh should fail at its total deadline"
+    );
+    let scoped_error = String::from_utf8_lossy(&scoped.stderr);
+    assert!(
+        scoped_error.contains("process timed out")
+            || scoped_error.contains("total wall-clock deadline"),
+        "scoped refresh failed for an unexpected reason: {scoped_error}"
+    );
+    assert!(
+        scoped_elapsed < std::time::Duration::from_secs(5),
+        "scoped worker parser escaped the refresh deadline: {scoped_elapsed:?}"
+    );
+    assert_eq!(
+        search_json(root, &["Exact [literal] TARGET", "--all-history"]).len(),
+        1
+    );
+    assert!(search_json(root, &["SLOW_FULL marker", "--all-history"]).is_empty());
+    assert!(search_json(root, &["SLOW_SCOPED marker", "--all-history"]).is_empty());
+}

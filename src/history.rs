@@ -1,6 +1,6 @@
 use crate::{
     Result, SearchResult, as_bytes,
-    budget::{Budget, MAX_REFRESH_ACCOUNTING_BYTES},
+    budget::{self, Budget, MAX_REFRESH_ACCOUNTING_BYTES},
     git_objects::GitBlobReader,
     git_ranges, process, query_vector, segmentation,
 };
@@ -1401,59 +1401,337 @@ fn flush_embedding_batch(
     pipeline.submit(owned, statement, embedding_dimension, budget)
 }
 
-struct StagedUnitWriter<'a, 'connection> {
+struct OwnedParserUnit {
+    text: String,
+    line_start: usize,
+    line_end: usize,
+    byte_start: usize,
+    byte_end: usize,
+}
+
+enum ParserMessage {
+    Unit(OwnedParserUnit),
+    Finished,
+    Failed(String),
+}
+
+struct ParserTask {
+    kind: String,
+    content: String,
+    deadline: Option<std::time::Instant>,
+    output: SyncSender<ParserMessage>,
+}
+
+struct PendingParserBlob {
+    order_key: usize,
+    blob_id: String,
+    kind: String,
+    receiver: Receiver<ParserMessage>,
+    charged_input_bytes: usize,
+    reserved_result_bytes: usize,
+}
+
+struct NativeParserPool {
     worker_count: usize,
+    inputs: Vec<SyncSender<ParserTask>>,
+    workers: Vec<JoinHandle<()>>,
+    pending: std::collections::VecDeque<PendingParserBlob>,
+    next_order_key: usize,
+    next_publish_key: usize,
+}
+
+impl NativeParserPool {
+    fn new(worker_count: usize) -> Result<Self> {
+        if worker_count == 0 {
+            return Err("native parser worker count must be positive".into());
+        }
+        Ok(Self {
+            worker_count,
+            inputs: Vec::new(),
+            workers: Vec::new(),
+            pending: std::collections::VecDeque::new(),
+            next_order_key: 0,
+            next_publish_key: 0,
+        })
+    }
+
+    fn start_workers(&mut self) -> Result<()> {
+        if !self.inputs.is_empty() {
+            return Ok(());
+        }
+        for index in 0..self.worker_count {
+            let (input, receiver) = mpsc::sync_channel::<ParserTask>(1);
+            let worker = match std::thread::Builder::new()
+                .name(format!("repodb-semgrep-{index}"))
+                .spawn(move || native_parser_worker(receiver))
+            {
+                Ok(worker) => worker,
+                Err(error) => {
+                    drop(input);
+                    self.inputs.clear();
+                    for worker in self.workers.drain(..) {
+                        let _ = worker.join();
+                    }
+                    return Err(error.into());
+                }
+            };
+            self.inputs.push(input);
+            self.workers.push(worker);
+        }
+        Ok(())
+    }
+
+    fn submit(
+        &mut self,
+        blob_id: &str,
+        kind: &str,
+        content: String,
+        charge_input: bool,
+        writer: &mut StagedUnitWriter<'_, '_>,
+        budget: &mut Budget,
+    ) -> Result<()> {
+        // Fresh Git output is already charged by `git_output`; charge this input
+        // only when a separate SQL read created an additional in-memory copy.
+        let input_capacity = content.capacity();
+        let charged_input_bytes = if charge_input {
+            loop {
+                match budget.charge(input_capacity, "queued native parser input") {
+                    Ok(()) => break input_capacity,
+                    Err(_) if !self.pending.is_empty() => {
+                        self.publish_oldest(writer, budget)?;
+                    }
+                    Err(error) => return Err(error),
+                }
+            }
+        } else {
+            0
+        };
+        // Bound outstanding input by the configured worker count, and always
+        // free the oldest worker slot before dispatching its next ordered job.
+        if self.pending.len() == self.worker_count
+            && let Err(error) = self.publish_oldest(writer, budget)
+        {
+            budget.release(charged_input_bytes);
+            return Err(error);
+        }
+
+        // Every result slot can retain at most one MAX_UNIT_BYTES unit. Reserve
+        // that payload before dispatch; separate per-blob slots reserve progress
+        // for the earliest result even when later workers have completed first.
+        let reserved_result_bytes = segmentation::MAX_UNIT_BYTES;
+        loop {
+            match budget.charge(reserved_result_bytes, "queued native parser result") {
+                Ok(()) => break,
+                Err(_) if !self.pending.is_empty() => {
+                    if let Err(error) = self.publish_oldest(writer, budget) {
+                        budget.release(charged_input_bytes);
+                        return Err(error);
+                    }
+                }
+                Err(error) => {
+                    budget.release(charged_input_bytes);
+                    return Err(error);
+                }
+            }
+        }
+        if let Err(error) = self.start_workers() {
+            budget.release(charged_input_bytes);
+            budget.release(reserved_result_bytes);
+            return Err(error);
+        }
+        let order_key = self.next_order_key;
+        let Some(next_order_key) = order_key.checked_add(1) else {
+            budget.release(charged_input_bytes);
+            budget.release(reserved_result_bytes);
+            return Err(memory_limit());
+        };
+        self.next_order_key = next_order_key;
+        let deadline = match budget::current_refresh_deadline() {
+            Ok(deadline) => deadline,
+            Err(error) => {
+                budget.release(charged_input_bytes);
+                budget.release(reserved_result_bytes);
+                return Err(error);
+            }
+        };
+        let worker_index = order_key % self.worker_count;
+        let (output, receiver) = mpsc::sync_channel(1);
+        let task = ParserTask {
+            kind: kind.to_owned(),
+            content,
+            deadline,
+            output,
+        };
+        if self.inputs[worker_index].send(task).is_err() {
+            budget.release(charged_input_bytes);
+            budget.release(reserved_result_bytes);
+            return Err("native parser worker stopped".into());
+        }
+        self.pending.push_back(PendingParserBlob {
+            order_key,
+            blob_id: blob_id.to_owned(),
+            kind: kind.to_owned(),
+            receiver,
+            charged_input_bytes,
+            reserved_result_bytes,
+        });
+        Ok(())
+    }
+
+    fn publish_oldest(
+        &mut self,
+        writer: &mut StagedUnitWriter<'_, '_>,
+        budget: &mut Budget,
+    ) -> Result<()> {
+        let pending = self
+            .pending
+            .pop_front()
+            .ok_or("native parser result queue is empty")?;
+        if pending.order_key != self.next_publish_key {
+            return Err("native parser results are not in source order".into());
+        }
+        self.next_publish_key = self
+            .next_publish_key
+            .checked_add(1)
+            .ok_or_else(memory_limit)?;
+        let result = loop {
+            match pending
+                .receiver
+                .recv_timeout(std::time::Duration::from_millis(10))
+            {
+                Ok(ParserMessage::Unit(unit)) => {
+                    writer.stage_unit(&pending.blob_id, &pending.kind, unit, budget)?;
+                }
+                Ok(ParserMessage::Finished) => {
+                    budget::check_refresh_deadline()?;
+                    break Ok(());
+                }
+                Ok(ParserMessage::Failed(error)) => break Err(error.into()),
+                Err(mpsc::RecvTimeoutError::Timeout) => budget::check_refresh_deadline()?,
+                Err(mpsc::RecvTimeoutError::Disconnected) => {
+                    break Err("native parser worker stopped before completing a blob".into());
+                }
+            }
+        };
+        budget.release(pending.charged_input_bytes);
+        budget.release(pending.reserved_result_bytes);
+        result
+    }
+
+    fn finish(&mut self, writer: &mut StagedUnitWriter<'_, '_>, budget: &mut Budget) -> Result<()> {
+        while !self.pending.is_empty() {
+            self.publish_oldest(writer, budget)?;
+        }
+        Ok(())
+    }
+}
+
+impl Drop for NativeParserPool {
+    fn drop(&mut self) {
+        // Dropping each per-blob receiver unblocks workers stalled on later results;
+        // dropping the inputs then lets idle workers exit before joining them.
+        self.pending.clear();
+        self.inputs.clear();
+        for worker in self.workers.drain(..) {
+            let _ = worker.join();
+        }
+    }
+}
+
+fn native_parser_worker(input: Receiver<ParserTask>) {
+    while let Ok(task) = input.recv() {
+        let ParserTask {
+            kind,
+            content,
+            deadline,
+            output,
+        } = task;
+        let _deadline = budget::inherit_refresh_deadline(deadline);
+        if let Err(error) = budget::check_refresh_deadline() {
+            drop(content);
+            let _ = output.send(ParserMessage::Failed(error.to_string()));
+            continue;
+        }
+        let mut cancellation = None;
+        let mut receiver_closed = false;
+        let result = segmentation::visit(&kind, &content, |unit| {
+            if let Err(error) = budget::check_refresh_deadline() {
+                cancellation = Some(error.to_string());
+                return false;
+            }
+            let unit = OwnedParserUnit {
+                text: unit.text.to_owned(),
+                line_start: unit.line_start,
+                line_end: unit.line_end,
+                byte_start: unit.byte_start,
+                byte_end: unit.byte_end,
+            };
+            if output.send(ParserMessage::Unit(unit)).is_err() {
+                receiver_closed = true;
+                return false;
+            }
+            true
+        });
+        drop(content);
+        if receiver_closed {
+            continue;
+        }
+        let result = match cancellation {
+            Some(error) => Err(error),
+            None => result
+                .and_then(|()| budget::check_refresh_deadline().map_err(|error| error.to_string())),
+        };
+        match result {
+            Ok(()) => {
+                let _ = output.send(ParserMessage::Finished);
+            }
+            Err(error) => {
+                let _ = output.send(ParserMessage::Failed(error));
+            }
+        }
+    }
+}
+
+struct StagedUnitWriter<'a, 'connection> {
     next_unit_id: &'a mut i64,
     unit_statement: &'a mut rusqlite::Statement<'connection>,
     batch: &'a mut EmbeddingBatch,
     pipeline: &'a mut EmbeddingPipeline,
     embedding_dimension: &'a mut Option<usize>,
     embedding_statement: &'a mut rusqlite::Statement<'connection>,
-    budget: &'a mut Budget,
     budget_label: &'static str,
 }
 
 impl StagedUnitWriter<'_, '_> {
-    fn segment_blob(&mut self, content: &str, blob_id: &str, kind: &str) -> Result<()> {
-        let mut staging_error = None;
-        let segmentation_result =
-            segmentation::visit_with_workers(kind, content, self.worker_count, |unit| {
-                let staged = (|| -> Result<()> {
-                    self.budget.charge_records(1, "history content unit")?;
-                    *self.next_unit_id += 1;
-                    let text = unit.text.to_owned();
-                    self.unit_statement.execute(params![
-                        *self.next_unit_id,
-                        blob_id,
-                        kind,
-                        &text,
-                        unit.byte_start,
-                        unit.byte_end,
-                        unit.line_start,
-                        unit.line_end
-                    ])?;
-                    self.budget.charge(text.len(), self.budget_label)?;
-                    self.batch.push((*self.next_unit_id, text));
-                    if self.batch.len() == HISTORY_EMBEDDING_BATCH_SIZE {
-                        flush_embedding_batch(
-                            self.batch,
-                            self.pipeline,
-                            self.embedding_dimension,
-                            self.embedding_statement,
-                            self.budget,
-                        )?;
-                    }
-                    Ok(())
-                })();
-                if let Err(error) = staged {
-                    staging_error = Some(error);
-                    return false;
-                }
-                true
-            });
-        segmentation_result?;
-        if let Some(error) = staging_error {
-            return Err(error);
+    fn stage_unit(
+        &mut self,
+        blob_id: &str,
+        kind: &str,
+        unit: OwnedParserUnit,
+        budget: &mut Budget,
+    ) -> Result<()> {
+        budget.charge_records(1, "history content unit")?;
+        *self.next_unit_id += 1;
+        self.unit_statement.execute(params![
+            *self.next_unit_id,
+            blob_id,
+            kind,
+            &unit.text,
+            unit.byte_start,
+            unit.byte_end,
+            unit.line_start,
+            unit.line_end
+        ])?;
+        budget.charge(unit.text.len(), self.budget_label)?;
+        self.batch.push((*self.next_unit_id, unit.text));
+        if self.batch.len() == HISTORY_EMBEDDING_BATCH_SIZE {
+            flush_embedding_batch(
+                self.batch,
+                self.pipeline,
+                self.embedding_dimension,
+                self.embedding_statement,
+                budget,
+            )?;
         }
         Ok(())
     }
@@ -3067,6 +3345,7 @@ pub fn prepare_refresh_excluding(
         EmbeddingPipeline::new(command.clone(), model.clone(), configured_dimension)?;
     let mut batch = Vec::with_capacity(HISTORY_EMBEDDING_BATCH_SIZE);
     let mut unit_count = 0i64;
+    let mut parser_pool = NativeParserPool::new(worker_count)?;
     {
         let mut commit_stage =
             c.prepare("INSERT OR IGNORE INTO temp.refresh_commits VALUES(?1,?2)")?;
@@ -3111,6 +3390,15 @@ pub fn prepare_refresh_excluding(
                 &mut message_unit_stage,
                 &mut message_range_stage,
             )?;
+            let mut unit_writer = StagedUnitWriter {
+                next_unit_id: &mut unit_count,
+                unit_statement: &mut unit_stage,
+                batch: &mut batch,
+                pipeline: &mut pipeline,
+                embedding_dimension: &mut embedding_dimension,
+                embedding_statement: &mut embedding_statement,
+                budget_label: "history embedding batch text",
+            };
             for_each_tree_record(commit_id, budget, |record, budget| {
                 let tab = record
                     .iter()
@@ -3132,6 +3420,7 @@ pub fn prepare_refresh_excluding(
                     return Ok(());
                 }
                 let kind = segmentation::kind(path);
+                let mut charge_input = false;
                 let content = if blob_exists.exists([blob_id])? {
                     occurrence_stage.execute(params![commit_id, blob_id, path, kind])?;
                     if variant_exists
@@ -3139,6 +3428,7 @@ pub fn prepare_refresh_excluding(
                     {
                         return Ok(());
                     }
+                    charge_input = true;
                     blob_content.query_row([blob_id], |row| row.get::<_, Option<String>>(0))?
                 } else {
                     let size: u64 =
@@ -3165,22 +3455,21 @@ pub fn prepare_refresh_excluding(
                 if let Some(content) = content
                     && variant_stage.execute(params![blob_id, kind])? != 0
                 {
-                    StagedUnitWriter {
-                        worker_count,
-                        next_unit_id: &mut unit_count,
-                        unit_statement: &mut unit_stage,
-                        batch: &mut batch,
-                        pipeline: &mut pipeline,
-                        embedding_dimension: &mut embedding_dimension,
-                        embedding_statement: &mut embedding_statement,
+                    parser_pool.submit(
+                        blob_id,
+                        kind,
+                        content,
+                        charge_input,
+                        &mut unit_writer,
                         budget,
-                        budget_label: "history embedding batch text",
-                    }
-                    .segment_blob(&content, blob_id, kind)?;
+                    )?;
                 }
                 Ok(())
-            })
+            })?;
+            parser_pool.finish(&mut unit_writer, budget)?;
+            Ok(())
         })?;
+        drop(parser_pool);
         let commits = {
             let mut statement =
                 c.prepare("SELECT commit_id FROM temp.refresh_commits ORDER BY commit_id")?;
@@ -3442,120 +3731,124 @@ fn refresh_scoped(
             c.prepare("INSERT INTO temp.scoped_units VALUES(?1,?2,?3,?4,?5,?6,?7,?8)")?;
         let mut embedding_statement =
             c.prepare("INSERT INTO temp.scoped_embeddings VALUES(?1,?2)")?;
-
-        for_each_tree_record(&target_commit_id, &mut budget, |record, budget| {
-            let tab = record
-                .iter()
-                .position(|byte| *byte == b'\t')
-                .ok_or("invalid Git tree record")?;
-            let metadata = std::str::from_utf8(&record[..tab])?;
-            let mut fields = metadata.split_whitespace();
-            let _mode = fields.next().ok_or("invalid Git tree metadata")?;
-            let object_type = fields.next().ok_or("invalid Git tree metadata")?;
-            let blob_id = fields.next().ok_or("invalid Git tree metadata")?;
-            if fields.next().is_some() {
-                return Err("invalid Git tree metadata".into());
-            }
-            if object_type != "blob" {
-                return Ok(());
-            }
-            let path = &record[tab + 1..];
-            if excluded_database_path.is_some_and(|excluded| path == excluded) {
-                return Ok(());
-            }
-            let kind = segmentation::kind(path);
-            let unchanged = if let Some(parent) = parent.as_deref() {
-                parent_occurrence
-                    .query_row(params![parent, path], |row| {
-                        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-                    })
-                    .optional()?
-                    .is_some_and(|(parent_blob, parent_kind)| {
-                        parent_blob == blob_id && parent_kind == kind
-                    })
-            } else {
-                false
+        let mut parser_pool = NativeParserPool::new(worker_count)?;
+        {
+            let mut unit_writer = StagedUnitWriter {
+                next_unit_id: &mut next_unit_id,
+                unit_statement: &mut unit_stage,
+                batch: &mut batch,
+                pipeline: &mut pipeline,
+                embedding_dimension: &mut embedding_dimension,
+                embedding_statement: &mut embedding_statement,
+                budget_label: "scoped embedding batch text",
             };
-            if unchanged {
-                occurrence_stage.execute(params![target_commit_id, blob_id, path, kind])?;
-                return Ok(());
-            }
 
-            let has_existing_variant: bool =
-                existing_variant.query_row(params![blob_id, kind], |row| row.get(0))?;
-            let has_staged_variant: bool =
-                staged_variant.query_row(params![blob_id, kind], |row| row.get(0))?;
-            if has_existing_variant || has_staged_variant {
-                occurrence_stage.execute(params![target_commit_id, blob_id, path, kind])?;
-                return Ok(());
-            }
-
-            let staged = staged_blob
-                .query_row([blob_id], |row| {
-                    Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?))
-                })
-                .optional()?;
-            let content_from_staging = staged.is_some();
-            let (status, content) = if let Some((status, content)) = staged {
-                (status, content)
-            } else {
-                let stored_status = existing_blob
-                    .query_row([blob_id], |row| row.get::<_, String>(0))
-                    .optional()?;
-                if stored_status
-                    .as_deref()
-                    .is_some_and(|status| status != "text")
-                {
-                    variant_stage.execute(params![blob_id, kind])?;
+            for_each_tree_record(&target_commit_id, &mut budget, |record, budget| {
+                let tab = record
+                    .iter()
+                    .position(|byte| *byte == b'\t')
+                    .ok_or("invalid Git tree record")?;
+                let metadata = std::str::from_utf8(&record[..tab])?;
+                let mut fields = metadata.split_whitespace();
+                let _mode = fields.next().ok_or("invalid Git tree metadata")?;
+                let object_type = fields.next().ok_or("invalid Git tree metadata")?;
+                let blob_id = fields.next().ok_or("invalid Git tree metadata")?;
+                if fields.next().is_some() {
+                    return Err("invalid Git tree metadata".into());
+                }
+                if object_type != "blob" {
+                    return Ok(());
+                }
+                let path = &record[tab + 1..];
+                if excluded_database_path.is_some_and(|excluded| path == excluded) {
+                    return Ok(());
+                }
+                let kind = segmentation::kind(path);
+                let unchanged = if let Some(parent) = parent.as_deref() {
+                    parent_occurrence
+                        .query_row(params![parent, path], |row| {
+                            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+                        })
+                        .optional()?
+                        .is_some_and(|(parent_blob, parent_kind)| {
+                            parent_blob == blob_id && parent_kind == kind
+                        })
+                } else {
+                    false
+                };
+                if unchanged {
                     occurrence_stage.execute(params![target_commit_id, blob_id, path, kind])?;
                     return Ok(());
                 }
-                let size: u64 =
-                    String::from_utf8(git_output(&["cat-file", "-s", blob_id], 64, budget)?)?
-                        .trim()
-                        .parse()?;
-                let bytes = git_output(
-                    &["cat-file", "blob", blob_id],
-                    usize::try_from(size).unwrap_or(usize::MAX),
-                    budget,
-                )?;
-                let (content, status) = if bytes.contains(&0) {
-                    (None, "binary")
-                } else {
-                    match String::from_utf8(bytes) {
-                        Ok(content) => (Some(content), "text"),
-                        Err(_) => (None, "unsupported"),
-                    }
-                };
-                blob_stage.execute(params![blob_id, status, content])?;
-                (status.to_owned(), content)
-            };
 
-            if status == "text" {
-                let content = content.ok_or("text Git blob is missing staged content")?;
-                if content_from_staging {
-                    budget.charge(content.len(), "staged scoped Git blob text")?;
+                let has_existing_variant: bool =
+                    existing_variant.query_row(params![blob_id, kind], |row| row.get(0))?;
+                let has_staged_variant: bool =
+                    staged_variant.query_row(params![blob_id, kind], |row| row.get(0))?;
+                if has_existing_variant || has_staged_variant {
+                    occurrence_stage.execute(params![target_commit_id, blob_id, path, kind])?;
+                    return Ok(());
                 }
-                StagedUnitWriter {
-                    worker_count,
-                    next_unit_id: &mut next_unit_id,
-                    unit_statement: &mut unit_stage,
-                    batch: &mut batch,
-                    pipeline: &mut pipeline,
-                    embedding_dimension: &mut embedding_dimension,
-                    embedding_statement: &mut embedding_statement,
-                    budget,
-                    budget_label: "scoped embedding batch text",
+
+                let staged = staged_blob
+                    .query_row([blob_id], |row| {
+                        Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?))
+                    })
+                    .optional()?;
+                let content_from_staging = staged.is_some();
+                let (status, content) = if let Some((status, content)) = staged {
+                    (status, content)
+                } else {
+                    let stored_status = existing_blob
+                        .query_row([blob_id], |row| row.get::<_, String>(0))
+                        .optional()?;
+                    if stored_status
+                        .as_deref()
+                        .is_some_and(|status| status != "text")
+                    {
+                        variant_stage.execute(params![blob_id, kind])?;
+                        occurrence_stage.execute(params![target_commit_id, blob_id, path, kind])?;
+                        return Ok(());
+                    }
+                    let size: u64 =
+                        String::from_utf8(git_output(&["cat-file", "-s", blob_id], 64, budget)?)?
+                            .trim()
+                            .parse()?;
+                    let bytes = git_output(
+                        &["cat-file", "blob", blob_id],
+                        usize::try_from(size).unwrap_or(usize::MAX),
+                        budget,
+                    )?;
+                    let (content, status) = if bytes.contains(&0) {
+                        (None, "binary")
+                    } else {
+                        match String::from_utf8(bytes) {
+                            Ok(content) => (Some(content), "text"),
+                            Err(_) => (None, "unsupported"),
+                        }
+                    };
+                    blob_stage.execute(params![blob_id, status, content])?;
+                    (status.to_owned(), content)
+                };
+
+                if status == "text" {
+                    let content = content.ok_or("text Git blob is missing staged content")?;
+                    parser_pool.submit(
+                        blob_id,
+                        kind,
+                        content,
+                        content_from_staging,
+                        &mut unit_writer,
+                        budget,
+                    )?;
                 }
-                .segment_blob(&content, blob_id, kind)?;
-                if content_from_staging {
-                    budget.release(content.len());
-                }
-            }
-            variant_stage.execute(params![blob_id, kind])?;
-            occurrence_stage.execute(params![target_commit_id, blob_id, path, kind])?;
-            Ok(())
-        })?;
+                variant_stage.execute(params![blob_id, kind])?;
+                occurrence_stage.execute(params![target_commit_id, blob_id, path, kind])?;
+                Ok(())
+            })?;
+            parser_pool.finish(&mut unit_writer, &mut budget)?;
+        }
+        drop(parser_pool);
         flush_embedding_batch(
             &mut batch,
             &mut pipeline,

@@ -25,7 +25,7 @@ pub fn kind(path: &[u8]) -> &'static str {
 }
 
 // Bounds apply to UTF-8 bytes, including preserved internal line endings.
-const MAX_UNIT_BYTES: usize = 4096;
+pub(crate) const MAX_UNIT_BYTES: usize = 4096;
 
 fn bounded(
     text: &str,

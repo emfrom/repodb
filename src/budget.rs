@@ -91,6 +91,34 @@ impl Drop for RefreshDeadline {
     }
 }
 
+pub(crate) fn current_refresh_deadline() -> Result<Option<Instant>> {
+    check_refresh_deadline()?;
+    Ok(REFRESH_DEADLINE.with(Cell::get))
+}
+
+pub(crate) struct InheritedRefreshDeadline {
+    previous: Option<Instant>,
+}
+
+pub(crate) fn inherit_refresh_deadline(deadline: Option<Instant>) -> InheritedRefreshDeadline {
+    let previous = REFRESH_DEADLINE.with(|slot| {
+        let previous = slot.get();
+        let inherited = match (previous, deadline) {
+            (Some(current), Some(parent)) => Some(current.min(parent)),
+            (current, parent) => current.or(parent),
+        };
+        slot.set(inherited);
+        previous
+    });
+    InheritedRefreshDeadline { previous }
+}
+
+impl Drop for InheritedRefreshDeadline {
+    fn drop(&mut self) {
+        REFRESH_DEADLINE.with(|slot| slot.set(self.previous));
+    }
+}
+
 pub(crate) fn check_refresh_deadline() -> Result<()> {
     if REFRESH_INTERRUPTED.load(std::sync::atomic::Ordering::Relaxed) {
         return Err("refresh cancelled by interrupt signal".into());
@@ -290,6 +318,20 @@ impl Budget {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn inherited_refresh_deadline_is_visible_on_worker_thread_and_restores_prior_state() {
+        let deadline = Instant::now() + Duration::from_secs(30);
+        let worker = std::thread::spawn(move || {
+            assert_eq!(current_refresh_deadline().unwrap(), None);
+            {
+                let _scope = inherit_refresh_deadline(Some(deadline));
+                assert_eq!(current_refresh_deadline().unwrap(), Some(deadline));
+            }
+            assert_eq!(current_refresh_deadline().unwrap(), None);
+        });
+        worker.join().unwrap();
+    }
 
     #[test]
     fn refresh_accounting_ceiling_is_finite() {
