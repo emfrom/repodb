@@ -1373,7 +1373,7 @@ fn validate_vector(v: &[f32]) -> Result<()> {
 fn as_bytes(v: &[f32]) -> Vec<u8> {
     v.iter().flat_map(|x| x.to_le_bytes()).collect()
 }
-fn reembed(c: &mut Connection, command: &str, model: &str) -> Result<()> {
+pub(crate) fn reembed(c: &mut Connection, command: &str, model: &str) -> Result<()> {
     let version = history::snapshot_version(c)?;
     let mut st = c.prepare("SELECT path,commit_id,content FROM indexed_files ORDER BY path")?;
     let files = st
@@ -1695,45 +1695,7 @@ fn execute() -> Result<()> {
             }
         }
         "import" => {
-            let first = a
-                .next()
-                .ok_or("import requires one local file, URL, or Git repository")?;
-            if first == "--preview" {
-                let path = a.next().ok_or(
-                    "import --preview requires a local file, directory, or HTTP(S) page URL",
-                )?;
-                if a.next().is_some() {
-                    return Err(
-                        "import --preview accepts one local file, directory, or HTTP(S) page URL"
-                            .into(),
-                    );
-                }
-                let preview = if path.starts_with("http://") || path.starts_with("https://") {
-                    if path.ends_with(".git") {
-                        return Err("import --preview does not preview Git repositories".into());
-                    }
-                    imports::preview_url(&path, &db_path)?
-                } else {
-                    imports::preview(std::path::Path::new(&path), &db_path)?
-                };
-                println!("{}", serde_json::to_string(&preview)?);
-            } else {
-                let (revision, locator) = if first == "--revision" {
-                    let revision = a
-                        .next()
-                        .ok_or("import --revision requires a branch, tag, or commit")?;
-                    let locator = a
-                        .next()
-                        .ok_or("import --revision requires one Git repository")?;
-                    (Some(revision), locator)
-                } else {
-                    (None, first)
-                };
-                if a.next().is_some() {
-                    return Err("import accepts one file, URL, or Git repository".into());
-                }
-                imports::register(&open_db(&db_path)?, &locator, revision.as_deref())?;
-            }
+            commands::import::run(&db_path, &a.collect::<Vec<_>>())?;
         }
         "retention" => {
             commands::settings::retention(&db_path, &a.collect::<Vec<_>>())?;
@@ -1742,21 +1704,7 @@ fn execute() -> Result<()> {
             commands::settings::redirect_limit(&db_path, &a.collect::<Vec<_>>())?;
         }
         "reembed" => {
-            let mut command = config::embedding_command()?;
-            let mut model = config::DEFAULT_EMBEDDING_MODEL.to_owned();
-            while let Some(x) = a.next() {
-                match x.as_str() {
-                    "--command" => command = a.next().ok_or("--command requires path")?,
-                    "--model" => model = a.next().ok_or("--model requires id")?,
-                    _ => return Err(format!("unexpected argument {x}").into()),
-                }
-            }
-            let mut c = open_db(&db_path)?;
-            if history::is_current(&c)? {
-                history::reembed(&mut c, &command, &model)?;
-            } else {
-                reembed(&mut c, &command, &model)?;
-            }
+            commands::import::reembed(&db_path, &a.collect::<Vec<_>>())?;
         }
         "search" => {
             let mut query = None;
