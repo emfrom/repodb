@@ -10279,9 +10279,11 @@ fn worker_parser_subprocesses_inherit_full_and_scoped_refresh_deadlines() {
     let config_home = test_config_home(root);
     let config_file = config_home.join("repodb/config.toml");
     let embedder = root.join(".git/repodb-test-embedder");
+    let parser_log = root.join(".git/deadline-parser-completions");
     let (semgrep, _) = fake_semgrep_core(
         root,
-        r#"if grep -q "$REPODB_TEST_SLOW_MARKER" "$6"; then sleep 5; fi
+        r#"if [ -n "$REPODB_TEST_SLOW_MARKER" ] && grep -q "$REPODB_TEST_SLOW_MARKER" "$6"; then sleep 5; fi
+if grep -q FAST_FULL_B "$6"; then printf 'B\n' >> "$REPODB_TEST_PARSER_LOG"; elif grep -q FAST_FULL_C "$6"; then printf 'C\n' >> "$REPODB_TEST_PARSER_LOG"; elif grep -q SLOW_FULL "$6"; then printf 'F\n' >> "$REPODB_TEST_PARSER_LOG"; fi
 printf '%s\n' '{"unsupported":true}'"#,
     );
     let configure = |workers: usize| {
@@ -10315,6 +10317,7 @@ semgrep_workers = {workers}
     assert_eq!(search_json(root, &["Exact [literal] TARGET"]).len(), 1);
 
     let refresh_with_marker = |args: &[&str], marker: &str| {
+        fs::write(&parser_log, "").unwrap();
         let started = std::time::Instant::now();
         let output = Command::new(env!("CARGO_BIN_EXE_repodb"))
             .args(args)
@@ -10324,6 +10327,7 @@ semgrep_workers = {workers}
             .env("REPODB_REFRESH_TIMEOUT_SECS", "30")
             .env("REPODB_MAX_REFRESH_DURATION_SECS", "2")
             .env("REPODB_TEST_SLOW_MARKER", marker)
+            .env("REPODB_TEST_PARSER_LOG", &parser_log)
             .output()
             .unwrap();
         (output, started.elapsed())
@@ -10362,6 +10366,11 @@ semgrep_workers = {workers}
         1
     );
     assert!(search_json(root, &["SLOW_FULL marker", "--all-history"]).is_empty());
+    let completed = fs::read_to_string(&parser_log).unwrap();
+    assert!(
+        completed.contains('B') && completed.contains('C'),
+        "later results were not ready: {completed:?}"
+    );
 
     configure(3);
     fs::write(root.join("src/0_slow_scoped.rs"), "SLOW_SCOPED marker\n").unwrap();
@@ -10398,4 +10407,9 @@ semgrep_workers = {workers}
     );
     assert!(search_json(root, &["SLOW_FULL marker", "--all-history"]).is_empty());
     assert!(search_json(root, &["SLOW_SCOPED marker", "--all-history"]).is_empty());
+    let completed = fs::read_to_string(&parser_log).unwrap();
+    assert!(
+        completed.contains('F') && completed.contains('B'),
+        "later results were not ready: {completed:?}"
+    );
 }
