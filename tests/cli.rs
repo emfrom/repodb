@@ -9757,3 +9757,18 @@ fn worktree_search_rejects_stale_and_alternate_start_heads_without_refreshing() 
     let error: serde_json::Value = serde_json::from_str(&output).unwrap();
     assert_eq!(error["error"]["code"], "alternate_head");
 }
+
+#[test]
+fn status_and_settings_commands_preserve_invalid_argument_errors() {
+    let repo = repository();
+    let root = repo.path();
+
+    let (ok, output) = run(root, &["status", "--json", "extra"]);
+    assert!(!ok, "invalid status options must fail: {output}");
+
+    let (ok, output) = run(root, &["retention", "latest", "extra"]);
+    assert!(!ok, "extra settings arguments must fail: {output}");
+
+    let (ok, output) = run(root, &["redirect-limit", "not-a-number"]);
+    assert!(!ok, "malformed settings values must fail: {output}");
+}
