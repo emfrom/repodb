@@ -1,0 +1,522 @@
+{
+  "command": [
+    "/tmp/automate-spec-repodb-20261027/target-refactor/release/repodb",
+    "--database",
+    "<per-run-db>",
+    "refresh",
+    "--changed"
+  ],
+  "repeat": 5,
+  "measurements": [
+    {
+      "command": [
+        "/tmp/automate-spec-repodb-20261027/target-refactor/release/repodb",
+        "--database",
+        "/tmp/automate-spec-repodb-20261027/checkpoint/throughput/repodb/run-01/repodb.sqlite",
+        "refresh",
+        "--changed"
+      ],
+      "elapsed_seconds": 0.01520369597710669,
+      "returncode": 0,
+      "database_bytes": 107868160,
+      "dataset": "repodb",
+      "run": "run-01",
+      "repeat": 1,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "command": [
+        "/tmp/automate-spec-repodb-20261027/target-refactor/release/repodb",
+        "--database",
+        "/tmp/automate-spec-repodb-20261027/checkpoint/throughput/repodb/run-01/repodb.sqlite",
+        "refresh",
+        "--changed"
+      ],
+      "elapsed_seconds": 0.012834852037485689,
+      "returncode": 0,
+      "database_bytes": 107868160,
+      "dataset": "repodb",
+      "run": "run-01",
+      "repeat": 2,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "command": [
+        "/tmp/automate-spec-repodb-20261027/target-refactor/release/repodb",
+        "--database",
+        "/tmp/automate-spec-repodb-20261027/checkpoint/throughput/repodb/run-01/repodb.sqlite",
+        "refresh",
+        "--changed"
+      ],
+      "elapsed_seconds": 0.012053049984388053,
+      "returncode": 0,
+      "database_bytes": 107868160,
+      "dataset": "repodb",
+      "run": "run-01",
+      "repeat": 3,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "command": [
+        "/tmp/automate-spec-repodb-20261027/target-refactor/release/repodb",
+        "--database",
+        "/tmp/automate-spec-repodb-20261027/checkpoint/throughput/repodb/run-01/repodb.sqlite",
+        "refresh",
+        "--changed"
+      ],
+      "elapsed_seconds": 0.011579490033909678,
+      "returncode": 0,
+      "database_bytes": 107868160,
+      "dataset": "repodb",
+      "run": "run-01",
+      "repeat": 4,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "command": [
+        "/tmp/automate-spec-repodb-20261027/target-refactor/release/repodb",
+        "--database",
+        "/tmp/automate-spec-repodb-20261027/checkpoint/throughput/repodb/run-01/repodb.sqlite",
+        "refresh",
+        "--changed"
+      ],
+      "elapsed_seconds": 0.011276241042651236,
+      "returncode": 0,
+      "database_bytes": 107868160,
+      "dataset": "repodb",
+      "run": "run-01",
+      "repeat": 5,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "command": [
+        "/tmp/automate-spec-repodb-20261027/target-refactor/release/repodb",
+        "--database",
+        "/tmp/automate-spec-repodb-20261027/checkpoint/throughput/repodb/run-02/repodb.sqlite",
+        "refresh",
+        "--changed"
+      ],
+      "elapsed_seconds": 0.015297106001526117,
+      "returncode": 0,
+      "database_bytes": 107868160,
+      "dataset": "repodb",
+      "run": "run-02",
+      "repeat": 1,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "command": [
+        "/tmp/automate-spec-repodb-20261027/target-refactor/release/repodb",
+        "--database",
+        "/tmp/automate-spec-repodb-20261027/checkpoint/throughput/repodb/run-02/repodb.sqlite",
+        "refresh",
+        "--changed"
+      ],
+      "elapsed_seconds": 0.013967989012598991,
+      "returncode": 0,
+      "database_bytes": 107868160,
+      "dataset": "repodb",
+      "run": "run-02",
+      "repeat": 2,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "command": [
+        "/tmp/automate-spec-repodb-20261027/target-refactor/release/repodb",
+        "--database",
+        "/tmp/automate-spec-repodb-20261027/checkpoint/throughput/repodb/run-02/repodb.sqlite",
+        "refresh",
+        "--changed"
+      ],
+      "elapsed_seconds": 0.014723148953635246,
+      "returncode": 0,
+      "database_bytes": 107868160,
+      "dataset": "repodb",
+      "run": "run-02",
+      "repeat": 3,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "command": [
+        "/tmp/automate-spec-repodb-20261027/target-refactor/release/repodb",
+        "--database",
+        "/tmp/automate-spec-repodb-20261027/checkpoint/throughput/repodb/run-02/repodb.sqlite",
+        "refresh",
+        "--changed"
+      ],
+      "elapsed_seconds": 0.015458376961760223,
+      "returncode": 0,
+      "database_bytes": 107868160,
+      "dataset": "repodb",
+      "run": "run-02",
+      "repeat": 4,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "command": [
+        "/tmp/automate-spec-repodb-20261027/target-refactor/release/repodb",
+        "--database",
+        "/tmp/automate-spec-repodb-20261027/checkpoint/throughput/repodb/run-02/repodb.sqlite",
+        "refresh",
+        "--changed"
+      ],
+      "elapsed_seconds": 0.01484092598548159,
+      "returncode": 0,
+      "database_bytes": 107868160,
+      "dataset": "repodb",
+      "run": "run-02",
+      "repeat": 5,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "command": [
+        "/tmp/automate-spec-repodb-20261027/target-refactor/release/repodb",
+        "--database",
+        "/tmp/automate-spec-repodb-20261027/checkpoint/throughput/repodb/run-03/repodb.sqlite",
+        "refresh",
+        "--changed"
+      ],
+      "elapsed_seconds": 0.012130453949794173,
+      "returncode": 0,
+      "database_bytes": 107868160,
+      "dataset": "repodb",
+      "run": "run-03",
+      "repeat": 1,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "command": [
+        "/tmp/automate-spec-repodb-20261027/target-refactor/release/repodb",
+        "--database",
+        "/tmp/automate-spec-repodb-20261027/checkpoint/throughput/repodb/run-03/repodb.sqlite",
+        "refresh",
+        "--changed"
+      ],
+      "elapsed_seconds": 0.011765854025725275,
+      "returncode": 0,
+      "database_bytes": 107868160,
+      "dataset": "repodb",
+      "run": "run-03",
+      "repeat": 2,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "command": [
+        "/tmp/automate-spec-repodb-20261027/target-refactor/release/repodb",
+        "--database",
+        "/tmp/automate-spec-repodb-20261027/checkpoint/throughput/repodb/run-03/repodb.sqlite",
+        "refresh",
+        "--changed"
+      ],
+      "elapsed_seconds": 0.0117305270396173,
+      "returncode": 0,
+      "database_bytes": 107868160,
+      "dataset": "repodb",
+      "run": "run-03",
+      "repeat": 3,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "command": [
+        "/tmp/automate-spec-repodb-20261027/target-refactor/release/repodb",
+        "--database",
+        "/tmp/automate-spec-repodb-20261027/checkpoint/throughput/repodb/run-03/repodb.sqlite",
+        "refresh",
+        "--changed"
+      ],
+      "elapsed_seconds": 0.010768966982141137,
+      "returncode": 0,
+      "database_bytes": 107868160,
+      "dataset": "repodb",
+      "run": "run-03",
+      "repeat": 4,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "command": [
+        "/tmp/automate-spec-repodb-20261027/target-refactor/release/repodb",
+        "--database",
+        "/tmp/automate-spec-repodb-20261027/checkpoint/throughput/repodb/run-03/repodb.sqlite",
+        "refresh",
+        "--changed"
+      ],
+      "elapsed_seconds": 0.011483881971798837,
+      "returncode": 0,
+      "database_bytes": 107868160,
+      "dataset": "repodb",
+      "run": "run-03",
+      "repeat": 5,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "command": [
+        "/tmp/automate-spec-repodb-20261027/target-refactor/release/repodb",
+        "--database",
+        "/tmp/automate-spec-repodb-20261027/checkpoint/throughput/combined_26/run-01/repodb.sqlite",
+        "refresh",
+        "--changed"
+      ],
+      "elapsed_seconds": 0.01200256496667862,
+      "returncode": 0,
+      "database_bytes": 6709248,
+      "dataset": "combined_26",
+      "run": "run-01",
+      "repeat": 1,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "command": [
+        "/tmp/automate-spec-repodb-20261027/target-refactor/release/repodb",
+        "--database",
+        "/tmp/automate-spec-repodb-20261027/checkpoint/throughput/combined_26/run-01/repodb.sqlite",
+        "refresh",
+        "--changed"
+      ],
+      "elapsed_seconds": 0.012920978013426065,
+      "returncode": 0,
+      "database_bytes": 6709248,
+      "dataset": "combined_26",
+      "run": "run-01",
+      "repeat": 2,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "command": [
+        "/tmp/automate-spec-repodb-20261027/target-refactor/release/repodb",
+        "--database",
+        "/tmp/automate-spec-repodb-20261027/checkpoint/throughput/combined_26/run-01/repodb.sqlite",
+        "refresh",
+        "--changed"
+      ],
+      "elapsed_seconds": 0.012869815982412547,
+      "returncode": 0,
+      "database_bytes": 6709248,
+      "dataset": "combined_26",
+      "run": "run-01",
+      "repeat": 3,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "command": [
+        "/tmp/automate-spec-repodb-20261027/target-refactor/release/repodb",
+        "--database",
+        "/tmp/automate-spec-repodb-20261027/checkpoint/throughput/combined_26/run-01/repodb.sqlite",
+        "refresh",
+        "--changed"
+      ],
+      "elapsed_seconds": 0.013843655993696302,
+      "returncode": 0,
+      "database_bytes": 6709248,
+      "dataset": "combined_26",
+      "run": "run-01",
+      "repeat": 4,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "command": [
+        "/tmp/automate-spec-repodb-20261027/target-refactor/release/repodb",
+        "--database",
+        "/tmp/automate-spec-repodb-20261027/checkpoint/throughput/combined_26/run-01/repodb.sqlite",
+        "refresh",
+        "--changed"
+      ],
+      "elapsed_seconds": 0.011951143038459122,
+      "returncode": 0,
+      "database_bytes": 6709248,
+      "dataset": "combined_26",
+      "run": "run-01",
+      "repeat": 5,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "command": [
+        "/tmp/automate-spec-repodb-20261027/target-refactor/release/repodb",
+        "--database",
+        "/tmp/automate-spec-repodb-20261027/checkpoint/throughput/combined_26/run-02/repodb.sqlite",
+        "refresh",
+        "--changed"
+      ],
+      "elapsed_seconds": 0.013796128972899169,
+      "returncode": 0,
+      "database_bytes": 6709248,
+      "dataset": "combined_26",
+      "run": "run-02",
+      "repeat": 1,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "command": [
+        "/tmp/automate-spec-repodb-20261027/target-refactor/release/repodb",
+        "--database",
+        "/tmp/automate-spec-repodb-20261027/checkpoint/throughput/combined_26/run-02/repodb.sqlite",
+        "refresh",
+        "--changed"
+      ],
+      "elapsed_seconds": 0.012014590960461646,
+      "returncode": 0,
+      "database_bytes": 6709248,
+      "dataset": "combined_26",
+      "run": "run-02",
+      "repeat": 2,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "command": [
+        "/tmp/automate-spec-repodb-20261027/target-refactor/release/repodb",
+        "--database",
+        "/tmp/automate-spec-repodb-20261027/checkpoint/throughput/combined_26/run-02/repodb.sqlite",
+        "refresh",
+        "--changed"
+      ],
+      "elapsed_seconds": 0.010674969002138823,
+      "returncode": 0,
+      "database_bytes": 6709248,
+      "dataset": "combined_26",
+      "run": "run-02",
+      "repeat": 3,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "command": [
+        "/tmp/automate-spec-repodb-20261027/target-refactor/release/repodb",
+        "--database",
+        "/tmp/automate-spec-repodb-20261027/checkpoint/throughput/combined_26/run-02/repodb.sqlite",
+        "refresh",
+        "--changed"
+      ],
+      "elapsed_seconds": 0.011090727988630533,
+      "returncode": 0,
+      "database_bytes": 6709248,
+      "dataset": "combined_26",
+      "run": "run-02",
+      "repeat": 4,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "command": [
+        "/tmp/automate-spec-repodb-20261027/target-refactor/release/repodb",
+        "--database",
+        "/tmp/automate-spec-repodb-20261027/checkpoint/throughput/combined_26/run-02/repodb.sqlite",
+        "refresh",
+        "--changed"
+      ],
+      "elapsed_seconds": 0.012164479005150497,
+      "returncode": 0,
+      "database_bytes": 6709248,
+      "dataset": "combined_26",
+      "run": "run-02",
+      "repeat": 5,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "command": [
+        "/tmp/automate-spec-repodb-20261027/target-refactor/release/repodb",
+        "--database",
+        "/tmp/automate-spec-repodb-20261027/checkpoint/throughput/combined_26/run-03/repodb.sqlite",
+        "refresh",
+        "--changed"
+      ],
+      "elapsed_seconds": 0.011997482972219586,
+      "returncode": 0,
+      "database_bytes": 6709248,
+      "dataset": "combined_26",
+      "run": "run-03",
+      "repeat": 1,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "command": [
+        "/tmp/automate-spec-repodb-20261027/target-refactor/release/repodb",
+        "--database",
+        "/tmp/automate-spec-repodb-20261027/checkpoint/throughput/combined_26/run-03/repodb.sqlite",
+        "refresh",
+        "--changed"
+      ],
+      "elapsed_seconds": 0.01179497700650245,
+      "returncode": 0,
+      "database_bytes": 6709248,
+      "dataset": "combined_26",
+      "run": "run-03",
+      "repeat": 2,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "command": [
+        "/tmp/automate-spec-repodb-20261027/target-refactor/release/repodb",
+        "--database",
+        "/tmp/automate-spec-repodb-20261027/checkpoint/throughput/combined_26/run-03/repodb.sqlite",
+        "refresh",
+        "--changed"
+      ],
+      "elapsed_seconds": 0.011530112009495497,
+      "returncode": 0,
+      "database_bytes": 6709248,
+      "dataset": "combined_26",
+      "run": "run-03",
+      "repeat": 3,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "command": [
+        "/tmp/automate-spec-repodb-20261027/target-refactor/release/repodb",
+        "--database",
+        "/tmp/automate-spec-repodb-20261027/checkpoint/throughput/combined_26/run-03/repodb.sqlite",
+        "refresh",
+        "--changed"
+      ],
+      "elapsed_seconds": 0.014383182977326214,
+      "returncode": 0,
+      "database_bytes": 6709248,
+      "dataset": "combined_26",
+      "run": "run-03",
+      "repeat": 4,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "command": [
+        "/tmp/automate-spec-repodb-20261027/target-refactor/release/repodb",
+        "--database",
+        "/tmp/automate-spec-repodb-20261027/checkpoint/throughput/combined_26/run-03/repodb.sqlite",
+        "refresh",
+        "--changed"
+      ],
+      "elapsed_seconds": 0.013831086980644614,
+      "returncode": 0,
+      "database_bytes": 6709248,
+      "dataset": "combined_26",
+      "run": "run-03",
+      "repeat": 5,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    }
+  ]
+}

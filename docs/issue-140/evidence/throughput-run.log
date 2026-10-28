@@ -1,0 +1,13 @@
+starting repodb repeat 1/3 fresh refresh
+finished repodb repeat 1: fresh=388.81s unchanged=379.89s
+starting repodb repeat 2/3 fresh refresh
+finished repodb repeat 2: fresh=367.56s unchanged=357.51s
+starting repodb repeat 3/3 fresh refresh
+finished repodb repeat 3: fresh=362.91s unchanged=379.22s
+starting combined_26 repeat 1/3 fresh refresh
+finished combined_26 repeat 1: fresh=101.26s unchanged=99.99s
+starting combined_26 repeat 2/3 fresh refresh
+finished combined_26 repeat 2: fresh=99.30s unchanged=99.17s
+starting combined_26 repeat 3/3 fresh refresh
+finished combined_26 repeat 3: fresh=100.99s unchanged=105.04s
+/tmp/automate-spec-repodb-20261027/checkpoint/throughput/raw-baseline.json

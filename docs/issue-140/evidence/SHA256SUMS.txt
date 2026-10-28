@@ -1,0 +1,8 @@
+b79fda165a35ba745704bd8bcb8877929e97770f26be2b8111788386335cf744  docs/issue-140/evidence/changed-noop-refactor-only.json
+f09688ff312775d4add697ba3f048adc77c0a0f0d36c5c22ffd3bcb86ba25fc5  docs/issue-140/evidence/exact-26-refactor-only.json
+8692a8e5bd0387cde5e3412cea0f6567ae93020b70c707d59e93b07ce789e9a0  docs/issue-140/evidence/exact-controls-refactor-only.json
+f809bd6b6167a687967d43c7aa2af553947d9ee873a8cc261ec1c751eefdca31  docs/issue-140/evidence/issue-83-quality-refactor-only.json
+ab11700006dc314dddbc8b5cbfd22e6f238503c0342f25083ecee5a7db17af18  docs/issue-140/evidence/query-resources-refactor-only.json
+b0549c07f2c2c699e3fa5e15b357bc37d5382f4d76fae0e5b38e213ca9d14669  docs/issue-140/evidence/semantic-26-refactor-only.json
+9ff29de5ea37a39d17df6ed29a31af4acdee1e4af40cf440c6d68831e1cbfe8c  docs/issue-140/evidence/throughput-refactor-only.json
+9e18470a495e5b5ef6bbb01acfa61be1e38872a64b2fb3c7e07b7528ac9f51a8  docs/issue-140/evidence/throughput-run.log
