@@ -1,0 +1,41 @@
+{
+  "schema_version": 1,
+  "validator_note": "The existing marker-suite helper requires a content unit to equal the entire cited line excerpt. This audit separately checks that every commit/path/line range resolves and that returned unit text occurs within the cited source excerpt; it reports strict full-line equality counts without hiding them.",
+  "before": {
+    "binary_label": "before",
+    "binary_sha256": "a7fa5ee72e5ff83419918275c8eb813891a5e942997133ad99bcb2bffb395f9a",
+    "repository_head": "6740e8af4d89bbb1b2b3577749fbf499d6c15e5e",
+    "strict_validator_flag_from_measure_26_semantic": false,
+    "counts": {
+      "references": 303,
+      "kind_content": 135,
+      "valid_source_ranges": 303,
+      "text_present_or_omitted_by_budget": 303,
+      "strict_text_matches": 264,
+      "kind_diff": 168
+    },
+    "line_and_text_audit_pass": true,
+    "strict_full_excerpt_text_match_count": 264,
+    "strict_full_excerpt_text_mismatch_count": 39,
+    "mismatch_examples": []
+  },
+  "after": {
+    "binary_label": "after",
+    "binary_sha256": "ce084de6427d925816c7631537d3674213dd6c56973a3e0fe0a0414ba7a30fb8",
+    "repository_head": "6740e8af4d89bbb1b2b3577749fbf499d6c15e5e",
+    "strict_validator_flag_from_measure_26_semantic": false,
+    "counts": {
+      "references": 303,
+      "kind_content": 135,
+      "valid_source_ranges": 303,
+      "text_present_or_omitted_by_budget": 303,
+      "strict_text_matches": 264,
+      "kind_diff": 168
+    },
+    "line_and_text_audit_pass": true,
+    "strict_full_excerpt_text_match_count": 264,
+    "strict_full_excerpt_text_mismatch_count": 39,
+    "mismatch_examples": []
+  },
+  "both_audits_pass": true
+}

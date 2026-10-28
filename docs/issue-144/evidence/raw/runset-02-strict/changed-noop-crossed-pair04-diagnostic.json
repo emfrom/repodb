@@ -1,0 +1,2471 @@
+{
+  "schema_version": 1,
+  "purpose": "Diagnostic only; these repetitions do not replace, filter, or augment the five accepted gate pairs.",
+  "repeat_per_binary_per_database": 20,
+  "binary_sha256": {
+    "baseline": "a7fa5ee72e5ff83419918275c8eb813891a5e942997133ad99bcb2bffb395f9a",
+    "candidate": "ce084de6427d925816c7631537d3674213dd6c56973a3e0fe0a0414ba7a30fb8"
+  },
+  "balanced_adjacent_order": true,
+  "database_crossing": "Run both binaries against each of pair-02's unchanged before and after databases to distinguish binary from database-owner effects.",
+  "summary": {
+    "repodb": {
+      "before": {
+        "baseline_median_seconds": 0.011428987985709682,
+        "candidate_median_seconds": 0.011730891012120992,
+        "candidate_over_baseline_median_ratio": 1.0264155519971494,
+        "baseline_range_seconds": [
+          0.010239348979666829,
+          0.013674639980308712
+        ],
+        "candidate_range_seconds": [
+          0.010672350006643683,
+          0.012940835964400321
+        ]
+      },
+      "after": {
+        "baseline_median_seconds": 0.015609737485647202,
+        "candidate_median_seconds": 0.01705828300327994,
+        "candidate_over_baseline_median_ratio": 1.092797557868263,
+        "baseline_range_seconds": [
+          0.011499811022076756,
+          0.02022898697759956
+        ],
+        "candidate_range_seconds": [
+          0.010736459982581437,
+          0.020570152963045985
+        ]
+      }
+    },
+    "combined_26": {
+      "before": {
+        "baseline_median_seconds": 0.013433429994620383,
+        "candidate_median_seconds": 0.013422344520222396,
+        "candidate_over_baseline_median_ratio": 0.9991747845187398,
+        "baseline_range_seconds": [
+          0.011849865026306361,
+          0.02226539800176397
+        ],
+        "candidate_range_seconds": [
+          0.012262722011655569,
+          0.01712611102266237
+        ]
+      },
+      "after": {
+        "baseline_median_seconds": 0.015520926477620378,
+        "candidate_median_seconds": 0.016081777517683804,
+        "candidate_over_baseline_median_ratio": 1.0361351521684041,
+        "baseline_range_seconds": [
+          0.01315422699553892,
+          0.020619101007469
+        ],
+        "candidate_range_seconds": [
+          0.013470430974848568,
+          0.019634873024187982
+        ]
+      }
+    }
+  },
+  "measurements": [
+    {
+      "dataset": "repodb",
+      "database_owner": "before",
+      "repeat": 1,
+      "order": [
+        "baseline",
+        "candidate"
+      ],
+      "binary": "baseline",
+      "elapsed_seconds": 0.013352876005228609,
+      "returncode": 0,
+      "database_bytes": 107868160,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "dataset": "repodb",
+      "database_owner": "before",
+      "repeat": 1,
+      "order": [
+        "baseline",
+        "candidate"
+      ],
+      "binary": "candidate",
+      "elapsed_seconds": 0.012599142966791987,
+      "returncode": 0,
+      "database_bytes": 107868160,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "dataset": "repodb",
+      "database_owner": "before",
+      "repeat": 2,
+      "order": [
+        "candidate",
+        "baseline"
+      ],
+      "binary": "candidate",
+      "elapsed_seconds": 0.010696657001972198,
+      "returncode": 0,
+      "database_bytes": 107868160,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "dataset": "repodb",
+      "database_owner": "before",
+      "repeat": 2,
+      "order": [
+        "candidate",
+        "baseline"
+      ],
+      "binary": "baseline",
+      "elapsed_seconds": 0.013147248013410717,
+      "returncode": 0,
+      "database_bytes": 107868160,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "dataset": "repodb",
+      "database_owner": "before",
+      "repeat": 3,
+      "order": [
+        "baseline",
+        "candidate"
+      ],
+      "binary": "baseline",
+      "elapsed_seconds": 0.013674639980308712,
+      "returncode": 0,
+      "database_bytes": 107868160,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "dataset": "repodb",
+      "database_owner": "before",
+      "repeat": 3,
+      "order": [
+        "baseline",
+        "candidate"
+      ],
+      "binary": "candidate",
+      "elapsed_seconds": 0.012500009965151548,
+      "returncode": 0,
+      "database_bytes": 107868160,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "dataset": "repodb",
+      "database_owner": "before",
+      "repeat": 4,
+      "order": [
+        "candidate",
+        "baseline"
+      ],
+      "binary": "candidate",
+      "elapsed_seconds": 0.012940835964400321,
+      "returncode": 0,
+      "database_bytes": 107868160,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "dataset": "repodb",
+      "database_owner": "before",
+      "repeat": 4,
+      "order": [
+        "candidate",
+        "baseline"
+      ],
+      "binary": "baseline",
+      "elapsed_seconds": 0.010879854031372815,
+      "returncode": 0,
+      "database_bytes": 107868160,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "dataset": "repodb",
+      "database_owner": "before",
+      "repeat": 5,
+      "order": [
+        "baseline",
+        "candidate"
+      ],
+      "binary": "baseline",
+      "elapsed_seconds": 0.011319346958771348,
+      "returncode": 0,
+      "database_bytes": 107868160,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "dataset": "repodb",
+      "database_owner": "before",
+      "repeat": 5,
+      "order": [
+        "baseline",
+        "candidate"
+      ],
+      "binary": "candidate",
+      "elapsed_seconds": 0.01110923697706312,
+      "returncode": 0,
+      "database_bytes": 107868160,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "dataset": "repodb",
+      "database_owner": "before",
+      "repeat": 6,
+      "order": [
+        "candidate",
+        "baseline"
+      ],
+      "binary": "candidate",
+      "elapsed_seconds": 0.012801141012459993,
+      "returncode": 0,
+      "database_bytes": 107868160,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "dataset": "repodb",
+      "database_owner": "before",
+      "repeat": 6,
+      "order": [
+        "candidate",
+        "baseline"
+      ],
+      "binary": "baseline",
+      "elapsed_seconds": 0.01188367698341608,
+      "returncode": 0,
+      "database_bytes": 107868160,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "dataset": "repodb",
+      "database_owner": "before",
+      "repeat": 7,
+      "order": [
+        "baseline",
+        "candidate"
+      ],
+      "binary": "baseline",
+      "elapsed_seconds": 0.010757391981314868,
+      "returncode": 0,
+      "database_bytes": 107868160,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "dataset": "repodb",
+      "database_owner": "before",
+      "repeat": 7,
+      "order": [
+        "baseline",
+        "candidate"
+      ],
+      "binary": "candidate",
+      "elapsed_seconds": 0.011915820010472089,
+      "returncode": 0,
+      "database_bytes": 107868160,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "dataset": "repodb",
+      "database_owner": "before",
+      "repeat": 8,
+      "order": [
+        "candidate",
+        "baseline"
+      ],
+      "binary": "candidate",
+      "elapsed_seconds": 0.01215229497756809,
+      "returncode": 0,
+      "database_bytes": 107868160,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "dataset": "repodb",
+      "database_owner": "before",
+      "repeat": 8,
+      "order": [
+        "candidate",
+        "baseline"
+      ],
+      "binary": "baseline",
+      "elapsed_seconds": 0.011801794986240566,
+      "returncode": 0,
+      "database_bytes": 107868160,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "dataset": "repodb",
+      "database_owner": "before",
+      "repeat": 9,
+      "order": [
+        "baseline",
+        "candidate"
+      ],
+      "binary": "baseline",
+      "elapsed_seconds": 0.010472744994331151,
+      "returncode": 0,
+      "database_bytes": 107868160,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "dataset": "repodb",
+      "database_owner": "before",
+      "repeat": 9,
+      "order": [
+        "baseline",
+        "candidate"
+      ],
+      "binary": "candidate",
+      "elapsed_seconds": 0.012562399031594396,
+      "returncode": 0,
+      "database_bytes": 107868160,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "dataset": "repodb",
+      "database_owner": "before",
+      "repeat": 10,
+      "order": [
+        "candidate",
+        "baseline"
+      ],
+      "binary": "candidate",
+      "elapsed_seconds": 0.012240874988492578,
+      "returncode": 0,
+      "database_bytes": 107868160,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "dataset": "repodb",
+      "database_owner": "before",
+      "repeat": 10,
+      "order": [
+        "candidate",
+        "baseline"
+      ],
+      "binary": "baseline",
+      "elapsed_seconds": 0.011408454971387982,
+      "returncode": 0,
+      "database_bytes": 107868160,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "dataset": "repodb",
+      "database_owner": "before",
+      "repeat": 11,
+      "order": [
+        "baseline",
+        "candidate"
+      ],
+      "binary": "baseline",
+      "elapsed_seconds": 0.011959329014644027,
+      "returncode": 0,
+      "database_bytes": 107868160,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "dataset": "repodb",
+      "database_owner": "before",
+      "repeat": 11,
+      "order": [
+        "baseline",
+        "candidate"
+      ],
+      "binary": "candidate",
+      "elapsed_seconds": 0.01090509898494929,
+      "returncode": 0,
+      "database_bytes": 107868160,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "dataset": "repodb",
+      "database_owner": "before",
+      "repeat": 12,
+      "order": [
+        "candidate",
+        "baseline"
+      ],
+      "binary": "candidate",
+      "elapsed_seconds": 0.010672350006643683,
+      "returncode": 0,
+      "database_bytes": 107868160,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "dataset": "repodb",
+      "database_owner": "before",
+      "repeat": 12,
+      "order": [
+        "candidate",
+        "baseline"
+      ],
+      "binary": "baseline",
+      "elapsed_seconds": 0.010239348979666829,
+      "returncode": 0,
+      "database_bytes": 107868160,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "dataset": "repodb",
+      "database_owner": "before",
+      "repeat": 13,
+      "order": [
+        "baseline",
+        "candidate"
+      ],
+      "binary": "baseline",
+      "elapsed_seconds": 0.010621551016811281,
+      "returncode": 0,
+      "database_bytes": 107868160,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "dataset": "repodb",
+      "database_owner": "before",
+      "repeat": 13,
+      "order": [
+        "baseline",
+        "candidate"
+      ],
+      "binary": "candidate",
+      "elapsed_seconds": 0.012494672962930053,
+      "returncode": 0,
+      "database_bytes": 107868160,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "dataset": "repodb",
+      "database_owner": "before",
+      "repeat": 14,
+      "order": [
+        "candidate",
+        "baseline"
+      ],
+      "binary": "candidate",
+      "elapsed_seconds": 0.011220781016163528,
+      "returncode": 0,
+      "database_bytes": 107868160,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "dataset": "repodb",
+      "database_owner": "before",
+      "repeat": 14,
+      "order": [
+        "candidate",
+        "baseline"
+      ],
+      "binary": "baseline",
+      "elapsed_seconds": 0.010979638958815485,
+      "returncode": 0,
+      "database_bytes": 107868160,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "dataset": "repodb",
+      "database_owner": "before",
+      "repeat": 15,
+      "order": [
+        "baseline",
+        "candidate"
+      ],
+      "binary": "baseline",
+      "elapsed_seconds": 0.011478651023935527,
+      "returncode": 0,
+      "database_bytes": 107868160,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "dataset": "repodb",
+      "database_owner": "before",
+      "repeat": 15,
+      "order": [
+        "baseline",
+        "candidate"
+      ],
+      "binary": "candidate",
+      "elapsed_seconds": 0.011383579985704273,
+      "returncode": 0,
+      "database_bytes": 107868160,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "dataset": "repodb",
+      "database_owner": "before",
+      "repeat": 16,
+      "order": [
+        "candidate",
+        "baseline"
+      ],
+      "binary": "candidate",
+      "elapsed_seconds": 0.011162830982357264,
+      "returncode": 0,
+      "database_bytes": 107868160,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "dataset": "repodb",
+      "database_owner": "before",
+      "repeat": 16,
+      "order": [
+        "candidate",
+        "baseline"
+      ],
+      "binary": "baseline",
+      "elapsed_seconds": 0.011286888970062137,
+      "returncode": 0,
+      "database_bytes": 107868160,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "dataset": "repodb",
+      "database_owner": "before",
+      "repeat": 17,
+      "order": [
+        "baseline",
+        "candidate"
+      ],
+      "binary": "baseline",
+      "elapsed_seconds": 0.012484454025980085,
+      "returncode": 0,
+      "database_bytes": 107868160,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "dataset": "repodb",
+      "database_owner": "before",
+      "repeat": 17,
+      "order": [
+        "baseline",
+        "candidate"
+      ],
+      "binary": "candidate",
+      "elapsed_seconds": 0.011997424007859081,
+      "returncode": 0,
+      "database_bytes": 107868160,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "dataset": "repodb",
+      "database_owner": "before",
+      "repeat": 18,
+      "order": [
+        "candidate",
+        "baseline"
+      ],
+      "binary": "candidate",
+      "elapsed_seconds": 0.011040301993489265,
+      "returncode": 0,
+      "database_bytes": 107868160,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "dataset": "repodb",
+      "database_owner": "before",
+      "repeat": 18,
+      "order": [
+        "candidate",
+        "baseline"
+      ],
+      "binary": "baseline",
+      "elapsed_seconds": 0.010844847012776881,
+      "returncode": 0,
+      "database_bytes": 107868160,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "dataset": "repodb",
+      "database_owner": "before",
+      "repeat": 19,
+      "order": [
+        "baseline",
+        "candidate"
+      ],
+      "binary": "baseline",
+      "elapsed_seconds": 0.011449521000031382,
+      "returncode": 0,
+      "database_bytes": 107868160,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "dataset": "repodb",
+      "database_owner": "before",
+      "repeat": 19,
+      "order": [
+        "baseline",
+        "candidate"
+      ],
+      "binary": "candidate",
+      "elapsed_seconds": 0.011545962013769895,
+      "returncode": 0,
+      "database_bytes": 107868160,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "dataset": "repodb",
+      "database_owner": "before",
+      "repeat": 20,
+      "order": [
+        "candidate",
+        "baseline"
+      ],
+      "binary": "candidate",
+      "elapsed_seconds": 0.011464904993772507,
+      "returncode": 0,
+      "database_bytes": 107868160,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "dataset": "repodb",
+      "database_owner": "before",
+      "repeat": 20,
+      "order": [
+        "candidate",
+        "baseline"
+      ],
+      "binary": "baseline",
+      "elapsed_seconds": 0.012924795970320702,
+      "returncode": 0,
+      "database_bytes": 107868160,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "dataset": "repodb",
+      "database_owner": "after",
+      "repeat": 1,
+      "order": [
+        "baseline",
+        "candidate"
+      ],
+      "binary": "baseline",
+      "elapsed_seconds": 0.0183826339780353,
+      "returncode": 0,
+      "database_bytes": 107868160,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "dataset": "repodb",
+      "database_owner": "after",
+      "repeat": 1,
+      "order": [
+        "baseline",
+        "candidate"
+      ],
+      "binary": "candidate",
+      "elapsed_seconds": 0.01800581900170073,
+      "returncode": 0,
+      "database_bytes": 107868160,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "dataset": "repodb",
+      "database_owner": "after",
+      "repeat": 2,
+      "order": [
+        "candidate",
+        "baseline"
+      ],
+      "binary": "candidate",
+      "elapsed_seconds": 0.016702811990398914,
+      "returncode": 0,
+      "database_bytes": 107868160,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "dataset": "repodb",
+      "database_owner": "after",
+      "repeat": 2,
+      "order": [
+        "candidate",
+        "baseline"
+      ],
+      "binary": "baseline",
+      "elapsed_seconds": 0.015388383995741606,
+      "returncode": 0,
+      "database_bytes": 107868160,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "dataset": "repodb",
+      "database_owner": "after",
+      "repeat": 3,
+      "order": [
+        "baseline",
+        "candidate"
+      ],
+      "binary": "baseline",
+      "elapsed_seconds": 0.016834197973366827,
+      "returncode": 0,
+      "database_bytes": 107868160,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "dataset": "repodb",
+      "database_owner": "after",
+      "repeat": 3,
+      "order": [
+        "baseline",
+        "candidate"
+      ],
+      "binary": "candidate",
+      "elapsed_seconds": 0.017738076974637806,
+      "returncode": 0,
+      "database_bytes": 107868160,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "dataset": "repodb",
+      "database_owner": "after",
+      "repeat": 4,
+      "order": [
+        "candidate",
+        "baseline"
+      ],
+      "binary": "candidate",
+      "elapsed_seconds": 0.017102517012972385,
+      "returncode": 0,
+      "database_bytes": 107868160,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "dataset": "repodb",
+      "database_owner": "after",
+      "repeat": 4,
+      "order": [
+        "candidate",
+        "baseline"
+      ],
+      "binary": "baseline",
+      "elapsed_seconds": 0.01709047897020355,
+      "returncode": 0,
+      "database_bytes": 107868160,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "dataset": "repodb",
+      "database_owner": "after",
+      "repeat": 5,
+      "order": [
+        "baseline",
+        "candidate"
+      ],
+      "binary": "baseline",
+      "elapsed_seconds": 0.015831090975552797,
+      "returncode": 0,
+      "database_bytes": 107868160,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "dataset": "repodb",
+      "database_owner": "after",
+      "repeat": 5,
+      "order": [
+        "baseline",
+        "candidate"
+      ],
+      "binary": "candidate",
+      "elapsed_seconds": 0.020097952976357192,
+      "returncode": 0,
+      "database_bytes": 107868160,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "dataset": "repodb",
+      "database_owner": "after",
+      "repeat": 6,
+      "order": [
+        "candidate",
+        "baseline"
+      ],
+      "binary": "candidate",
+      "elapsed_seconds": 0.01807679602643475,
+      "returncode": 0,
+      "database_bytes": 107868160,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "dataset": "repodb",
+      "database_owner": "after",
+      "repeat": 6,
+      "order": [
+        "candidate",
+        "baseline"
+      ],
+      "binary": "baseline",
+      "elapsed_seconds": 0.016000400006305426,
+      "returncode": 0,
+      "database_bytes": 107868160,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "dataset": "repodb",
+      "database_owner": "after",
+      "repeat": 7,
+      "order": [
+        "baseline",
+        "candidate"
+      ],
+      "binary": "baseline",
+      "elapsed_seconds": 0.017409086984116584,
+      "returncode": 0,
+      "database_bytes": 107868160,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "dataset": "repodb",
+      "database_owner": "after",
+      "repeat": 7,
+      "order": [
+        "baseline",
+        "candidate"
+      ],
+      "binary": "candidate",
+      "elapsed_seconds": 0.01945863402215764,
+      "returncode": 0,
+      "database_bytes": 107868160,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "dataset": "repodb",
+      "database_owner": "after",
+      "repeat": 8,
+      "order": [
+        "candidate",
+        "baseline"
+      ],
+      "binary": "candidate",
+      "elapsed_seconds": 0.01538574998266995,
+      "returncode": 0,
+      "database_bytes": 107868160,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "dataset": "repodb",
+      "database_owner": "after",
+      "repeat": 8,
+      "order": [
+        "candidate",
+        "baseline"
+      ],
+      "binary": "baseline",
+      "elapsed_seconds": 0.016518144984729588,
+      "returncode": 0,
+      "database_bytes": 107868160,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "dataset": "repodb",
+      "database_owner": "after",
+      "repeat": 9,
+      "order": [
+        "baseline",
+        "candidate"
+      ],
+      "binary": "baseline",
+      "elapsed_seconds": 0.015292136988136917,
+      "returncode": 0,
+      "database_bytes": 107868160,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "dataset": "repodb",
+      "database_owner": "after",
+      "repeat": 9,
+      "order": [
+        "baseline",
+        "candidate"
+      ],
+      "binary": "candidate",
+      "elapsed_seconds": 0.017014048993587494,
+      "returncode": 0,
+      "database_bytes": 107868160,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "dataset": "repodb",
+      "database_owner": "after",
+      "repeat": 10,
+      "order": [
+        "candidate",
+        "baseline"
+      ],
+      "binary": "candidate",
+      "elapsed_seconds": 0.018249567016027868,
+      "returncode": 0,
+      "database_bytes": 107868160,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "dataset": "repodb",
+      "database_owner": "after",
+      "repeat": 10,
+      "order": [
+        "candidate",
+        "baseline"
+      ],
+      "binary": "baseline",
+      "elapsed_seconds": 0.018946930998936296,
+      "returncode": 0,
+      "database_bytes": 107868160,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "dataset": "repodb",
+      "database_owner": "after",
+      "repeat": 11,
+      "order": [
+        "baseline",
+        "candidate"
+      ],
+      "binary": "baseline",
+      "elapsed_seconds": 0.013867904955986887,
+      "returncode": 0,
+      "database_bytes": 107868160,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "dataset": "repodb",
+      "database_owner": "after",
+      "repeat": 11,
+      "order": [
+        "baseline",
+        "candidate"
+      ],
+      "binary": "candidate",
+      "elapsed_seconds": 0.018346039985772222,
+      "returncode": 0,
+      "database_bytes": 107868160,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "dataset": "repodb",
+      "database_owner": "after",
+      "repeat": 12,
+      "order": [
+        "candidate",
+        "baseline"
+      ],
+      "binary": "candidate",
+      "elapsed_seconds": 0.013619863020721823,
+      "returncode": 0,
+      "database_bytes": 107868160,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "dataset": "repodb",
+      "database_owner": "after",
+      "repeat": 12,
+      "order": [
+        "candidate",
+        "baseline"
+      ],
+      "binary": "baseline",
+      "elapsed_seconds": 0.011636025970801711,
+      "returncode": 0,
+      "database_bytes": 107868160,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "dataset": "repodb",
+      "database_owner": "after",
+      "repeat": 13,
+      "order": [
+        "baseline",
+        "candidate"
+      ],
+      "binary": "baseline",
+      "elapsed_seconds": 0.01215520198456943,
+      "returncode": 0,
+      "database_bytes": 107868160,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "dataset": "repodb",
+      "database_owner": "after",
+      "repeat": 13,
+      "order": [
+        "baseline",
+        "candidate"
+      ],
+      "binary": "candidate",
+      "elapsed_seconds": 0.013324039988219738,
+      "returncode": 0,
+      "database_bytes": 107868160,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "dataset": "repodb",
+      "database_owner": "after",
+      "repeat": 14,
+      "order": [
+        "candidate",
+        "baseline"
+      ],
+      "binary": "candidate",
+      "elapsed_seconds": 0.0121734690037556,
+      "returncode": 0,
+      "database_bytes": 107868160,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "dataset": "repodb",
+      "database_owner": "after",
+      "repeat": 14,
+      "order": [
+        "candidate",
+        "baseline"
+      ],
+      "binary": "baseline",
+      "elapsed_seconds": 0.011499811022076756,
+      "returncode": 0,
+      "database_bytes": 107868160,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "dataset": "repodb",
+      "database_owner": "after",
+      "repeat": 15,
+      "order": [
+        "baseline",
+        "candidate"
+      ],
+      "binary": "baseline",
+      "elapsed_seconds": 0.012654746999032795,
+      "returncode": 0,
+      "database_bytes": 107868160,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "dataset": "repodb",
+      "database_owner": "after",
+      "repeat": 15,
+      "order": [
+        "baseline",
+        "candidate"
+      ],
+      "binary": "candidate",
+      "elapsed_seconds": 0.012146020017098635,
+      "returncode": 0,
+      "database_bytes": 107868160,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "dataset": "repodb",
+      "database_owner": "after",
+      "repeat": 16,
+      "order": [
+        "candidate",
+        "baseline"
+      ],
+      "binary": "candidate",
+      "elapsed_seconds": 0.010736459982581437,
+      "returncode": 0,
+      "database_bytes": 107868160,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "dataset": "repodb",
+      "database_owner": "after",
+      "repeat": 16,
+      "order": [
+        "candidate",
+        "baseline"
+      ],
+      "binary": "baseline",
+      "elapsed_seconds": 0.012391099007800221,
+      "returncode": 0,
+      "database_bytes": 107868160,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "dataset": "repodb",
+      "database_owner": "after",
+      "repeat": 17,
+      "order": [
+        "baseline",
+        "candidate"
+      ],
+      "binary": "baseline",
+      "elapsed_seconds": 0.012319318018853664,
+      "returncode": 0,
+      "database_bytes": 107868160,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "dataset": "repodb",
+      "database_owner": "after",
+      "repeat": 17,
+      "order": [
+        "baseline",
+        "candidate"
+      ],
+      "binary": "candidate",
+      "elapsed_seconds": 0.013299254002049565,
+      "returncode": 0,
+      "database_bytes": 107868160,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "dataset": "repodb",
+      "database_owner": "after",
+      "repeat": 18,
+      "order": [
+        "candidate",
+        "baseline"
+      ],
+      "binary": "candidate",
+      "elapsed_seconds": 0.01361680100671947,
+      "returncode": 0,
+      "database_bytes": 107868160,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "dataset": "repodb",
+      "database_owner": "after",
+      "repeat": 18,
+      "order": [
+        "candidate",
+        "baseline"
+      ],
+      "binary": "baseline",
+      "elapsed_seconds": 0.01439555297838524,
+      "returncode": 0,
+      "database_bytes": 107868160,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "dataset": "repodb",
+      "database_owner": "after",
+      "repeat": 19,
+      "order": [
+        "baseline",
+        "candidate"
+      ],
+      "binary": "baseline",
+      "elapsed_seconds": 0.018219296005554497,
+      "returncode": 0,
+      "database_bytes": 107868160,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "dataset": "repodb",
+      "database_owner": "after",
+      "repeat": 19,
+      "order": [
+        "baseline",
+        "candidate"
+      ],
+      "binary": "candidate",
+      "elapsed_seconds": 0.019181523995939642,
+      "returncode": 0,
+      "database_bytes": 107868160,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "dataset": "repodb",
+      "database_owner": "after",
+      "repeat": 20,
+      "order": [
+        "candidate",
+        "baseline"
+      ],
+      "binary": "candidate",
+      "elapsed_seconds": 0.020570152963045985,
+      "returncode": 0,
+      "database_bytes": 107868160,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "dataset": "repodb",
+      "database_owner": "after",
+      "repeat": 20,
+      "order": [
+        "candidate",
+        "baseline"
+      ],
+      "binary": "baseline",
+      "elapsed_seconds": 0.02022898697759956,
+      "returncode": 0,
+      "database_bytes": 107868160,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "dataset": "combined_26",
+      "database_owner": "before",
+      "repeat": 1,
+      "order": [
+        "baseline",
+        "candidate"
+      ],
+      "binary": "baseline",
+      "elapsed_seconds": 0.01472929201554507,
+      "returncode": 0,
+      "database_bytes": 6709248,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "dataset": "combined_26",
+      "database_owner": "before",
+      "repeat": 1,
+      "order": [
+        "baseline",
+        "candidate"
+      ],
+      "binary": "candidate",
+      "elapsed_seconds": 0.01356213801773265,
+      "returncode": 0,
+      "database_bytes": 6709248,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "dataset": "combined_26",
+      "database_owner": "before",
+      "repeat": 2,
+      "order": [
+        "candidate",
+        "baseline"
+      ],
+      "binary": "candidate",
+      "elapsed_seconds": 0.013787046016659588,
+      "returncode": 0,
+      "database_bytes": 6709248,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "dataset": "combined_26",
+      "database_owner": "before",
+      "repeat": 2,
+      "order": [
+        "candidate",
+        "baseline"
+      ],
+      "binary": "baseline",
+      "elapsed_seconds": 0.013460697024129331,
+      "returncode": 0,
+      "database_bytes": 6709248,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "dataset": "combined_26",
+      "database_owner": "before",
+      "repeat": 3,
+      "order": [
+        "baseline",
+        "candidate"
+      ],
+      "binary": "baseline",
+      "elapsed_seconds": 0.013206048985011876,
+      "returncode": 0,
+      "database_bytes": 6709248,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "dataset": "combined_26",
+      "database_owner": "before",
+      "repeat": 3,
+      "order": [
+        "baseline",
+        "candidate"
+      ],
+      "binary": "candidate",
+      "elapsed_seconds": 0.015498946013394743,
+      "returncode": 0,
+      "database_bytes": 6709248,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "dataset": "combined_26",
+      "database_owner": "before",
+      "repeat": 4,
+      "order": [
+        "candidate",
+        "baseline"
+      ],
+      "binary": "candidate",
+      "elapsed_seconds": 0.014198029006365687,
+      "returncode": 0,
+      "database_bytes": 6709248,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "dataset": "combined_26",
+      "database_owner": "before",
+      "repeat": 4,
+      "order": [
+        "candidate",
+        "baseline"
+      ],
+      "binary": "baseline",
+      "elapsed_seconds": 0.01362068799789995,
+      "returncode": 0,
+      "database_bytes": 6709248,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "dataset": "combined_26",
+      "database_owner": "before",
+      "repeat": 5,
+      "order": [
+        "baseline",
+        "candidate"
+      ],
+      "binary": "baseline",
+      "elapsed_seconds": 0.01329020201228559,
+      "returncode": 0,
+      "database_bytes": 6709248,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "dataset": "combined_26",
+      "database_owner": "before",
+      "repeat": 5,
+      "order": [
+        "baseline",
+        "candidate"
+      ],
+      "binary": "candidate",
+      "elapsed_seconds": 0.012833587010391057,
+      "returncode": 0,
+      "database_bytes": 6709248,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "dataset": "combined_26",
+      "database_owner": "before",
+      "repeat": 6,
+      "order": [
+        "candidate",
+        "baseline"
+      ],
+      "binary": "candidate",
+      "elapsed_seconds": 0.012617933040019125,
+      "returncode": 0,
+      "database_bytes": 6709248,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "dataset": "combined_26",
+      "database_owner": "before",
+      "repeat": 6,
+      "order": [
+        "candidate",
+        "baseline"
+      ],
+      "binary": "baseline",
+      "elapsed_seconds": 0.013673752022441477,
+      "returncode": 0,
+      "database_bytes": 6709248,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "dataset": "combined_26",
+      "database_owner": "before",
+      "repeat": 7,
+      "order": [
+        "baseline",
+        "candidate"
+      ],
+      "binary": "baseline",
+      "elapsed_seconds": 0.012455559975933284,
+      "returncode": 0,
+      "database_bytes": 6709248,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "dataset": "combined_26",
+      "database_owner": "before",
+      "repeat": 7,
+      "order": [
+        "baseline",
+        "candidate"
+      ],
+      "binary": "candidate",
+      "elapsed_seconds": 0.01277214102447033,
+      "returncode": 0,
+      "database_bytes": 6709248,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "dataset": "combined_26",
+      "database_owner": "before",
+      "repeat": 8,
+      "order": [
+        "candidate",
+        "baseline"
+      ],
+      "binary": "candidate",
+      "elapsed_seconds": 0.012871612037997693,
+      "returncode": 0,
+      "database_bytes": 6709248,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "dataset": "combined_26",
+      "database_owner": "before",
+      "repeat": 8,
+      "order": [
+        "candidate",
+        "baseline"
+      ],
+      "binary": "baseline",
+      "elapsed_seconds": 0.013430238992441446,
+      "returncode": 0,
+      "database_bytes": 6709248,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "dataset": "combined_26",
+      "database_owner": "before",
+      "repeat": 9,
+      "order": [
+        "baseline",
+        "candidate"
+      ],
+      "binary": "baseline",
+      "elapsed_seconds": 0.011849865026306361,
+      "returncode": 0,
+      "database_bytes": 6709248,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "dataset": "combined_26",
+      "database_owner": "before",
+      "repeat": 9,
+      "order": [
+        "baseline",
+        "candidate"
+      ],
+      "binary": "candidate",
+      "elapsed_seconds": 0.013107155973557383,
+      "returncode": 0,
+      "database_bytes": 6709248,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "dataset": "combined_26",
+      "database_owner": "before",
+      "repeat": 10,
+      "order": [
+        "candidate",
+        "baseline"
+      ],
+      "binary": "candidate",
+      "elapsed_seconds": 0.012685483961831778,
+      "returncode": 0,
+      "database_bytes": 6709248,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "dataset": "combined_26",
+      "database_owner": "before",
+      "repeat": 10,
+      "order": [
+        "candidate",
+        "baseline"
+      ],
+      "binary": "baseline",
+      "elapsed_seconds": 0.013141592964529991,
+      "returncode": 0,
+      "database_bytes": 6709248,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "dataset": "combined_26",
+      "database_owner": "before",
+      "repeat": 11,
+      "order": [
+        "baseline",
+        "candidate"
+      ],
+      "binary": "baseline",
+      "elapsed_seconds": 0.014595685992389917,
+      "returncode": 0,
+      "database_bytes": 6709248,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "dataset": "combined_26",
+      "database_owner": "before",
+      "repeat": 11,
+      "order": [
+        "baseline",
+        "candidate"
+      ],
+      "binary": "candidate",
+      "elapsed_seconds": 0.015030065027531236,
+      "returncode": 0,
+      "database_bytes": 6709248,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "dataset": "combined_26",
+      "database_owner": "before",
+      "repeat": 12,
+      "order": [
+        "candidate",
+        "baseline"
+      ],
+      "binary": "candidate",
+      "elapsed_seconds": 0.014571304025594145,
+      "returncode": 0,
+      "database_bytes": 6709248,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "dataset": "combined_26",
+      "database_owner": "before",
+      "repeat": 12,
+      "order": [
+        "candidate",
+        "baseline"
+      ],
+      "binary": "baseline",
+      "elapsed_seconds": 0.013735780026763678,
+      "returncode": 0,
+      "database_bytes": 6709248,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "dataset": "combined_26",
+      "database_owner": "before",
+      "repeat": 13,
+      "order": [
+        "baseline",
+        "candidate"
+      ],
+      "binary": "baseline",
+      "elapsed_seconds": 0.012377610022667795,
+      "returncode": 0,
+      "database_bytes": 6709248,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "dataset": "combined_26",
+      "database_owner": "before",
+      "repeat": 13,
+      "order": [
+        "baseline",
+        "candidate"
+      ],
+      "binary": "candidate",
+      "elapsed_seconds": 0.012924842012580484,
+      "returncode": 0,
+      "database_bytes": 6709248,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "dataset": "combined_26",
+      "database_owner": "before",
+      "repeat": 14,
+      "order": [
+        "candidate",
+        "baseline"
+      ],
+      "binary": "candidate",
+      "elapsed_seconds": 0.012828220031224191,
+      "returncode": 0,
+      "database_bytes": 6709248,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "dataset": "combined_26",
+      "database_owner": "before",
+      "repeat": 14,
+      "order": [
+        "candidate",
+        "baseline"
+      ],
+      "binary": "baseline",
+      "elapsed_seconds": 0.01343662099679932,
+      "returncode": 0,
+      "database_bytes": 6709248,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "dataset": "combined_26",
+      "database_owner": "before",
+      "repeat": 15,
+      "order": [
+        "baseline",
+        "candidate"
+      ],
+      "binary": "baseline",
+      "elapsed_seconds": 0.02226539800176397,
+      "returncode": 0,
+      "database_bytes": 6709248,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "dataset": "combined_26",
+      "database_owner": "before",
+      "repeat": 15,
+      "order": [
+        "baseline",
+        "candidate"
+      ],
+      "binary": "candidate",
+      "elapsed_seconds": 0.014812290959525853,
+      "returncode": 0,
+      "database_bytes": 6709248,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "dataset": "combined_26",
+      "database_owner": "before",
+      "repeat": 16,
+      "order": [
+        "candidate",
+        "baseline"
+      ],
+      "binary": "candidate",
+      "elapsed_seconds": 0.01401806395733729,
+      "returncode": 0,
+      "database_bytes": 6709248,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "dataset": "combined_26",
+      "database_owner": "before",
+      "repeat": 16,
+      "order": [
+        "candidate",
+        "baseline"
+      ],
+      "binary": "baseline",
+      "elapsed_seconds": 0.012031704012770206,
+      "returncode": 0,
+      "database_bytes": 6709248,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "dataset": "combined_26",
+      "database_owner": "before",
+      "repeat": 17,
+      "order": [
+        "baseline",
+        "candidate"
+      ],
+      "binary": "baseline",
+      "elapsed_seconds": 0.012991174007765949,
+      "returncode": 0,
+      "database_bytes": 6709248,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "dataset": "combined_26",
+      "database_owner": "before",
+      "repeat": 17,
+      "order": [
+        "baseline",
+        "candidate"
+      ],
+      "binary": "candidate",
+      "elapsed_seconds": 0.013282551022712141,
+      "returncode": 0,
+      "database_bytes": 6709248,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "dataset": "combined_26",
+      "database_owner": "before",
+      "repeat": 18,
+      "order": [
+        "candidate",
+        "baseline"
+      ],
+      "binary": "candidate",
+      "elapsed_seconds": 0.012262722011655569,
+      "returncode": 0,
+      "database_bytes": 6709248,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "dataset": "combined_26",
+      "database_owner": "before",
+      "repeat": 18,
+      "order": [
+        "candidate",
+        "baseline"
+      ],
+      "binary": "baseline",
+      "elapsed_seconds": 0.012441623024642467,
+      "returncode": 0,
+      "database_bytes": 6709248,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "dataset": "combined_26",
+      "database_owner": "before",
+      "repeat": 19,
+      "order": [
+        "baseline",
+        "candidate"
+      ],
+      "binary": "baseline",
+      "elapsed_seconds": 0.015453355968929827,
+      "returncode": 0,
+      "database_bytes": 6709248,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "dataset": "combined_26",
+      "database_owner": "before",
+      "repeat": 19,
+      "order": [
+        "baseline",
+        "candidate"
+      ],
+      "binary": "candidate",
+      "elapsed_seconds": 0.015213226026389748,
+      "returncode": 0,
+      "database_bytes": 6709248,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "dataset": "combined_26",
+      "database_owner": "before",
+      "repeat": 20,
+      "order": [
+        "candidate",
+        "baseline"
+      ],
+      "binary": "candidate",
+      "elapsed_seconds": 0.01712611102266237,
+      "returncode": 0,
+      "database_bytes": 6709248,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "dataset": "combined_26",
+      "database_owner": "before",
+      "repeat": 20,
+      "order": [
+        "candidate",
+        "baseline"
+      ],
+      "binary": "baseline",
+      "elapsed_seconds": 0.013825742993503809,
+      "returncode": 0,
+      "database_bytes": 6709248,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "dataset": "combined_26",
+      "database_owner": "after",
+      "repeat": 1,
+      "order": [
+        "baseline",
+        "candidate"
+      ],
+      "binary": "baseline",
+      "elapsed_seconds": 0.013330152025446296,
+      "returncode": 0,
+      "database_bytes": 6709248,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "dataset": "combined_26",
+      "database_owner": "after",
+      "repeat": 1,
+      "order": [
+        "baseline",
+        "candidate"
+      ],
+      "binary": "candidate",
+      "elapsed_seconds": 0.013470430974848568,
+      "returncode": 0,
+      "database_bytes": 6709248,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "dataset": "combined_26",
+      "database_owner": "after",
+      "repeat": 2,
+      "order": [
+        "candidate",
+        "baseline"
+      ],
+      "binary": "candidate",
+      "elapsed_seconds": 0.014499097014777362,
+      "returncode": 0,
+      "database_bytes": 6709248,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "dataset": "combined_26",
+      "database_owner": "after",
+      "repeat": 2,
+      "order": [
+        "candidate",
+        "baseline"
+      ],
+      "binary": "baseline",
+      "elapsed_seconds": 0.014767714019399136,
+      "returncode": 0,
+      "database_bytes": 6709248,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "dataset": "combined_26",
+      "database_owner": "after",
+      "repeat": 3,
+      "order": [
+        "baseline",
+        "candidate"
+      ],
+      "binary": "baseline",
+      "elapsed_seconds": 0.015539221989456564,
+      "returncode": 0,
+      "database_bytes": 6709248,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "dataset": "combined_26",
+      "database_owner": "after",
+      "repeat": 3,
+      "order": [
+        "baseline",
+        "candidate"
+      ],
+      "binary": "candidate",
+      "elapsed_seconds": 0.015817438019439578,
+      "returncode": 0,
+      "database_bytes": 6709248,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "dataset": "combined_26",
+      "database_owner": "after",
+      "repeat": 4,
+      "order": [
+        "candidate",
+        "baseline"
+      ],
+      "binary": "candidate",
+      "elapsed_seconds": 0.014473662013188004,
+      "returncode": 0,
+      "database_bytes": 6709248,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "dataset": "combined_26",
+      "database_owner": "after",
+      "repeat": 4,
+      "order": [
+        "candidate",
+        "baseline"
+      ],
+      "binary": "baseline",
+      "elapsed_seconds": 0.01494362996891141,
+      "returncode": 0,
+      "database_bytes": 6709248,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "dataset": "combined_26",
+      "database_owner": "after",
+      "repeat": 5,
+      "order": [
+        "baseline",
+        "candidate"
+      ],
+      "binary": "baseline",
+      "elapsed_seconds": 0.015502630965784192,
+      "returncode": 0,
+      "database_bytes": 6709248,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "dataset": "combined_26",
+      "database_owner": "after",
+      "repeat": 5,
+      "order": [
+        "baseline",
+        "candidate"
+      ],
+      "binary": "candidate",
+      "elapsed_seconds": 0.01654926099581644,
+      "returncode": 0,
+      "database_bytes": 6709248,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "dataset": "combined_26",
+      "database_owner": "after",
+      "repeat": 6,
+      "order": [
+        "candidate",
+        "baseline"
+      ],
+      "binary": "candidate",
+      "elapsed_seconds": 0.01745140098500997,
+      "returncode": 0,
+      "database_bytes": 6709248,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "dataset": "combined_26",
+      "database_owner": "after",
+      "repeat": 6,
+      "order": [
+        "candidate",
+        "baseline"
+      ],
+      "binary": "baseline",
+      "elapsed_seconds": 0.01579684397438541,
+      "returncode": 0,
+      "database_bytes": 6709248,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "dataset": "combined_26",
+      "database_owner": "after",
+      "repeat": 7,
+      "order": [
+        "baseline",
+        "candidate"
+      ],
+      "binary": "baseline",
+      "elapsed_seconds": 0.015085974999237806,
+      "returncode": 0,
+      "database_bytes": 6709248,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "dataset": "combined_26",
+      "database_owner": "after",
+      "repeat": 7,
+      "order": [
+        "baseline",
+        "candidate"
+      ],
+      "binary": "candidate",
+      "elapsed_seconds": 0.01548481301870197,
+      "returncode": 0,
+      "database_bytes": 6709248,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "dataset": "combined_26",
+      "database_owner": "after",
+      "repeat": 8,
+      "order": [
+        "candidate",
+        "baseline"
+      ],
+      "binary": "candidate",
+      "elapsed_seconds": 0.015943394973874092,
+      "returncode": 0,
+      "database_bytes": 6709248,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "dataset": "combined_26",
+      "database_owner": "after",
+      "repeat": 8,
+      "order": [
+        "candidate",
+        "baseline"
+      ],
+      "binary": "baseline",
+      "elapsed_seconds": 0.014275115972850472,
+      "returncode": 0,
+      "database_bytes": 6709248,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "dataset": "combined_26",
+      "database_owner": "after",
+      "repeat": 9,
+      "order": [
+        "baseline",
+        "candidate"
+      ],
+      "binary": "baseline",
+      "elapsed_seconds": 0.01315422699553892,
+      "returncode": 0,
+      "database_bytes": 6709248,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "dataset": "combined_26",
+      "database_owner": "after",
+      "repeat": 9,
+      "order": [
+        "baseline",
+        "candidate"
+      ],
+      "binary": "candidate",
+      "elapsed_seconds": 0.01397722796536982,
+      "returncode": 0,
+      "database_bytes": 6709248,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "dataset": "combined_26",
+      "database_owner": "after",
+      "repeat": 10,
+      "order": [
+        "candidate",
+        "baseline"
+      ],
+      "binary": "candidate",
+      "elapsed_seconds": 0.016150443989317864,
+      "returncode": 0,
+      "database_bytes": 6709248,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "dataset": "combined_26",
+      "database_owner": "after",
+      "repeat": 10,
+      "order": [
+        "candidate",
+        "baseline"
+      ],
+      "binary": "baseline",
+      "elapsed_seconds": 0.01819884602446109,
+      "returncode": 0,
+      "database_bytes": 6709248,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "dataset": "combined_26",
+      "database_owner": "after",
+      "repeat": 11,
+      "order": [
+        "baseline",
+        "candidate"
+      ],
+      "binary": "baseline",
+      "elapsed_seconds": 0.016410962969530374,
+      "returncode": 0,
+      "database_bytes": 6709248,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "dataset": "combined_26",
+      "database_owner": "after",
+      "repeat": 11,
+      "order": [
+        "baseline",
+        "candidate"
+      ],
+      "binary": "candidate",
+      "elapsed_seconds": 0.01739299896871671,
+      "returncode": 0,
+      "database_bytes": 6709248,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "dataset": "combined_26",
+      "database_owner": "after",
+      "repeat": 12,
+      "order": [
+        "candidate",
+        "baseline"
+      ],
+      "binary": "candidate",
+      "elapsed_seconds": 0.016013111046049744,
+      "returncode": 0,
+      "database_bytes": 6709248,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "dataset": "combined_26",
+      "database_owner": "after",
+      "repeat": 12,
+      "order": [
+        "candidate",
+        "baseline"
+      ],
+      "binary": "baseline",
+      "elapsed_seconds": 0.015161600022111088,
+      "returncode": 0,
+      "database_bytes": 6709248,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "dataset": "combined_26",
+      "database_owner": "after",
+      "repeat": 13,
+      "order": [
+        "baseline",
+        "candidate"
+      ],
+      "binary": "baseline",
+      "elapsed_seconds": 0.013895016978494823,
+      "returncode": 0,
+      "database_bytes": 6709248,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "dataset": "combined_26",
+      "database_owner": "after",
+      "repeat": 13,
+      "order": [
+        "baseline",
+        "candidate"
+      ],
+      "binary": "candidate",
+      "elapsed_seconds": 0.014760071004275233,
+      "returncode": 0,
+      "database_bytes": 6709248,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "dataset": "combined_26",
+      "database_owner": "after",
+      "repeat": 14,
+      "order": [
+        "candidate",
+        "baseline"
+      ],
+      "binary": "candidate",
+      "elapsed_seconds": 0.01410897501045838,
+      "returncode": 0,
+      "database_bytes": 6709248,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "dataset": "combined_26",
+      "database_owner": "after",
+      "repeat": 14,
+      "order": [
+        "candidate",
+        "baseline"
+      ],
+      "binary": "baseline",
+      "elapsed_seconds": 0.015569070994388312,
+      "returncode": 0,
+      "database_bytes": 6709248,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "dataset": "combined_26",
+      "database_owner": "after",
+      "repeat": 15,
+      "order": [
+        "baseline",
+        "candidate"
+      ],
+      "binary": "baseline",
+      "elapsed_seconds": 0.015132286003790796,
+      "returncode": 0,
+      "database_bytes": 6709248,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "dataset": "combined_26",
+      "database_owner": "after",
+      "repeat": 15,
+      "order": [
+        "baseline",
+        "candidate"
+      ],
+      "binary": "candidate",
+      "elapsed_seconds": 0.016320075024850667,
+      "returncode": 0,
+      "database_bytes": 6709248,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "dataset": "combined_26",
+      "database_owner": "after",
+      "repeat": 16,
+      "order": [
+        "candidate",
+        "baseline"
+      ],
+      "binary": "candidate",
+      "elapsed_seconds": 0.01890464103780687,
+      "returncode": 0,
+      "database_bytes": 6709248,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "dataset": "combined_26",
+      "database_owner": "after",
+      "repeat": 16,
+      "order": [
+        "candidate",
+        "baseline"
+      ],
+      "binary": "baseline",
+      "elapsed_seconds": 0.01889913296326995,
+      "returncode": 0,
+      "database_bytes": 6709248,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "dataset": "combined_26",
+      "database_owner": "after",
+      "repeat": 17,
+      "order": [
+        "baseline",
+        "candidate"
+      ],
+      "binary": "baseline",
+      "elapsed_seconds": 0.020159239997155964,
+      "returncode": 0,
+      "database_bytes": 6709248,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "dataset": "combined_26",
+      "database_owner": "after",
+      "repeat": 17,
+      "order": [
+        "baseline",
+        "candidate"
+      ],
+      "binary": "candidate",
+      "elapsed_seconds": 0.019634873024187982,
+      "returncode": 0,
+      "database_bytes": 6709248,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "dataset": "combined_26",
+      "database_owner": "after",
+      "repeat": 18,
+      "order": [
+        "candidate",
+        "baseline"
+      ],
+      "binary": "candidate",
+      "elapsed_seconds": 0.018278785049915314,
+      "returncode": 0,
+      "database_bytes": 6709248,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "dataset": "combined_26",
+      "database_owner": "after",
+      "repeat": 18,
+      "order": [
+        "candidate",
+        "baseline"
+      ],
+      "binary": "baseline",
+      "elapsed_seconds": 0.020619101007469,
+      "returncode": 0,
+      "database_bytes": 6709248,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "dataset": "combined_26",
+      "database_owner": "after",
+      "repeat": 19,
+      "order": [
+        "baseline",
+        "candidate"
+      ],
+      "binary": "baseline",
+      "elapsed_seconds": 0.018920980975963175,
+      "returncode": 0,
+      "database_bytes": 6709248,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "dataset": "combined_26",
+      "database_owner": "after",
+      "repeat": 19,
+      "order": [
+        "baseline",
+        "candidate"
+      ],
+      "binary": "candidate",
+      "elapsed_seconds": 0.01938520697876811,
+      "returncode": 0,
+      "database_bytes": 6709248,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "dataset": "combined_26",
+      "database_owner": "after",
+      "repeat": 20,
+      "order": [
+        "candidate",
+        "baseline"
+      ],
+      "binary": "candidate",
+      "elapsed_seconds": 0.01929900801042095,
+      "returncode": 0,
+      "database_bytes": 6709248,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "dataset": "combined_26",
+      "database_owner": "after",
+      "repeat": 20,
+      "order": [
+        "candidate",
+        "baseline"
+      ],
+      "binary": "baseline",
+      "elapsed_seconds": 0.01721172599354759,
+      "returncode": 0,
+      "database_bytes": 6709248,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    }
+  ]
+}

@@ -1,0 +1,342 @@
+{
+  "sample_interval_seconds": 0.05,
+  "includes_persistent_embedder_daemon": true,
+  "measurements": [
+    {
+      "corpus": "repodb",
+      "pin": "13639d6dbfed410bfa513f95861556acdf32cb5d",
+      "task_id": "rdb-worktree-stale-head",
+      "mode": "exact",
+      "elapsed_seconds": 0.12189923302503303,
+      "sampled_process_tree_peak_rss_kib": 602572
+    },
+    {
+      "corpus": "repodb",
+      "pin": "13639d6dbfed410bfa513f95861556acdf32cb5d",
+      "task_id": "rdb-worktree-stale-head",
+      "mode": "semantic",
+      "elapsed_seconds": 0.8386443940107711,
+      "sampled_process_tree_peak_rss_kib": 624556
+    },
+    {
+      "corpus": "repodb",
+      "pin": "13639d6dbfed410bfa513f95861556acdf32cb5d",
+      "task_id": "rdb-worktree-stale-head",
+      "mode": "combined",
+      "elapsed_seconds": 0.8352724250289612,
+      "sampled_process_tree_peak_rss_kib": 640024
+    },
+    {
+      "corpus": "repodb",
+      "pin": "13639d6dbfed410bfa513f95861556acdf32cb5d",
+      "task_id": "rdb-worktree-untracked-coverage",
+      "mode": "exact",
+      "elapsed_seconds": 0.12963350000791252,
+      "sampled_process_tree_peak_rss_kib": 602656
+    },
+    {
+      "corpus": "repodb",
+      "pin": "13639d6dbfed410bfa513f95861556acdf32cb5d",
+      "task_id": "rdb-worktree-untracked-coverage",
+      "mode": "semantic",
+      "elapsed_seconds": 0.8617679619928822,
+      "sampled_process_tree_peak_rss_kib": 639888
+    },
+    {
+      "corpus": "repodb",
+      "pin": "13639d6dbfed410bfa513f95861556acdf32cb5d",
+      "task_id": "rdb-worktree-untracked-coverage",
+      "mode": "combined",
+      "elapsed_seconds": 0.8532331479946151,
+      "sampled_process_tree_peak_rss_kib": 624572
+    },
+    {
+      "corpus": "repodb",
+      "pin": "13639d6dbfed410bfa513f95861556acdf32cb5d",
+      "task_id": "rdb-history-duplicate-compact-vs-all",
+      "mode": "exact",
+      "elapsed_seconds": 0.12179638899397105,
+      "sampled_process_tree_peak_rss_kib": 602656
+    },
+    {
+      "corpus": "repodb",
+      "pin": "13639d6dbfed410bfa513f95861556acdf32cb5d",
+      "task_id": "rdb-history-duplicate-compact-vs-all",
+      "mode": "semantic",
+      "elapsed_seconds": 0.89061220100848,
+      "sampled_process_tree_peak_rss_kib": 639764
+    },
+    {
+      "corpus": "repodb",
+      "pin": "13639d6dbfed410bfa513f95861556acdf32cb5d",
+      "task_id": "rdb-history-duplicate-compact-vs-all",
+      "mode": "combined",
+      "elapsed_seconds": 0.8858563899993896,
+      "sampled_process_tree_peak_rss_kib": 640936
+    },
+    {
+      "corpus": "repodb",
+      "pin": "13639d6dbfed410bfa513f95861556acdf32cb5d",
+      "task_id": "rdb-commit-message-hydration",
+      "mode": "exact",
+      "elapsed_seconds": 0.11751102999551222,
+      "sampled_process_tree_peak_rss_kib": 602648
+    },
+    {
+      "corpus": "repodb",
+      "pin": "13639d6dbfed410bfa513f95861556acdf32cb5d",
+      "task_id": "rdb-commit-message-hydration",
+      "mode": "semantic",
+      "elapsed_seconds": 0.7899560540099628,
+      "sampled_process_tree_peak_rss_kib": 640800
+    },
+    {
+      "corpus": "repodb",
+      "pin": "13639d6dbfed410bfa513f95861556acdf32cb5d",
+      "task_id": "rdb-commit-message-hydration",
+      "mode": "combined",
+      "elapsed_seconds": 0.8756397539982572,
+      "sampled_process_tree_peak_rss_kib": 624912
+    },
+    {
+      "corpus": "repodb",
+      "pin": "13639d6dbfed410bfa513f95861556acdf32cb5d",
+      "task_id": "rdb-response-budget-doc",
+      "mode": "exact",
+      "elapsed_seconds": 0.1250699940137565,
+      "sampled_process_tree_peak_rss_kib": 602684
+    },
+    {
+      "corpus": "repodb",
+      "pin": "13639d6dbfed410bfa513f95861556acdf32cb5d",
+      "task_id": "rdb-response-budget-doc",
+      "mode": "semantic",
+      "elapsed_seconds": 0.9703084829961881,
+      "sampled_process_tree_peak_rss_kib": 639980
+    },
+    {
+      "corpus": "repodb",
+      "pin": "13639d6dbfed410bfa513f95861556acdf32cb5d",
+      "task_id": "rdb-response-budget-doc",
+      "mode": "combined",
+      "elapsed_seconds": 0.9259824270266108,
+      "sampled_process_tree_peak_rss_kib": 639292
+    },
+    {
+      "corpus": "repodb",
+      "pin": "13639d6dbfed410bfa513f95861556acdf32cb5d",
+      "task_id": "rdb-search-does-not-refresh",
+      "mode": "exact",
+      "elapsed_seconds": 0.11415294301696122,
+      "sampled_process_tree_peak_rss_kib": 602576
+    },
+    {
+      "corpus": "repodb",
+      "pin": "13639d6dbfed410bfa513f95861556acdf32cb5d",
+      "task_id": "rdb-search-does-not-refresh",
+      "mode": "semantic",
+      "elapsed_seconds": 0.8296265809913166,
+      "sampled_process_tree_peak_rss_kib": 638172
+    },
+    {
+      "corpus": "repodb",
+      "pin": "13639d6dbfed410bfa513f95861556acdf32cb5d",
+      "task_id": "rdb-search-does-not-refresh",
+      "mode": "combined",
+      "elapsed_seconds": 0.8491258890135214,
+      "sampled_process_tree_peak_rss_kib": 640904
+    },
+    {
+      "corpus": "protonsync_ts",
+      "pin": "7c77aab91aff586591a00092a19760d5dc15e90a",
+      "task_id": "ps-default-direction-and-deletions",
+      "mode": "exact",
+      "elapsed_seconds": 0.12635510199470446,
+      "sampled_process_tree_peak_rss_kib": 591088
+    },
+    {
+      "corpus": "protonsync_ts",
+      "pin": "7c77aab91aff586591a00092a19760d5dc15e90a",
+      "task_id": "ps-default-direction-and-deletions",
+      "mode": "semantic",
+      "elapsed_seconds": 0.841582593973726,
+      "sampled_process_tree_peak_rss_kib": 623820
+    },
+    {
+      "corpus": "protonsync_ts",
+      "pin": "7c77aab91aff586591a00092a19760d5dc15e90a",
+      "task_id": "ps-default-direction-and-deletions",
+      "mode": "combined",
+      "elapsed_seconds": 0.8564736359985545,
+      "sampled_process_tree_peak_rss_kib": 624336
+    },
+    {
+      "corpus": "protonsync_ts",
+      "pin": "7c77aab91aff586591a00092a19760d5dc15e90a",
+      "task_id": "ps-configuration-schedules",
+      "mode": "exact",
+      "elapsed_seconds": 0.11755392397753894,
+      "sampled_process_tree_peak_rss_kib": 602120
+    },
+    {
+      "corpus": "protonsync_ts",
+      "pin": "7c77aab91aff586591a00092a19760d5dc15e90a",
+      "task_id": "ps-configuration-schedules",
+      "mode": "semantic",
+      "elapsed_seconds": 0.8343266880256124,
+      "sampled_process_tree_peak_rss_kib": 638460
+    },
+    {
+      "corpus": "protonsync_ts",
+      "pin": "7c77aab91aff586591a00092a19760d5dc15e90a",
+      "task_id": "ps-configuration-schedules",
+      "mode": "combined",
+      "elapsed_seconds": 0.8413640759536065,
+      "sampled_process_tree_peak_rss_kib": 624140
+    },
+    {
+      "corpus": "protonsync_ts",
+      "pin": "7c77aab91aff586591a00092a19760d5dc15e90a",
+      "task_id": "ps-throttle-inactive-permit",
+      "mode": "exact",
+      "elapsed_seconds": 0.11153138300869614,
+      "sampled_process_tree_peak_rss_kib": 602348
+    },
+    {
+      "corpus": "protonsync_ts",
+      "pin": "7c77aab91aff586591a00092a19760d5dc15e90a",
+      "task_id": "ps-throttle-inactive-permit",
+      "mode": "semantic",
+      "elapsed_seconds": 0.7571741010178812,
+      "sampled_process_tree_peak_rss_kib": 639312
+    },
+    {
+      "corpus": "protonsync_ts",
+      "pin": "7c77aab91aff586591a00092a19760d5dc15e90a",
+      "task_id": "ps-throttle-inactive-permit",
+      "mode": "combined",
+      "elapsed_seconds": 0.8430451489984989,
+      "sampled_process_tree_peak_rss_kib": 624336
+    },
+    {
+      "corpus": "protonsync_ts",
+      "pin": "7c77aab91aff586591a00092a19760d5dc15e90a",
+      "task_id": "ps-throttle-probe-lease",
+      "mode": "exact",
+      "elapsed_seconds": 0.11413002898916602,
+      "sampled_process_tree_peak_rss_kib": 591088
+    },
+    {
+      "corpus": "protonsync_ts",
+      "pin": "7c77aab91aff586591a00092a19760d5dc15e90a",
+      "task_id": "ps-throttle-probe-lease",
+      "mode": "semantic",
+      "elapsed_seconds": 0.8228443349944428,
+      "sampled_process_tree_peak_rss_kib": 638064
+    },
+    {
+      "corpus": "protonsync_ts",
+      "pin": "7c77aab91aff586591a00092a19760d5dc15e90a",
+      "task_id": "ps-throttle-probe-lease",
+      "mode": "combined",
+      "elapsed_seconds": 0.8281984700006433,
+      "sampled_process_tree_peak_rss_kib": 639680
+    },
+    {
+      "corpus": "protonsync_ts",
+      "pin": "7c77aab91aff586591a00092a19760d5dc15e90a",
+      "task_id": "ps-cli-version-test",
+      "mode": "exact",
+      "elapsed_seconds": 0.1222488300409168,
+      "sampled_process_tree_peak_rss_kib": 591088
+    },
+    {
+      "corpus": "protonsync_ts",
+      "pin": "7c77aab91aff586591a00092a19760d5dc15e90a",
+      "task_id": "ps-cli-version-test",
+      "mode": "semantic",
+      "elapsed_seconds": 0.8290900829597376,
+      "sampled_process_tree_peak_rss_kib": 624568
+    },
+    {
+      "corpus": "protonsync_ts",
+      "pin": "7c77aab91aff586591a00092a19760d5dc15e90a",
+      "task_id": "ps-cli-version-test",
+      "mode": "combined",
+      "elapsed_seconds": 0.7283829619991593,
+      "sampled_process_tree_peak_rss_kib": 639512
+    },
+    {
+      "corpus": "protonsync_ts",
+      "pin": "7c77aab91aff586591a00092a19760d5dc15e90a",
+      "task_id": "ps-cli-init-flags-test",
+      "mode": "exact",
+      "elapsed_seconds": 0.11763830902054906,
+      "sampled_process_tree_peak_rss_kib": 600916
+    },
+    {
+      "corpus": "protonsync_ts",
+      "pin": "7c77aab91aff586591a00092a19760d5dc15e90a",
+      "task_id": "ps-cli-init-flags-test",
+      "mode": "semantic",
+      "elapsed_seconds": 0.7210278949933127,
+      "sampled_process_tree_peak_rss_kib": 638428
+    },
+    {
+      "corpus": "protonsync_ts",
+      "pin": "7c77aab91aff586591a00092a19760d5dc15e90a",
+      "task_id": "ps-cli-init-flags-test",
+      "mode": "combined",
+      "elapsed_seconds": 0.8468401890131645,
+      "sampled_process_tree_peak_rss_kib": 625228
+    },
+    {
+      "corpus": "protonsync_ts",
+      "pin": "7c77aab91aff586591a00092a19760d5dc15e90a",
+      "task_id": "ps-license-provenance",
+      "mode": "exact",
+      "elapsed_seconds": 0.1305780410184525,
+      "sampled_process_tree_peak_rss_kib": 591092
+    },
+    {
+      "corpus": "protonsync_ts",
+      "pin": "7c77aab91aff586591a00092a19760d5dc15e90a",
+      "task_id": "ps-license-provenance",
+      "mode": "semantic",
+      "elapsed_seconds": 0.7369359209551476,
+      "sampled_process_tree_peak_rss_kib": 639348
+    },
+    {
+      "corpus": "protonsync_ts",
+      "pin": "7c77aab91aff586591a00092a19760d5dc15e90a",
+      "task_id": "ps-license-provenance",
+      "mode": "combined",
+      "elapsed_seconds": 0.8368313399842009,
+      "sampled_process_tree_peak_rss_kib": 624576
+    },
+    {
+      "corpus": "protonsync_ts",
+      "pin": "7c77aab91aff586591a00092a19760d5dc15e90a",
+      "task_id": "ps-status-json-test",
+      "mode": "exact",
+      "elapsed_seconds": 0.12495473900344223,
+      "sampled_process_tree_peak_rss_kib": 591092
+    },
+    {
+      "corpus": "protonsync_ts",
+      "pin": "7c77aab91aff586591a00092a19760d5dc15e90a",
+      "task_id": "ps-status-json-test",
+      "mode": "semantic",
+      "elapsed_seconds": 0.8099686850327998,
+      "sampled_process_tree_peak_rss_kib": 623092
+    },
+    {
+      "corpus": "protonsync_ts",
+      "pin": "7c77aab91aff586591a00092a19760d5dc15e90a",
+      "task_id": "ps-status-json-test",
+      "mode": "combined",
+      "elapsed_seconds": 0.8405754640116356,
+      "sampled_process_tree_peak_rss_kib": 624060
+    }
+  ]
+}

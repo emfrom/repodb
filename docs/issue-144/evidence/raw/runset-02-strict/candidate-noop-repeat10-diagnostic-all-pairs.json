@@ -1,0 +1,3412 @@
+{
+  "command": [
+    "/home/emfrom/opt/rust/cargo/target/release/repodb",
+    "--database",
+    "<per-run-db>",
+    "refresh",
+    "--changed"
+  ],
+  "repeat": 10,
+  "measurements": [
+    {
+      "command": [
+        "/home/emfrom/opt/rust/cargo/target/release/repodb",
+        "--database",
+        "/home/emfrom/opt/rust/cargo/target/issue144-final-runset/pair-01-before/repodb/run-01/repodb.sqlite",
+        "refresh",
+        "--changed"
+      ],
+      "elapsed_seconds": 0.023765989986713976,
+      "returncode": 0,
+      "database_bytes": 107868160,
+      "dataset": "repodb",
+      "run": "run-01",
+      "repeat": 1,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "command": [
+        "/home/emfrom/opt/rust/cargo/target/release/repodb",
+        "--database",
+        "/home/emfrom/opt/rust/cargo/target/issue144-final-runset/pair-01-before/repodb/run-01/repodb.sqlite",
+        "refresh",
+        "--changed"
+      ],
+      "elapsed_seconds": 0.018110894947312772,
+      "returncode": 0,
+      "database_bytes": 107868160,
+      "dataset": "repodb",
+      "run": "run-01",
+      "repeat": 2,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "command": [
+        "/home/emfrom/opt/rust/cargo/target/release/repodb",
+        "--database",
+        "/home/emfrom/opt/rust/cargo/target/issue144-final-runset/pair-01-before/repodb/run-01/repodb.sqlite",
+        "refresh",
+        "--changed"
+      ],
+      "elapsed_seconds": 0.019439780968241394,
+      "returncode": 0,
+      "database_bytes": 107868160,
+      "dataset": "repodb",
+      "run": "run-01",
+      "repeat": 3,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "command": [
+        "/home/emfrom/opt/rust/cargo/target/release/repodb",
+        "--database",
+        "/home/emfrom/opt/rust/cargo/target/issue144-final-runset/pair-01-before/repodb/run-01/repodb.sqlite",
+        "refresh",
+        "--changed"
+      ],
+      "elapsed_seconds": 0.01987770904088393,
+      "returncode": 0,
+      "database_bytes": 107868160,
+      "dataset": "repodb",
+      "run": "run-01",
+      "repeat": 4,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "command": [
+        "/home/emfrom/opt/rust/cargo/target/release/repodb",
+        "--database",
+        "/home/emfrom/opt/rust/cargo/target/issue144-final-runset/pair-01-before/repodb/run-01/repodb.sqlite",
+        "refresh",
+        "--changed"
+      ],
+      "elapsed_seconds": 0.018788237997796386,
+      "returncode": 0,
+      "database_bytes": 107868160,
+      "dataset": "repodb",
+      "run": "run-01",
+      "repeat": 5,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "command": [
+        "/home/emfrom/opt/rust/cargo/target/release/repodb",
+        "--database",
+        "/home/emfrom/opt/rust/cargo/target/issue144-final-runset/pair-01-before/repodb/run-01/repodb.sqlite",
+        "refresh",
+        "--changed"
+      ],
+      "elapsed_seconds": 0.019747628015466034,
+      "returncode": 0,
+      "database_bytes": 107868160,
+      "dataset": "repodb",
+      "run": "run-01",
+      "repeat": 6,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "command": [
+        "/home/emfrom/opt/rust/cargo/target/release/repodb",
+        "--database",
+        "/home/emfrom/opt/rust/cargo/target/issue144-final-runset/pair-01-before/repodb/run-01/repodb.sqlite",
+        "refresh",
+        "--changed"
+      ],
+      "elapsed_seconds": 0.019251300022006035,
+      "returncode": 0,
+      "database_bytes": 107868160,
+      "dataset": "repodb",
+      "run": "run-01",
+      "repeat": 7,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "command": [
+        "/home/emfrom/opt/rust/cargo/target/release/repodb",
+        "--database",
+        "/home/emfrom/opt/rust/cargo/target/issue144-final-runset/pair-01-before/repodb/run-01/repodb.sqlite",
+        "refresh",
+        "--changed"
+      ],
+      "elapsed_seconds": 0.01990402099909261,
+      "returncode": 0,
+      "database_bytes": 107868160,
+      "dataset": "repodb",
+      "run": "run-01",
+      "repeat": 8,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "command": [
+        "/home/emfrom/opt/rust/cargo/target/release/repodb",
+        "--database",
+        "/home/emfrom/opt/rust/cargo/target/issue144-final-runset/pair-01-before/repodb/run-01/repodb.sqlite",
+        "refresh",
+        "--changed"
+      ],
+      "elapsed_seconds": 0.022499480983242393,
+      "returncode": 0,
+      "database_bytes": 107868160,
+      "dataset": "repodb",
+      "run": "run-01",
+      "repeat": 9,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "command": [
+        "/home/emfrom/opt/rust/cargo/target/release/repodb",
+        "--database",
+        "/home/emfrom/opt/rust/cargo/target/issue144-final-runset/pair-01-before/repodb/run-01/repodb.sqlite",
+        "refresh",
+        "--changed"
+      ],
+      "elapsed_seconds": 0.021283029986079782,
+      "returncode": 0,
+      "database_bytes": 107868160,
+      "dataset": "repodb",
+      "run": "run-01",
+      "repeat": 10,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "command": [
+        "/home/emfrom/opt/rust/cargo/target/release/repodb",
+        "--database",
+        "/home/emfrom/opt/rust/cargo/target/issue144-final-runset/pair-01-before/combined_26/run-01/repodb.sqlite",
+        "refresh",
+        "--changed"
+      ],
+      "elapsed_seconds": 0.02881789399543777,
+      "returncode": 0,
+      "database_bytes": 6709248,
+      "dataset": "combined_26",
+      "run": "run-01",
+      "repeat": 1,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "command": [
+        "/home/emfrom/opt/rust/cargo/target/release/repodb",
+        "--database",
+        "/home/emfrom/opt/rust/cargo/target/issue144-final-runset/pair-01-before/combined_26/run-01/repodb.sqlite",
+        "refresh",
+        "--changed"
+      ],
+      "elapsed_seconds": 0.020088748016860336,
+      "returncode": 0,
+      "database_bytes": 6709248,
+      "dataset": "combined_26",
+      "run": "run-01",
+      "repeat": 2,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "command": [
+        "/home/emfrom/opt/rust/cargo/target/release/repodb",
+        "--database",
+        "/home/emfrom/opt/rust/cargo/target/issue144-final-runset/pair-01-before/combined_26/run-01/repodb.sqlite",
+        "refresh",
+        "--changed"
+      ],
+      "elapsed_seconds": 0.023166476981714368,
+      "returncode": 0,
+      "database_bytes": 6709248,
+      "dataset": "combined_26",
+      "run": "run-01",
+      "repeat": 3,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "command": [
+        "/home/emfrom/opt/rust/cargo/target/release/repodb",
+        "--database",
+        "/home/emfrom/opt/rust/cargo/target/issue144-final-runset/pair-01-before/combined_26/run-01/repodb.sqlite",
+        "refresh",
+        "--changed"
+      ],
+      "elapsed_seconds": 0.022224458982236683,
+      "returncode": 0,
+      "database_bytes": 6709248,
+      "dataset": "combined_26",
+      "run": "run-01",
+      "repeat": 4,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "command": [
+        "/home/emfrom/opt/rust/cargo/target/release/repodb",
+        "--database",
+        "/home/emfrom/opt/rust/cargo/target/issue144-final-runset/pair-01-before/combined_26/run-01/repodb.sqlite",
+        "refresh",
+        "--changed"
+      ],
+      "elapsed_seconds": 0.02126994397258386,
+      "returncode": 0,
+      "database_bytes": 6709248,
+      "dataset": "combined_26",
+      "run": "run-01",
+      "repeat": 5,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "command": [
+        "/home/emfrom/opt/rust/cargo/target/release/repodb",
+        "--database",
+        "/home/emfrom/opt/rust/cargo/target/issue144-final-runset/pair-01-before/combined_26/run-01/repodb.sqlite",
+        "refresh",
+        "--changed"
+      ],
+      "elapsed_seconds": 0.020419388019945472,
+      "returncode": 0,
+      "database_bytes": 6709248,
+      "dataset": "combined_26",
+      "run": "run-01",
+      "repeat": 6,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "command": [
+        "/home/emfrom/opt/rust/cargo/target/release/repodb",
+        "--database",
+        "/home/emfrom/opt/rust/cargo/target/issue144-final-runset/pair-01-before/combined_26/run-01/repodb.sqlite",
+        "refresh",
+        "--changed"
+      ],
+      "elapsed_seconds": 0.02059091697447002,
+      "returncode": 0,
+      "database_bytes": 6709248,
+      "dataset": "combined_26",
+      "run": "run-01",
+      "repeat": 7,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "command": [
+        "/home/emfrom/opt/rust/cargo/target/release/repodb",
+        "--database",
+        "/home/emfrom/opt/rust/cargo/target/issue144-final-runset/pair-01-before/combined_26/run-01/repodb.sqlite",
+        "refresh",
+        "--changed"
+      ],
+      "elapsed_seconds": 0.019944055995438248,
+      "returncode": 0,
+      "database_bytes": 6709248,
+      "dataset": "combined_26",
+      "run": "run-01",
+      "repeat": 8,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "command": [
+        "/home/emfrom/opt/rust/cargo/target/release/repodb",
+        "--database",
+        "/home/emfrom/opt/rust/cargo/target/issue144-final-runset/pair-01-before/combined_26/run-01/repodb.sqlite",
+        "refresh",
+        "--changed"
+      ],
+      "elapsed_seconds": 0.019770691986195743,
+      "returncode": 0,
+      "database_bytes": 6709248,
+      "dataset": "combined_26",
+      "run": "run-01",
+      "repeat": 9,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "command": [
+        "/home/emfrom/opt/rust/cargo/target/release/repodb",
+        "--database",
+        "/home/emfrom/opt/rust/cargo/target/issue144-final-runset/pair-01-before/combined_26/run-01/repodb.sqlite",
+        "refresh",
+        "--changed"
+      ],
+      "elapsed_seconds": 0.021020734042394906,
+      "returncode": 0,
+      "database_bytes": 6709248,
+      "dataset": "combined_26",
+      "run": "run-01",
+      "repeat": 10,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "command": [
+        "/home/emfrom/opt/rust/cargo/target/release/repodb",
+        "--database",
+        "/home/emfrom/opt/rust/cargo/target/issue144-final-runset/pair-01-after/repodb/run-01/repodb.sqlite",
+        "refresh",
+        "--changed"
+      ],
+      "elapsed_seconds": 0.02535453299060464,
+      "returncode": 0,
+      "database_bytes": 107868160,
+      "dataset": "repodb",
+      "run": "run-01",
+      "repeat": 1,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "command": [
+        "/home/emfrom/opt/rust/cargo/target/release/repodb",
+        "--database",
+        "/home/emfrom/opt/rust/cargo/target/issue144-final-runset/pair-01-after/repodb/run-01/repodb.sqlite",
+        "refresh",
+        "--changed"
+      ],
+      "elapsed_seconds": 0.02094299899181351,
+      "returncode": 0,
+      "database_bytes": 107868160,
+      "dataset": "repodb",
+      "run": "run-01",
+      "repeat": 2,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "command": [
+        "/home/emfrom/opt/rust/cargo/target/release/repodb",
+        "--database",
+        "/home/emfrom/opt/rust/cargo/target/issue144-final-runset/pair-01-after/repodb/run-01/repodb.sqlite",
+        "refresh",
+        "--changed"
+      ],
+      "elapsed_seconds": 0.020650562015362084,
+      "returncode": 0,
+      "database_bytes": 107868160,
+      "dataset": "repodb",
+      "run": "run-01",
+      "repeat": 3,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "command": [
+        "/home/emfrom/opt/rust/cargo/target/release/repodb",
+        "--database",
+        "/home/emfrom/opt/rust/cargo/target/issue144-final-runset/pair-01-after/repodb/run-01/repodb.sqlite",
+        "refresh",
+        "--changed"
+      ],
+      "elapsed_seconds": 0.021609751973301172,
+      "returncode": 0,
+      "database_bytes": 107868160,
+      "dataset": "repodb",
+      "run": "run-01",
+      "repeat": 4,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "command": [
+        "/home/emfrom/opt/rust/cargo/target/release/repodb",
+        "--database",
+        "/home/emfrom/opt/rust/cargo/target/issue144-final-runset/pair-01-after/repodb/run-01/repodb.sqlite",
+        "refresh",
+        "--changed"
+      ],
+      "elapsed_seconds": 0.021812535007484257,
+      "returncode": 0,
+      "database_bytes": 107868160,
+      "dataset": "repodb",
+      "run": "run-01",
+      "repeat": 5,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "command": [
+        "/home/emfrom/opt/rust/cargo/target/release/repodb",
+        "--database",
+        "/home/emfrom/opt/rust/cargo/target/issue144-final-runset/pair-01-after/repodb/run-01/repodb.sqlite",
+        "refresh",
+        "--changed"
+      ],
+      "elapsed_seconds": 0.02272244798950851,
+      "returncode": 0,
+      "database_bytes": 107868160,
+      "dataset": "repodb",
+      "run": "run-01",
+      "repeat": 6,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "command": [
+        "/home/emfrom/opt/rust/cargo/target/release/repodb",
+        "--database",
+        "/home/emfrom/opt/rust/cargo/target/issue144-final-runset/pair-01-after/repodb/run-01/repodb.sqlite",
+        "refresh",
+        "--changed"
+      ],
+      "elapsed_seconds": 0.022819234989583492,
+      "returncode": 0,
+      "database_bytes": 107868160,
+      "dataset": "repodb",
+      "run": "run-01",
+      "repeat": 7,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "command": [
+        "/home/emfrom/opt/rust/cargo/target/release/repodb",
+        "--database",
+        "/home/emfrom/opt/rust/cargo/target/issue144-final-runset/pair-01-after/repodb/run-01/repodb.sqlite",
+        "refresh",
+        "--changed"
+      ],
+      "elapsed_seconds": 0.021433447021991014,
+      "returncode": 0,
+      "database_bytes": 107868160,
+      "dataset": "repodb",
+      "run": "run-01",
+      "repeat": 8,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "command": [
+        "/home/emfrom/opt/rust/cargo/target/release/repodb",
+        "--database",
+        "/home/emfrom/opt/rust/cargo/target/issue144-final-runset/pair-01-after/repodb/run-01/repodb.sqlite",
+        "refresh",
+        "--changed"
+      ],
+      "elapsed_seconds": 0.02052470698254183,
+      "returncode": 0,
+      "database_bytes": 107868160,
+      "dataset": "repodb",
+      "run": "run-01",
+      "repeat": 9,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "command": [
+        "/home/emfrom/opt/rust/cargo/target/release/repodb",
+        "--database",
+        "/home/emfrom/opt/rust/cargo/target/issue144-final-runset/pair-01-after/repodb/run-01/repodb.sqlite",
+        "refresh",
+        "--changed"
+      ],
+      "elapsed_seconds": 0.01891735999379307,
+      "returncode": 0,
+      "database_bytes": 107868160,
+      "dataset": "repodb",
+      "run": "run-01",
+      "repeat": 10,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "command": [
+        "/home/emfrom/opt/rust/cargo/target/release/repodb",
+        "--database",
+        "/home/emfrom/opt/rust/cargo/target/issue144-final-runset/pair-01-after/combined_26/run-01/repodb.sqlite",
+        "refresh",
+        "--changed"
+      ],
+      "elapsed_seconds": 0.0227658890071325,
+      "returncode": 0,
+      "database_bytes": 6709248,
+      "dataset": "combined_26",
+      "run": "run-01",
+      "repeat": 1,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "command": [
+        "/home/emfrom/opt/rust/cargo/target/release/repodb",
+        "--database",
+        "/home/emfrom/opt/rust/cargo/target/issue144-final-runset/pair-01-after/combined_26/run-01/repodb.sqlite",
+        "refresh",
+        "--changed"
+      ],
+      "elapsed_seconds": 0.019682497018948197,
+      "returncode": 0,
+      "database_bytes": 6709248,
+      "dataset": "combined_26",
+      "run": "run-01",
+      "repeat": 2,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "command": [
+        "/home/emfrom/opt/rust/cargo/target/release/repodb",
+        "--database",
+        "/home/emfrom/opt/rust/cargo/target/issue144-final-runset/pair-01-after/combined_26/run-01/repodb.sqlite",
+        "refresh",
+        "--changed"
+      ],
+      "elapsed_seconds": 0.02000202500494197,
+      "returncode": 0,
+      "database_bytes": 6709248,
+      "dataset": "combined_26",
+      "run": "run-01",
+      "repeat": 3,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "command": [
+        "/home/emfrom/opt/rust/cargo/target/release/repodb",
+        "--database",
+        "/home/emfrom/opt/rust/cargo/target/issue144-final-runset/pair-01-after/combined_26/run-01/repodb.sqlite",
+        "refresh",
+        "--changed"
+      ],
+      "elapsed_seconds": 0.020407286996487528,
+      "returncode": 0,
+      "database_bytes": 6709248,
+      "dataset": "combined_26",
+      "run": "run-01",
+      "repeat": 4,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "command": [
+        "/home/emfrom/opt/rust/cargo/target/release/repodb",
+        "--database",
+        "/home/emfrom/opt/rust/cargo/target/issue144-final-runset/pair-01-after/combined_26/run-01/repodb.sqlite",
+        "refresh",
+        "--changed"
+      ],
+      "elapsed_seconds": 0.018288041988853365,
+      "returncode": 0,
+      "database_bytes": 6709248,
+      "dataset": "combined_26",
+      "run": "run-01",
+      "repeat": 5,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "command": [
+        "/home/emfrom/opt/rust/cargo/target/release/repodb",
+        "--database",
+        "/home/emfrom/opt/rust/cargo/target/issue144-final-runset/pair-01-after/combined_26/run-01/repodb.sqlite",
+        "refresh",
+        "--changed"
+      ],
+      "elapsed_seconds": 0.018259853997733444,
+      "returncode": 0,
+      "database_bytes": 6709248,
+      "dataset": "combined_26",
+      "run": "run-01",
+      "repeat": 6,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "command": [
+        "/home/emfrom/opt/rust/cargo/target/release/repodb",
+        "--database",
+        "/home/emfrom/opt/rust/cargo/target/issue144-final-runset/pair-01-after/combined_26/run-01/repodb.sqlite",
+        "refresh",
+        "--changed"
+      ],
+      "elapsed_seconds": 0.018428282986860722,
+      "returncode": 0,
+      "database_bytes": 6709248,
+      "dataset": "combined_26",
+      "run": "run-01",
+      "repeat": 7,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "command": [
+        "/home/emfrom/opt/rust/cargo/target/release/repodb",
+        "--database",
+        "/home/emfrom/opt/rust/cargo/target/issue144-final-runset/pair-01-after/combined_26/run-01/repodb.sqlite",
+        "refresh",
+        "--changed"
+      ],
+      "elapsed_seconds": 0.02029119001235813,
+      "returncode": 0,
+      "database_bytes": 6709248,
+      "dataset": "combined_26",
+      "run": "run-01",
+      "repeat": 8,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "command": [
+        "/home/emfrom/opt/rust/cargo/target/release/repodb",
+        "--database",
+        "/home/emfrom/opt/rust/cargo/target/issue144-final-runset/pair-01-after/combined_26/run-01/repodb.sqlite",
+        "refresh",
+        "--changed"
+      ],
+      "elapsed_seconds": 0.02035676600644365,
+      "returncode": 0,
+      "database_bytes": 6709248,
+      "dataset": "combined_26",
+      "run": "run-01",
+      "repeat": 9,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "command": [
+        "/home/emfrom/opt/rust/cargo/target/release/repodb",
+        "--database",
+        "/home/emfrom/opt/rust/cargo/target/issue144-final-runset/pair-01-after/combined_26/run-01/repodb.sqlite",
+        "refresh",
+        "--changed"
+      ],
+      "elapsed_seconds": 0.018570617015939206,
+      "returncode": 0,
+      "database_bytes": 6709248,
+      "dataset": "combined_26",
+      "run": "run-01",
+      "repeat": 10,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "command": [
+        "/home/emfrom/opt/rust/cargo/target/release/repodb",
+        "--database",
+        "/home/emfrom/opt/rust/cargo/target/issue144-final-runset/pair-02-after/repodb/run-01/repodb.sqlite",
+        "refresh",
+        "--changed"
+      ],
+      "elapsed_seconds": 0.023114408017136157,
+      "returncode": 0,
+      "database_bytes": 107868160,
+      "dataset": "repodb",
+      "run": "run-01",
+      "repeat": 1,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "command": [
+        "/home/emfrom/opt/rust/cargo/target/release/repodb",
+        "--database",
+        "/home/emfrom/opt/rust/cargo/target/issue144-final-runset/pair-02-after/repodb/run-01/repodb.sqlite",
+        "refresh",
+        "--changed"
+      ],
+      "elapsed_seconds": 0.01953262701863423,
+      "returncode": 0,
+      "database_bytes": 107868160,
+      "dataset": "repodb",
+      "run": "run-01",
+      "repeat": 2,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "command": [
+        "/home/emfrom/opt/rust/cargo/target/release/repodb",
+        "--database",
+        "/home/emfrom/opt/rust/cargo/target/issue144-final-runset/pair-02-after/repodb/run-01/repodb.sqlite",
+        "refresh",
+        "--changed"
+      ],
+      "elapsed_seconds": 0.018563791003543884,
+      "returncode": 0,
+      "database_bytes": 107868160,
+      "dataset": "repodb",
+      "run": "run-01",
+      "repeat": 3,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "command": [
+        "/home/emfrom/opt/rust/cargo/target/release/repodb",
+        "--database",
+        "/home/emfrom/opt/rust/cargo/target/issue144-final-runset/pair-02-after/repodb/run-01/repodb.sqlite",
+        "refresh",
+        "--changed"
+      ],
+      "elapsed_seconds": 0.0205248020356521,
+      "returncode": 0,
+      "database_bytes": 107868160,
+      "dataset": "repodb",
+      "run": "run-01",
+      "repeat": 4,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "command": [
+        "/home/emfrom/opt/rust/cargo/target/release/repodb",
+        "--database",
+        "/home/emfrom/opt/rust/cargo/target/issue144-final-runset/pair-02-after/repodb/run-01/repodb.sqlite",
+        "refresh",
+        "--changed"
+      ],
+      "elapsed_seconds": 0.018539897981099784,
+      "returncode": 0,
+      "database_bytes": 107868160,
+      "dataset": "repodb",
+      "run": "run-01",
+      "repeat": 5,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "command": [
+        "/home/emfrom/opt/rust/cargo/target/release/repodb",
+        "--database",
+        "/home/emfrom/opt/rust/cargo/target/issue144-final-runset/pair-02-after/repodb/run-01/repodb.sqlite",
+        "refresh",
+        "--changed"
+      ],
+      "elapsed_seconds": 0.014730048016645014,
+      "returncode": 0,
+      "database_bytes": 107868160,
+      "dataset": "repodb",
+      "run": "run-01",
+      "repeat": 6,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "command": [
+        "/home/emfrom/opt/rust/cargo/target/release/repodb",
+        "--database",
+        "/home/emfrom/opt/rust/cargo/target/issue144-final-runset/pair-02-after/repodb/run-01/repodb.sqlite",
+        "refresh",
+        "--changed"
+      ],
+      "elapsed_seconds": 0.011903112987056375,
+      "returncode": 0,
+      "database_bytes": 107868160,
+      "dataset": "repodb",
+      "run": "run-01",
+      "repeat": 7,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "command": [
+        "/home/emfrom/opt/rust/cargo/target/release/repodb",
+        "--database",
+        "/home/emfrom/opt/rust/cargo/target/issue144-final-runset/pair-02-after/repodb/run-01/repodb.sqlite",
+        "refresh",
+        "--changed"
+      ],
+      "elapsed_seconds": 0.011418362031690776,
+      "returncode": 0,
+      "database_bytes": 107868160,
+      "dataset": "repodb",
+      "run": "run-01",
+      "repeat": 8,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "command": [
+        "/home/emfrom/opt/rust/cargo/target/release/repodb",
+        "--database",
+        "/home/emfrom/opt/rust/cargo/target/issue144-final-runset/pair-02-after/repodb/run-01/repodb.sqlite",
+        "refresh",
+        "--changed"
+      ],
+      "elapsed_seconds": 0.010527143953368068,
+      "returncode": 0,
+      "database_bytes": 107868160,
+      "dataset": "repodb",
+      "run": "run-01",
+      "repeat": 9,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "command": [
+        "/home/emfrom/opt/rust/cargo/target/release/repodb",
+        "--database",
+        "/home/emfrom/opt/rust/cargo/target/issue144-final-runset/pair-02-after/repodb/run-01/repodb.sqlite",
+        "refresh",
+        "--changed"
+      ],
+      "elapsed_seconds": 0.01086463499814272,
+      "returncode": 0,
+      "database_bytes": 107868160,
+      "dataset": "repodb",
+      "run": "run-01",
+      "repeat": 10,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "command": [
+        "/home/emfrom/opt/rust/cargo/target/release/repodb",
+        "--database",
+        "/home/emfrom/opt/rust/cargo/target/issue144-final-runset/pair-02-after/combined_26/run-01/repodb.sqlite",
+        "refresh",
+        "--changed"
+      ],
+      "elapsed_seconds": 0.014427412010263652,
+      "returncode": 0,
+      "database_bytes": 6709248,
+      "dataset": "combined_26",
+      "run": "run-01",
+      "repeat": 1,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "command": [
+        "/home/emfrom/opt/rust/cargo/target/release/repodb",
+        "--database",
+        "/home/emfrom/opt/rust/cargo/target/issue144-final-runset/pair-02-after/combined_26/run-01/repodb.sqlite",
+        "refresh",
+        "--changed"
+      ],
+      "elapsed_seconds": 0.011914816976059228,
+      "returncode": 0,
+      "database_bytes": 6709248,
+      "dataset": "combined_26",
+      "run": "run-01",
+      "repeat": 2,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "command": [
+        "/home/emfrom/opt/rust/cargo/target/release/repodb",
+        "--database",
+        "/home/emfrom/opt/rust/cargo/target/issue144-final-runset/pair-02-after/combined_26/run-01/repodb.sqlite",
+        "refresh",
+        "--changed"
+      ],
+      "elapsed_seconds": 0.01211610302561894,
+      "returncode": 0,
+      "database_bytes": 6709248,
+      "dataset": "combined_26",
+      "run": "run-01",
+      "repeat": 3,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "command": [
+        "/home/emfrom/opt/rust/cargo/target/release/repodb",
+        "--database",
+        "/home/emfrom/opt/rust/cargo/target/issue144-final-runset/pair-02-after/combined_26/run-01/repodb.sqlite",
+        "refresh",
+        "--changed"
+      ],
+      "elapsed_seconds": 0.013076421979349107,
+      "returncode": 0,
+      "database_bytes": 6709248,
+      "dataset": "combined_26",
+      "run": "run-01",
+      "repeat": 4,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "command": [
+        "/home/emfrom/opt/rust/cargo/target/release/repodb",
+        "--database",
+        "/home/emfrom/opt/rust/cargo/target/issue144-final-runset/pair-02-after/combined_26/run-01/repodb.sqlite",
+        "refresh",
+        "--changed"
+      ],
+      "elapsed_seconds": 0.016056262014899403,
+      "returncode": 0,
+      "database_bytes": 6709248,
+      "dataset": "combined_26",
+      "run": "run-01",
+      "repeat": 5,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "command": [
+        "/home/emfrom/opt/rust/cargo/target/release/repodb",
+        "--database",
+        "/home/emfrom/opt/rust/cargo/target/issue144-final-runset/pair-02-after/combined_26/run-01/repodb.sqlite",
+        "refresh",
+        "--changed"
+      ],
+      "elapsed_seconds": 0.01261234498815611,
+      "returncode": 0,
+      "database_bytes": 6709248,
+      "dataset": "combined_26",
+      "run": "run-01",
+      "repeat": 6,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "command": [
+        "/home/emfrom/opt/rust/cargo/target/release/repodb",
+        "--database",
+        "/home/emfrom/opt/rust/cargo/target/issue144-final-runset/pair-02-after/combined_26/run-01/repodb.sqlite",
+        "refresh",
+        "--changed"
+      ],
+      "elapsed_seconds": 0.012481639976613224,
+      "returncode": 0,
+      "database_bytes": 6709248,
+      "dataset": "combined_26",
+      "run": "run-01",
+      "repeat": 7,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "command": [
+        "/home/emfrom/opt/rust/cargo/target/release/repodb",
+        "--database",
+        "/home/emfrom/opt/rust/cargo/target/issue144-final-runset/pair-02-after/combined_26/run-01/repodb.sqlite",
+        "refresh",
+        "--changed"
+      ],
+      "elapsed_seconds": 0.011306215019430965,
+      "returncode": 0,
+      "database_bytes": 6709248,
+      "dataset": "combined_26",
+      "run": "run-01",
+      "repeat": 8,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "command": [
+        "/home/emfrom/opt/rust/cargo/target/release/repodb",
+        "--database",
+        "/home/emfrom/opt/rust/cargo/target/issue144-final-runset/pair-02-after/combined_26/run-01/repodb.sqlite",
+        "refresh",
+        "--changed"
+      ],
+      "elapsed_seconds": 0.010965323017444462,
+      "returncode": 0,
+      "database_bytes": 6709248,
+      "dataset": "combined_26",
+      "run": "run-01",
+      "repeat": 9,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "command": [
+        "/home/emfrom/opt/rust/cargo/target/release/repodb",
+        "--database",
+        "/home/emfrom/opt/rust/cargo/target/issue144-final-runset/pair-02-after/combined_26/run-01/repodb.sqlite",
+        "refresh",
+        "--changed"
+      ],
+      "elapsed_seconds": 0.011033531976863742,
+      "returncode": 0,
+      "database_bytes": 6709248,
+      "dataset": "combined_26",
+      "run": "run-01",
+      "repeat": 10,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "command": [
+        "/home/emfrom/opt/rust/cargo/target/release/repodb",
+        "--database",
+        "/home/emfrom/opt/rust/cargo/target/issue144-final-runset/pair-02-before/repodb/run-01/repodb.sqlite",
+        "refresh",
+        "--changed"
+      ],
+      "elapsed_seconds": 0.016277063987217844,
+      "returncode": 0,
+      "database_bytes": 107868160,
+      "dataset": "repodb",
+      "run": "run-01",
+      "repeat": 1,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "command": [
+        "/home/emfrom/opt/rust/cargo/target/release/repodb",
+        "--database",
+        "/home/emfrom/opt/rust/cargo/target/issue144-final-runset/pair-02-before/repodb/run-01/repodb.sqlite",
+        "refresh",
+        "--changed"
+      ],
+      "elapsed_seconds": 0.012654152989853173,
+      "returncode": 0,
+      "database_bytes": 107868160,
+      "dataset": "repodb",
+      "run": "run-01",
+      "repeat": 2,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "command": [
+        "/home/emfrom/opt/rust/cargo/target/release/repodb",
+        "--database",
+        "/home/emfrom/opt/rust/cargo/target/issue144-final-runset/pair-02-before/repodb/run-01/repodb.sqlite",
+        "refresh",
+        "--changed"
+      ],
+      "elapsed_seconds": 0.012245072983205318,
+      "returncode": 0,
+      "database_bytes": 107868160,
+      "dataset": "repodb",
+      "run": "run-01",
+      "repeat": 3,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "command": [
+        "/home/emfrom/opt/rust/cargo/target/release/repodb",
+        "--database",
+        "/home/emfrom/opt/rust/cargo/target/issue144-final-runset/pair-02-before/repodb/run-01/repodb.sqlite",
+        "refresh",
+        "--changed"
+      ],
+      "elapsed_seconds": 0.01263830898096785,
+      "returncode": 0,
+      "database_bytes": 107868160,
+      "dataset": "repodb",
+      "run": "run-01",
+      "repeat": 4,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "command": [
+        "/home/emfrom/opt/rust/cargo/target/release/repodb",
+        "--database",
+        "/home/emfrom/opt/rust/cargo/target/issue144-final-runset/pair-02-before/repodb/run-01/repodb.sqlite",
+        "refresh",
+        "--changed"
+      ],
+      "elapsed_seconds": 0.011649027990642935,
+      "returncode": 0,
+      "database_bytes": 107868160,
+      "dataset": "repodb",
+      "run": "run-01",
+      "repeat": 5,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "command": [
+        "/home/emfrom/opt/rust/cargo/target/release/repodb",
+        "--database",
+        "/home/emfrom/opt/rust/cargo/target/issue144-final-runset/pair-02-before/repodb/run-01/repodb.sqlite",
+        "refresh",
+        "--changed"
+      ],
+      "elapsed_seconds": 0.011734453029930592,
+      "returncode": 0,
+      "database_bytes": 107868160,
+      "dataset": "repodb",
+      "run": "run-01",
+      "repeat": 6,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "command": [
+        "/home/emfrom/opt/rust/cargo/target/release/repodb",
+        "--database",
+        "/home/emfrom/opt/rust/cargo/target/issue144-final-runset/pair-02-before/repodb/run-01/repodb.sqlite",
+        "refresh",
+        "--changed"
+      ],
+      "elapsed_seconds": 0.01009366096695885,
+      "returncode": 0,
+      "database_bytes": 107868160,
+      "dataset": "repodb",
+      "run": "run-01",
+      "repeat": 7,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "command": [
+        "/home/emfrom/opt/rust/cargo/target/release/repodb",
+        "--database",
+        "/home/emfrom/opt/rust/cargo/target/issue144-final-runset/pair-02-before/repodb/run-01/repodb.sqlite",
+        "refresh",
+        "--changed"
+      ],
+      "elapsed_seconds": 0.010310800978913903,
+      "returncode": 0,
+      "database_bytes": 107868160,
+      "dataset": "repodb",
+      "run": "run-01",
+      "repeat": 8,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "command": [
+        "/home/emfrom/opt/rust/cargo/target/release/repodb",
+        "--database",
+        "/home/emfrom/opt/rust/cargo/target/issue144-final-runset/pair-02-before/repodb/run-01/repodb.sqlite",
+        "refresh",
+        "--changed"
+      ],
+      "elapsed_seconds": 0.01123986195307225,
+      "returncode": 0,
+      "database_bytes": 107868160,
+      "dataset": "repodb",
+      "run": "run-01",
+      "repeat": 9,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "command": [
+        "/home/emfrom/opt/rust/cargo/target/release/repodb",
+        "--database",
+        "/home/emfrom/opt/rust/cargo/target/issue144-final-runset/pair-02-before/repodb/run-01/repodb.sqlite",
+        "refresh",
+        "--changed"
+      ],
+      "elapsed_seconds": 0.013132967986166477,
+      "returncode": 0,
+      "database_bytes": 107868160,
+      "dataset": "repodb",
+      "run": "run-01",
+      "repeat": 10,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "command": [
+        "/home/emfrom/opt/rust/cargo/target/release/repodb",
+        "--database",
+        "/home/emfrom/opt/rust/cargo/target/issue144-final-runset/pair-02-before/combined_26/run-01/repodb.sqlite",
+        "refresh",
+        "--changed"
+      ],
+      "elapsed_seconds": 0.01690117601538077,
+      "returncode": 0,
+      "database_bytes": 6709248,
+      "dataset": "combined_26",
+      "run": "run-01",
+      "repeat": 1,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "command": [
+        "/home/emfrom/opt/rust/cargo/target/release/repodb",
+        "--database",
+        "/home/emfrom/opt/rust/cargo/target/issue144-final-runset/pair-02-before/combined_26/run-01/repodb.sqlite",
+        "refresh",
+        "--changed"
+      ],
+      "elapsed_seconds": 0.012296908011194319,
+      "returncode": 0,
+      "database_bytes": 6709248,
+      "dataset": "combined_26",
+      "run": "run-01",
+      "repeat": 2,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "command": [
+        "/home/emfrom/opt/rust/cargo/target/release/repodb",
+        "--database",
+        "/home/emfrom/opt/rust/cargo/target/issue144-final-runset/pair-02-before/combined_26/run-01/repodb.sqlite",
+        "refresh",
+        "--changed"
+      ],
+      "elapsed_seconds": 0.01852325303480029,
+      "returncode": 0,
+      "database_bytes": 6709248,
+      "dataset": "combined_26",
+      "run": "run-01",
+      "repeat": 3,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "command": [
+        "/home/emfrom/opt/rust/cargo/target/release/repodb",
+        "--database",
+        "/home/emfrom/opt/rust/cargo/target/issue144-final-runset/pair-02-before/combined_26/run-01/repodb.sqlite",
+        "refresh",
+        "--changed"
+      ],
+      "elapsed_seconds": 0.01845750299980864,
+      "returncode": 0,
+      "database_bytes": 6709248,
+      "dataset": "combined_26",
+      "run": "run-01",
+      "repeat": 4,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "command": [
+        "/home/emfrom/opt/rust/cargo/target/release/repodb",
+        "--database",
+        "/home/emfrom/opt/rust/cargo/target/issue144-final-runset/pair-02-before/combined_26/run-01/repodb.sqlite",
+        "refresh",
+        "--changed"
+      ],
+      "elapsed_seconds": 0.01869489101227373,
+      "returncode": 0,
+      "database_bytes": 6709248,
+      "dataset": "combined_26",
+      "run": "run-01",
+      "repeat": 5,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "command": [
+        "/home/emfrom/opt/rust/cargo/target/release/repodb",
+        "--database",
+        "/home/emfrom/opt/rust/cargo/target/issue144-final-runset/pair-02-before/combined_26/run-01/repodb.sqlite",
+        "refresh",
+        "--changed"
+      ],
+      "elapsed_seconds": 0.018882022995967418,
+      "returncode": 0,
+      "database_bytes": 6709248,
+      "dataset": "combined_26",
+      "run": "run-01",
+      "repeat": 6,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "command": [
+        "/home/emfrom/opt/rust/cargo/target/release/repodb",
+        "--database",
+        "/home/emfrom/opt/rust/cargo/target/issue144-final-runset/pair-02-before/combined_26/run-01/repodb.sqlite",
+        "refresh",
+        "--changed"
+      ],
+      "elapsed_seconds": 0.017106004001107067,
+      "returncode": 0,
+      "database_bytes": 6709248,
+      "dataset": "combined_26",
+      "run": "run-01",
+      "repeat": 7,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "command": [
+        "/home/emfrom/opt/rust/cargo/target/release/repodb",
+        "--database",
+        "/home/emfrom/opt/rust/cargo/target/issue144-final-runset/pair-02-before/combined_26/run-01/repodb.sqlite",
+        "refresh",
+        "--changed"
+      ],
+      "elapsed_seconds": 0.01291832298738882,
+      "returncode": 0,
+      "database_bytes": 6709248,
+      "dataset": "combined_26",
+      "run": "run-01",
+      "repeat": 8,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "command": [
+        "/home/emfrom/opt/rust/cargo/target/release/repodb",
+        "--database",
+        "/home/emfrom/opt/rust/cargo/target/issue144-final-runset/pair-02-before/combined_26/run-01/repodb.sqlite",
+        "refresh",
+        "--changed"
+      ],
+      "elapsed_seconds": 0.012181695958133787,
+      "returncode": 0,
+      "database_bytes": 6709248,
+      "dataset": "combined_26",
+      "run": "run-01",
+      "repeat": 9,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "command": [
+        "/home/emfrom/opt/rust/cargo/target/release/repodb",
+        "--database",
+        "/home/emfrom/opt/rust/cargo/target/issue144-final-runset/pair-02-before/combined_26/run-01/repodb.sqlite",
+        "refresh",
+        "--changed"
+      ],
+      "elapsed_seconds": 0.011259113962296396,
+      "returncode": 0,
+      "database_bytes": 6709248,
+      "dataset": "combined_26",
+      "run": "run-01",
+      "repeat": 10,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "command": [
+        "/home/emfrom/opt/rust/cargo/target/release/repodb",
+        "--database",
+        "/home/emfrom/opt/rust/cargo/target/issue144-final-runset/pair-03-before/repodb/run-01/repodb.sqlite",
+        "refresh",
+        "--changed"
+      ],
+      "elapsed_seconds": 0.017543022986501455,
+      "returncode": 0,
+      "database_bytes": 107868160,
+      "dataset": "repodb",
+      "run": "run-01",
+      "repeat": 1,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "command": [
+        "/home/emfrom/opt/rust/cargo/target/release/repodb",
+        "--database",
+        "/home/emfrom/opt/rust/cargo/target/issue144-final-runset/pair-03-before/repodb/run-01/repodb.sqlite",
+        "refresh",
+        "--changed"
+      ],
+      "elapsed_seconds": 0.013227316027041525,
+      "returncode": 0,
+      "database_bytes": 107868160,
+      "dataset": "repodb",
+      "run": "run-01",
+      "repeat": 2,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "command": [
+        "/home/emfrom/opt/rust/cargo/target/release/repodb",
+        "--database",
+        "/home/emfrom/opt/rust/cargo/target/issue144-final-runset/pair-03-before/repodb/run-01/repodb.sqlite",
+        "refresh",
+        "--changed"
+      ],
+      "elapsed_seconds": 0.012781563040334731,
+      "returncode": 0,
+      "database_bytes": 107868160,
+      "dataset": "repodb",
+      "run": "run-01",
+      "repeat": 3,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "command": [
+        "/home/emfrom/opt/rust/cargo/target/release/repodb",
+        "--database",
+        "/home/emfrom/opt/rust/cargo/target/issue144-final-runset/pair-03-before/repodb/run-01/repodb.sqlite",
+        "refresh",
+        "--changed"
+      ],
+      "elapsed_seconds": 0.013708810962270945,
+      "returncode": 0,
+      "database_bytes": 107868160,
+      "dataset": "repodb",
+      "run": "run-01",
+      "repeat": 4,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "command": [
+        "/home/emfrom/opt/rust/cargo/target/release/repodb",
+        "--database",
+        "/home/emfrom/opt/rust/cargo/target/issue144-final-runset/pair-03-before/repodb/run-01/repodb.sqlite",
+        "refresh",
+        "--changed"
+      ],
+      "elapsed_seconds": 0.013338549993932247,
+      "returncode": 0,
+      "database_bytes": 107868160,
+      "dataset": "repodb",
+      "run": "run-01",
+      "repeat": 5,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "command": [
+        "/home/emfrom/opt/rust/cargo/target/release/repodb",
+        "--database",
+        "/home/emfrom/opt/rust/cargo/target/issue144-final-runset/pair-03-before/repodb/run-01/repodb.sqlite",
+        "refresh",
+        "--changed"
+      ],
+      "elapsed_seconds": 0.012094585981685668,
+      "returncode": 0,
+      "database_bytes": 107868160,
+      "dataset": "repodb",
+      "run": "run-01",
+      "repeat": 6,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "command": [
+        "/home/emfrom/opt/rust/cargo/target/release/repodb",
+        "--database",
+        "/home/emfrom/opt/rust/cargo/target/issue144-final-runset/pair-03-before/repodb/run-01/repodb.sqlite",
+        "refresh",
+        "--changed"
+      ],
+      "elapsed_seconds": 0.011525670008268207,
+      "returncode": 0,
+      "database_bytes": 107868160,
+      "dataset": "repodb",
+      "run": "run-01",
+      "repeat": 7,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "command": [
+        "/home/emfrom/opt/rust/cargo/target/release/repodb",
+        "--database",
+        "/home/emfrom/opt/rust/cargo/target/issue144-final-runset/pair-03-before/repodb/run-01/repodb.sqlite",
+        "refresh",
+        "--changed"
+      ],
+      "elapsed_seconds": 0.011637380986940116,
+      "returncode": 0,
+      "database_bytes": 107868160,
+      "dataset": "repodb",
+      "run": "run-01",
+      "repeat": 8,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "command": [
+        "/home/emfrom/opt/rust/cargo/target/release/repodb",
+        "--database",
+        "/home/emfrom/opt/rust/cargo/target/issue144-final-runset/pair-03-before/repodb/run-01/repodb.sqlite",
+        "refresh",
+        "--changed"
+      ],
+      "elapsed_seconds": 0.011560222948901355,
+      "returncode": 0,
+      "database_bytes": 107868160,
+      "dataset": "repodb",
+      "run": "run-01",
+      "repeat": 9,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "command": [
+        "/home/emfrom/opt/rust/cargo/target/release/repodb",
+        "--database",
+        "/home/emfrom/opt/rust/cargo/target/issue144-final-runset/pair-03-before/repodb/run-01/repodb.sqlite",
+        "refresh",
+        "--changed"
+      ],
+      "elapsed_seconds": 0.011180167028214782,
+      "returncode": 0,
+      "database_bytes": 107868160,
+      "dataset": "repodb",
+      "run": "run-01",
+      "repeat": 10,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "command": [
+        "/home/emfrom/opt/rust/cargo/target/release/repodb",
+        "--database",
+        "/home/emfrom/opt/rust/cargo/target/issue144-final-runset/pair-03-before/combined_26/run-01/repodb.sqlite",
+        "refresh",
+        "--changed"
+      ],
+      "elapsed_seconds": 0.014301749994046986,
+      "returncode": 0,
+      "database_bytes": 6709248,
+      "dataset": "combined_26",
+      "run": "run-01",
+      "repeat": 1,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "command": [
+        "/home/emfrom/opt/rust/cargo/target/release/repodb",
+        "--database",
+        "/home/emfrom/opt/rust/cargo/target/issue144-final-runset/pair-03-before/combined_26/run-01/repodb.sqlite",
+        "refresh",
+        "--changed"
+      ],
+      "elapsed_seconds": 0.011583337967749685,
+      "returncode": 0,
+      "database_bytes": 6709248,
+      "dataset": "combined_26",
+      "run": "run-01",
+      "repeat": 2,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "command": [
+        "/home/emfrom/opt/rust/cargo/target/release/repodb",
+        "--database",
+        "/home/emfrom/opt/rust/cargo/target/issue144-final-runset/pair-03-before/combined_26/run-01/repodb.sqlite",
+        "refresh",
+        "--changed"
+      ],
+      "elapsed_seconds": 0.011088469997048378,
+      "returncode": 0,
+      "database_bytes": 6709248,
+      "dataset": "combined_26",
+      "run": "run-01",
+      "repeat": 3,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "command": [
+        "/home/emfrom/opt/rust/cargo/target/release/repodb",
+        "--database",
+        "/home/emfrom/opt/rust/cargo/target/issue144-final-runset/pair-03-before/combined_26/run-01/repodb.sqlite",
+        "refresh",
+        "--changed"
+      ],
+      "elapsed_seconds": 0.011708385951351374,
+      "returncode": 0,
+      "database_bytes": 6709248,
+      "dataset": "combined_26",
+      "run": "run-01",
+      "repeat": 4,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "command": [
+        "/home/emfrom/opt/rust/cargo/target/release/repodb",
+        "--database",
+        "/home/emfrom/opt/rust/cargo/target/issue144-final-runset/pair-03-before/combined_26/run-01/repodb.sqlite",
+        "refresh",
+        "--changed"
+      ],
+      "elapsed_seconds": 0.011637972027529031,
+      "returncode": 0,
+      "database_bytes": 6709248,
+      "dataset": "combined_26",
+      "run": "run-01",
+      "repeat": 5,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "command": [
+        "/home/emfrom/opt/rust/cargo/target/release/repodb",
+        "--database",
+        "/home/emfrom/opt/rust/cargo/target/issue144-final-runset/pair-03-before/combined_26/run-01/repodb.sqlite",
+        "refresh",
+        "--changed"
+      ],
+      "elapsed_seconds": 0.011923201032914221,
+      "returncode": 0,
+      "database_bytes": 6709248,
+      "dataset": "combined_26",
+      "run": "run-01",
+      "repeat": 6,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "command": [
+        "/home/emfrom/opt/rust/cargo/target/release/repodb",
+        "--database",
+        "/home/emfrom/opt/rust/cargo/target/issue144-final-runset/pair-03-before/combined_26/run-01/repodb.sqlite",
+        "refresh",
+        "--changed"
+      ],
+      "elapsed_seconds": 0.010824075026903301,
+      "returncode": 0,
+      "database_bytes": 6709248,
+      "dataset": "combined_26",
+      "run": "run-01",
+      "repeat": 7,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "command": [
+        "/home/emfrom/opt/rust/cargo/target/release/repodb",
+        "--database",
+        "/home/emfrom/opt/rust/cargo/target/issue144-final-runset/pair-03-before/combined_26/run-01/repodb.sqlite",
+        "refresh",
+        "--changed"
+      ],
+      "elapsed_seconds": 0.010632342018652707,
+      "returncode": 0,
+      "database_bytes": 6709248,
+      "dataset": "combined_26",
+      "run": "run-01",
+      "repeat": 8,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "command": [
+        "/home/emfrom/opt/rust/cargo/target/release/repodb",
+        "--database",
+        "/home/emfrom/opt/rust/cargo/target/issue144-final-runset/pair-03-before/combined_26/run-01/repodb.sqlite",
+        "refresh",
+        "--changed"
+      ],
+      "elapsed_seconds": 0.010987915040459484,
+      "returncode": 0,
+      "database_bytes": 6709248,
+      "dataset": "combined_26",
+      "run": "run-01",
+      "repeat": 9,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "command": [
+        "/home/emfrom/opt/rust/cargo/target/release/repodb",
+        "--database",
+        "/home/emfrom/opt/rust/cargo/target/issue144-final-runset/pair-03-before/combined_26/run-01/repodb.sqlite",
+        "refresh",
+        "--changed"
+      ],
+      "elapsed_seconds": 0.010770216002129018,
+      "returncode": 0,
+      "database_bytes": 6709248,
+      "dataset": "combined_26",
+      "run": "run-01",
+      "repeat": 10,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "command": [
+        "/home/emfrom/opt/rust/cargo/target/release/repodb",
+        "--database",
+        "/home/emfrom/opt/rust/cargo/target/issue144-final-runset/pair-03-after/repodb/run-01/repodb.sqlite",
+        "refresh",
+        "--changed"
+      ],
+      "elapsed_seconds": 0.01657736604101956,
+      "returncode": 0,
+      "database_bytes": 107868160,
+      "dataset": "repodb",
+      "run": "run-01",
+      "repeat": 1,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "command": [
+        "/home/emfrom/opt/rust/cargo/target/release/repodb",
+        "--database",
+        "/home/emfrom/opt/rust/cargo/target/issue144-final-runset/pair-03-after/repodb/run-01/repodb.sqlite",
+        "refresh",
+        "--changed"
+      ],
+      "elapsed_seconds": 0.01045235904166475,
+      "returncode": 0,
+      "database_bytes": 107868160,
+      "dataset": "repodb",
+      "run": "run-01",
+      "repeat": 2,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "command": [
+        "/home/emfrom/opt/rust/cargo/target/release/repodb",
+        "--database",
+        "/home/emfrom/opt/rust/cargo/target/issue144-final-runset/pair-03-after/repodb/run-01/repodb.sqlite",
+        "refresh",
+        "--changed"
+      ],
+      "elapsed_seconds": 0.010232552012894303,
+      "returncode": 0,
+      "database_bytes": 107868160,
+      "dataset": "repodb",
+      "run": "run-01",
+      "repeat": 3,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "command": [
+        "/home/emfrom/opt/rust/cargo/target/release/repodb",
+        "--database",
+        "/home/emfrom/opt/rust/cargo/target/issue144-final-runset/pair-03-after/repodb/run-01/repodb.sqlite",
+        "refresh",
+        "--changed"
+      ],
+      "elapsed_seconds": 0.01110658998368308,
+      "returncode": 0,
+      "database_bytes": 107868160,
+      "dataset": "repodb",
+      "run": "run-01",
+      "repeat": 4,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "command": [
+        "/home/emfrom/opt/rust/cargo/target/release/repodb",
+        "--database",
+        "/home/emfrom/opt/rust/cargo/target/issue144-final-runset/pair-03-after/repodb/run-01/repodb.sqlite",
+        "refresh",
+        "--changed"
+      ],
+      "elapsed_seconds": 0.010795826034154743,
+      "returncode": 0,
+      "database_bytes": 107868160,
+      "dataset": "repodb",
+      "run": "run-01",
+      "repeat": 5,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "command": [
+        "/home/emfrom/opt/rust/cargo/target/release/repodb",
+        "--database",
+        "/home/emfrom/opt/rust/cargo/target/issue144-final-runset/pair-03-after/repodb/run-01/repodb.sqlite",
+        "refresh",
+        "--changed"
+      ],
+      "elapsed_seconds": 0.011908145970664918,
+      "returncode": 0,
+      "database_bytes": 107868160,
+      "dataset": "repodb",
+      "run": "run-01",
+      "repeat": 6,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "command": [
+        "/home/emfrom/opt/rust/cargo/target/release/repodb",
+        "--database",
+        "/home/emfrom/opt/rust/cargo/target/issue144-final-runset/pair-03-after/repodb/run-01/repodb.sqlite",
+        "refresh",
+        "--changed"
+      ],
+      "elapsed_seconds": 0.01077214500401169,
+      "returncode": 0,
+      "database_bytes": 107868160,
+      "dataset": "repodb",
+      "run": "run-01",
+      "repeat": 7,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "command": [
+        "/home/emfrom/opt/rust/cargo/target/release/repodb",
+        "--database",
+        "/home/emfrom/opt/rust/cargo/target/issue144-final-runset/pair-03-after/repodb/run-01/repodb.sqlite",
+        "refresh",
+        "--changed"
+      ],
+      "elapsed_seconds": 0.0105015350272879,
+      "returncode": 0,
+      "database_bytes": 107868160,
+      "dataset": "repodb",
+      "run": "run-01",
+      "repeat": 8,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "command": [
+        "/home/emfrom/opt/rust/cargo/target/release/repodb",
+        "--database",
+        "/home/emfrom/opt/rust/cargo/target/issue144-final-runset/pair-03-after/repodb/run-01/repodb.sqlite",
+        "refresh",
+        "--changed"
+      ],
+      "elapsed_seconds": 0.010821382980793715,
+      "returncode": 0,
+      "database_bytes": 107868160,
+      "dataset": "repodb",
+      "run": "run-01",
+      "repeat": 9,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "command": [
+        "/home/emfrom/opt/rust/cargo/target/release/repodb",
+        "--database",
+        "/home/emfrom/opt/rust/cargo/target/issue144-final-runset/pair-03-after/repodb/run-01/repodb.sqlite",
+        "refresh",
+        "--changed"
+      ],
+      "elapsed_seconds": 0.01066794601501897,
+      "returncode": 0,
+      "database_bytes": 107868160,
+      "dataset": "repodb",
+      "run": "run-01",
+      "repeat": 10,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "command": [
+        "/home/emfrom/opt/rust/cargo/target/release/repodb",
+        "--database",
+        "/home/emfrom/opt/rust/cargo/target/issue144-final-runset/pair-03-after/combined_26/run-01/repodb.sqlite",
+        "refresh",
+        "--changed"
+      ],
+      "elapsed_seconds": 0.013576620956882834,
+      "returncode": 0,
+      "database_bytes": 6709248,
+      "dataset": "combined_26",
+      "run": "run-01",
+      "repeat": 1,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "command": [
+        "/home/emfrom/opt/rust/cargo/target/release/repodb",
+        "--database",
+        "/home/emfrom/opt/rust/cargo/target/issue144-final-runset/pair-03-after/combined_26/run-01/repodb.sqlite",
+        "refresh",
+        "--changed"
+      ],
+      "elapsed_seconds": 0.011869590962305665,
+      "returncode": 0,
+      "database_bytes": 6709248,
+      "dataset": "combined_26",
+      "run": "run-01",
+      "repeat": 2,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "command": [
+        "/home/emfrom/opt/rust/cargo/target/release/repodb",
+        "--database",
+        "/home/emfrom/opt/rust/cargo/target/issue144-final-runset/pair-03-after/combined_26/run-01/repodb.sqlite",
+        "refresh",
+        "--changed"
+      ],
+      "elapsed_seconds": 0.011615551949944347,
+      "returncode": 0,
+      "database_bytes": 6709248,
+      "dataset": "combined_26",
+      "run": "run-01",
+      "repeat": 3,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "command": [
+        "/home/emfrom/opt/rust/cargo/target/release/repodb",
+        "--database",
+        "/home/emfrom/opt/rust/cargo/target/issue144-final-runset/pair-03-after/combined_26/run-01/repodb.sqlite",
+        "refresh",
+        "--changed"
+      ],
+      "elapsed_seconds": 0.011150937993079424,
+      "returncode": 0,
+      "database_bytes": 6709248,
+      "dataset": "combined_26",
+      "run": "run-01",
+      "repeat": 4,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "command": [
+        "/home/emfrom/opt/rust/cargo/target/release/repodb",
+        "--database",
+        "/home/emfrom/opt/rust/cargo/target/issue144-final-runset/pair-03-after/combined_26/run-01/repodb.sqlite",
+        "refresh",
+        "--changed"
+      ],
+      "elapsed_seconds": 0.010437478020321578,
+      "returncode": 0,
+      "database_bytes": 6709248,
+      "dataset": "combined_26",
+      "run": "run-01",
+      "repeat": 5,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "command": [
+        "/home/emfrom/opt/rust/cargo/target/release/repodb",
+        "--database",
+        "/home/emfrom/opt/rust/cargo/target/issue144-final-runset/pair-03-after/combined_26/run-01/repodb.sqlite",
+        "refresh",
+        "--changed"
+      ],
+      "elapsed_seconds": 0.010796191985718906,
+      "returncode": 0,
+      "database_bytes": 6709248,
+      "dataset": "combined_26",
+      "run": "run-01",
+      "repeat": 6,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "command": [
+        "/home/emfrom/opt/rust/cargo/target/release/repodb",
+        "--database",
+        "/home/emfrom/opt/rust/cargo/target/issue144-final-runset/pair-03-after/combined_26/run-01/repodb.sqlite",
+        "refresh",
+        "--changed"
+      ],
+      "elapsed_seconds": 0.010695178993046284,
+      "returncode": 0,
+      "database_bytes": 6709248,
+      "dataset": "combined_26",
+      "run": "run-01",
+      "repeat": 7,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "command": [
+        "/home/emfrom/opt/rust/cargo/target/release/repodb",
+        "--database",
+        "/home/emfrom/opt/rust/cargo/target/issue144-final-runset/pair-03-after/combined_26/run-01/repodb.sqlite",
+        "refresh",
+        "--changed"
+      ],
+      "elapsed_seconds": 0.009590981004294008,
+      "returncode": 0,
+      "database_bytes": 6709248,
+      "dataset": "combined_26",
+      "run": "run-01",
+      "repeat": 8,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "command": [
+        "/home/emfrom/opt/rust/cargo/target/release/repodb",
+        "--database",
+        "/home/emfrom/opt/rust/cargo/target/issue144-final-runset/pair-03-after/combined_26/run-01/repodb.sqlite",
+        "refresh",
+        "--changed"
+      ],
+      "elapsed_seconds": 0.011255419987719506,
+      "returncode": 0,
+      "database_bytes": 6709248,
+      "dataset": "combined_26",
+      "run": "run-01",
+      "repeat": 9,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "command": [
+        "/home/emfrom/opt/rust/cargo/target/release/repodb",
+        "--database",
+        "/home/emfrom/opt/rust/cargo/target/issue144-final-runset/pair-03-after/combined_26/run-01/repodb.sqlite",
+        "refresh",
+        "--changed"
+      ],
+      "elapsed_seconds": 0.010374579986091703,
+      "returncode": 0,
+      "database_bytes": 6709248,
+      "dataset": "combined_26",
+      "run": "run-01",
+      "repeat": 10,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "command": [
+        "/home/emfrom/opt/rust/cargo/target/release/repodb",
+        "--database",
+        "/home/emfrom/opt/rust/cargo/target/issue144-final-runset/pair-04-after/repodb/run-01/repodb.sqlite",
+        "refresh",
+        "--changed"
+      ],
+      "elapsed_seconds": 0.01282493700273335,
+      "returncode": 0,
+      "database_bytes": 107868160,
+      "dataset": "repodb",
+      "run": "run-01",
+      "repeat": 1,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "command": [
+        "/home/emfrom/opt/rust/cargo/target/release/repodb",
+        "--database",
+        "/home/emfrom/opt/rust/cargo/target/issue144-final-runset/pair-04-after/repodb/run-01/repodb.sqlite",
+        "refresh",
+        "--changed"
+      ],
+      "elapsed_seconds": 0.01070820598397404,
+      "returncode": 0,
+      "database_bytes": 107868160,
+      "dataset": "repodb",
+      "run": "run-01",
+      "repeat": 2,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "command": [
+        "/home/emfrom/opt/rust/cargo/target/release/repodb",
+        "--database",
+        "/home/emfrom/opt/rust/cargo/target/issue144-final-runset/pair-04-after/repodb/run-01/repodb.sqlite",
+        "refresh",
+        "--changed"
+      ],
+      "elapsed_seconds": 0.012493090995121747,
+      "returncode": 0,
+      "database_bytes": 107868160,
+      "dataset": "repodb",
+      "run": "run-01",
+      "repeat": 3,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "command": [
+        "/home/emfrom/opt/rust/cargo/target/release/repodb",
+        "--database",
+        "/home/emfrom/opt/rust/cargo/target/issue144-final-runset/pair-04-after/repodb/run-01/repodb.sqlite",
+        "refresh",
+        "--changed"
+      ],
+      "elapsed_seconds": 0.012719004007522017,
+      "returncode": 0,
+      "database_bytes": 107868160,
+      "dataset": "repodb",
+      "run": "run-01",
+      "repeat": 4,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "command": [
+        "/home/emfrom/opt/rust/cargo/target/release/repodb",
+        "--database",
+        "/home/emfrom/opt/rust/cargo/target/issue144-final-runset/pair-04-after/repodb/run-01/repodb.sqlite",
+        "refresh",
+        "--changed"
+      ],
+      "elapsed_seconds": 0.012220126984175295,
+      "returncode": 0,
+      "database_bytes": 107868160,
+      "dataset": "repodb",
+      "run": "run-01",
+      "repeat": 5,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "command": [
+        "/home/emfrom/opt/rust/cargo/target/release/repodb",
+        "--database",
+        "/home/emfrom/opt/rust/cargo/target/issue144-final-runset/pair-04-after/repodb/run-01/repodb.sqlite",
+        "refresh",
+        "--changed"
+      ],
+      "elapsed_seconds": 0.012078037019819021,
+      "returncode": 0,
+      "database_bytes": 107868160,
+      "dataset": "repodb",
+      "run": "run-01",
+      "repeat": 6,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "command": [
+        "/home/emfrom/opt/rust/cargo/target/release/repodb",
+        "--database",
+        "/home/emfrom/opt/rust/cargo/target/issue144-final-runset/pair-04-after/repodb/run-01/repodb.sqlite",
+        "refresh",
+        "--changed"
+      ],
+      "elapsed_seconds": 0.010925768001470715,
+      "returncode": 0,
+      "database_bytes": 107868160,
+      "dataset": "repodb",
+      "run": "run-01",
+      "repeat": 7,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "command": [
+        "/home/emfrom/opt/rust/cargo/target/release/repodb",
+        "--database",
+        "/home/emfrom/opt/rust/cargo/target/issue144-final-runset/pair-04-after/repodb/run-01/repodb.sqlite",
+        "refresh",
+        "--changed"
+      ],
+      "elapsed_seconds": 0.011278222023975104,
+      "returncode": 0,
+      "database_bytes": 107868160,
+      "dataset": "repodb",
+      "run": "run-01",
+      "repeat": 8,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "command": [
+        "/home/emfrom/opt/rust/cargo/target/release/repodb",
+        "--database",
+        "/home/emfrom/opt/rust/cargo/target/issue144-final-runset/pair-04-after/repodb/run-01/repodb.sqlite",
+        "refresh",
+        "--changed"
+      ],
+      "elapsed_seconds": 0.011324983031954616,
+      "returncode": 0,
+      "database_bytes": 107868160,
+      "dataset": "repodb",
+      "run": "run-01",
+      "repeat": 9,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "command": [
+        "/home/emfrom/opt/rust/cargo/target/release/repodb",
+        "--database",
+        "/home/emfrom/opt/rust/cargo/target/issue144-final-runset/pair-04-after/repodb/run-01/repodb.sqlite",
+        "refresh",
+        "--changed"
+      ],
+      "elapsed_seconds": 0.0119210000266321,
+      "returncode": 0,
+      "database_bytes": 107868160,
+      "dataset": "repodb",
+      "run": "run-01",
+      "repeat": 10,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "command": [
+        "/home/emfrom/opt/rust/cargo/target/release/repodb",
+        "--database",
+        "/home/emfrom/opt/rust/cargo/target/issue144-final-runset/pair-04-after/combined_26/run-01/repodb.sqlite",
+        "refresh",
+        "--changed"
+      ],
+      "elapsed_seconds": 0.016500745026860386,
+      "returncode": 0,
+      "database_bytes": 6709248,
+      "dataset": "combined_26",
+      "run": "run-01",
+      "repeat": 1,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "command": [
+        "/home/emfrom/opt/rust/cargo/target/release/repodb",
+        "--database",
+        "/home/emfrom/opt/rust/cargo/target/issue144-final-runset/pair-04-after/combined_26/run-01/repodb.sqlite",
+        "refresh",
+        "--changed"
+      ],
+      "elapsed_seconds": 0.011554389959201217,
+      "returncode": 0,
+      "database_bytes": 6709248,
+      "dataset": "combined_26",
+      "run": "run-01",
+      "repeat": 2,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "command": [
+        "/home/emfrom/opt/rust/cargo/target/release/repodb",
+        "--database",
+        "/home/emfrom/opt/rust/cargo/target/issue144-final-runset/pair-04-after/combined_26/run-01/repodb.sqlite",
+        "refresh",
+        "--changed"
+      ],
+      "elapsed_seconds": 0.011387970007490367,
+      "returncode": 0,
+      "database_bytes": 6709248,
+      "dataset": "combined_26",
+      "run": "run-01",
+      "repeat": 3,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "command": [
+        "/home/emfrom/opt/rust/cargo/target/release/repodb",
+        "--database",
+        "/home/emfrom/opt/rust/cargo/target/issue144-final-runset/pair-04-after/combined_26/run-01/repodb.sqlite",
+        "refresh",
+        "--changed"
+      ],
+      "elapsed_seconds": 0.011969471990596503,
+      "returncode": 0,
+      "database_bytes": 6709248,
+      "dataset": "combined_26",
+      "run": "run-01",
+      "repeat": 4,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "command": [
+        "/home/emfrom/opt/rust/cargo/target/release/repodb",
+        "--database",
+        "/home/emfrom/opt/rust/cargo/target/issue144-final-runset/pair-04-after/combined_26/run-01/repodb.sqlite",
+        "refresh",
+        "--changed"
+      ],
+      "elapsed_seconds": 0.011371790955308825,
+      "returncode": 0,
+      "database_bytes": 6709248,
+      "dataset": "combined_26",
+      "run": "run-01",
+      "repeat": 5,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "command": [
+        "/home/emfrom/opt/rust/cargo/target/release/repodb",
+        "--database",
+        "/home/emfrom/opt/rust/cargo/target/issue144-final-runset/pair-04-after/combined_26/run-01/repodb.sqlite",
+        "refresh",
+        "--changed"
+      ],
+      "elapsed_seconds": 0.010901173984166235,
+      "returncode": 0,
+      "database_bytes": 6709248,
+      "dataset": "combined_26",
+      "run": "run-01",
+      "repeat": 6,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "command": [
+        "/home/emfrom/opt/rust/cargo/target/release/repodb",
+        "--database",
+        "/home/emfrom/opt/rust/cargo/target/issue144-final-runset/pair-04-after/combined_26/run-01/repodb.sqlite",
+        "refresh",
+        "--changed"
+      ],
+      "elapsed_seconds": 0.011486207018606365,
+      "returncode": 0,
+      "database_bytes": 6709248,
+      "dataset": "combined_26",
+      "run": "run-01",
+      "repeat": 7,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "command": [
+        "/home/emfrom/opt/rust/cargo/target/release/repodb",
+        "--database",
+        "/home/emfrom/opt/rust/cargo/target/issue144-final-runset/pair-04-after/combined_26/run-01/repodb.sqlite",
+        "refresh",
+        "--changed"
+      ],
+      "elapsed_seconds": 0.012455911957658827,
+      "returncode": 0,
+      "database_bytes": 6709248,
+      "dataset": "combined_26",
+      "run": "run-01",
+      "repeat": 8,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "command": [
+        "/home/emfrom/opt/rust/cargo/target/release/repodb",
+        "--database",
+        "/home/emfrom/opt/rust/cargo/target/issue144-final-runset/pair-04-after/combined_26/run-01/repodb.sqlite",
+        "refresh",
+        "--changed"
+      ],
+      "elapsed_seconds": 0.01234583999030292,
+      "returncode": 0,
+      "database_bytes": 6709248,
+      "dataset": "combined_26",
+      "run": "run-01",
+      "repeat": 9,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "command": [
+        "/home/emfrom/opt/rust/cargo/target/release/repodb",
+        "--database",
+        "/home/emfrom/opt/rust/cargo/target/issue144-final-runset/pair-04-after/combined_26/run-01/repodb.sqlite",
+        "refresh",
+        "--changed"
+      ],
+      "elapsed_seconds": 0.011756870022509247,
+      "returncode": 0,
+      "database_bytes": 6709248,
+      "dataset": "combined_26",
+      "run": "run-01",
+      "repeat": 10,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "command": [
+        "/home/emfrom/opt/rust/cargo/target/release/repodb",
+        "--database",
+        "/home/emfrom/opt/rust/cargo/target/issue144-final-runset/pair-04-before/repodb/run-01/repodb.sqlite",
+        "refresh",
+        "--changed"
+      ],
+      "elapsed_seconds": 0.017165701952762902,
+      "returncode": 0,
+      "database_bytes": 107868160,
+      "dataset": "repodb",
+      "run": "run-01",
+      "repeat": 1,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "command": [
+        "/home/emfrom/opt/rust/cargo/target/release/repodb",
+        "--database",
+        "/home/emfrom/opt/rust/cargo/target/issue144-final-runset/pair-04-before/repodb/run-01/repodb.sqlite",
+        "refresh",
+        "--changed"
+      ],
+      "elapsed_seconds": 0.016492872964590788,
+      "returncode": 0,
+      "database_bytes": 107868160,
+      "dataset": "repodb",
+      "run": "run-01",
+      "repeat": 2,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "command": [
+        "/home/emfrom/opt/rust/cargo/target/release/repodb",
+        "--database",
+        "/home/emfrom/opt/rust/cargo/target/issue144-final-runset/pair-04-before/repodb/run-01/repodb.sqlite",
+        "refresh",
+        "--changed"
+      ],
+      "elapsed_seconds": 0.018138275016099215,
+      "returncode": 0,
+      "database_bytes": 107868160,
+      "dataset": "repodb",
+      "run": "run-01",
+      "repeat": 3,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "command": [
+        "/home/emfrom/opt/rust/cargo/target/release/repodb",
+        "--database",
+        "/home/emfrom/opt/rust/cargo/target/issue144-final-runset/pair-04-before/repodb/run-01/repodb.sqlite",
+        "refresh",
+        "--changed"
+      ],
+      "elapsed_seconds": 0.019222889037337154,
+      "returncode": 0,
+      "database_bytes": 107868160,
+      "dataset": "repodb",
+      "run": "run-01",
+      "repeat": 4,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "command": [
+        "/home/emfrom/opt/rust/cargo/target/release/repodb",
+        "--database",
+        "/home/emfrom/opt/rust/cargo/target/issue144-final-runset/pair-04-before/repodb/run-01/repodb.sqlite",
+        "refresh",
+        "--changed"
+      ],
+      "elapsed_seconds": 0.02031836600508541,
+      "returncode": 0,
+      "database_bytes": 107868160,
+      "dataset": "repodb",
+      "run": "run-01",
+      "repeat": 5,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "command": [
+        "/home/emfrom/opt/rust/cargo/target/release/repodb",
+        "--database",
+        "/home/emfrom/opt/rust/cargo/target/issue144-final-runset/pair-04-before/repodb/run-01/repodb.sqlite",
+        "refresh",
+        "--changed"
+      ],
+      "elapsed_seconds": 0.02035923203220591,
+      "returncode": 0,
+      "database_bytes": 107868160,
+      "dataset": "repodb",
+      "run": "run-01",
+      "repeat": 6,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "command": [
+        "/home/emfrom/opt/rust/cargo/target/release/repodb",
+        "--database",
+        "/home/emfrom/opt/rust/cargo/target/issue144-final-runset/pair-04-before/repodb/run-01/repodb.sqlite",
+        "refresh",
+        "--changed"
+      ],
+      "elapsed_seconds": 0.019970250024925917,
+      "returncode": 0,
+      "database_bytes": 107868160,
+      "dataset": "repodb",
+      "run": "run-01",
+      "repeat": 7,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "command": [
+        "/home/emfrom/opt/rust/cargo/target/release/repodb",
+        "--database",
+        "/home/emfrom/opt/rust/cargo/target/issue144-final-runset/pair-04-before/repodb/run-01/repodb.sqlite",
+        "refresh",
+        "--changed"
+      ],
+      "elapsed_seconds": 0.02042980497935787,
+      "returncode": 0,
+      "database_bytes": 107868160,
+      "dataset": "repodb",
+      "run": "run-01",
+      "repeat": 8,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "command": [
+        "/home/emfrom/opt/rust/cargo/target/release/repodb",
+        "--database",
+        "/home/emfrom/opt/rust/cargo/target/issue144-final-runset/pair-04-before/repodb/run-01/repodb.sqlite",
+        "refresh",
+        "--changed"
+      ],
+      "elapsed_seconds": 0.02164239896228537,
+      "returncode": 0,
+      "database_bytes": 107868160,
+      "dataset": "repodb",
+      "run": "run-01",
+      "repeat": 9,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "command": [
+        "/home/emfrom/opt/rust/cargo/target/release/repodb",
+        "--database",
+        "/home/emfrom/opt/rust/cargo/target/issue144-final-runset/pair-04-before/repodb/run-01/repodb.sqlite",
+        "refresh",
+        "--changed"
+      ],
+      "elapsed_seconds": 0.020957664994057268,
+      "returncode": 0,
+      "database_bytes": 107868160,
+      "dataset": "repodb",
+      "run": "run-01",
+      "repeat": 10,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "command": [
+        "/home/emfrom/opt/rust/cargo/target/release/repodb",
+        "--database",
+        "/home/emfrom/opt/rust/cargo/target/issue144-final-runset/pair-04-before/combined_26/run-01/repodb.sqlite",
+        "refresh",
+        "--changed"
+      ],
+      "elapsed_seconds": 0.02454817801481113,
+      "returncode": 0,
+      "database_bytes": 6709248,
+      "dataset": "combined_26",
+      "run": "run-01",
+      "repeat": 1,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "command": [
+        "/home/emfrom/opt/rust/cargo/target/release/repodb",
+        "--database",
+        "/home/emfrom/opt/rust/cargo/target/issue144-final-runset/pair-04-before/combined_26/run-01/repodb.sqlite",
+        "refresh",
+        "--changed"
+      ],
+      "elapsed_seconds": 0.020647868048399687,
+      "returncode": 0,
+      "database_bytes": 6709248,
+      "dataset": "combined_26",
+      "run": "run-01",
+      "repeat": 2,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "command": [
+        "/home/emfrom/opt/rust/cargo/target/release/repodb",
+        "--database",
+        "/home/emfrom/opt/rust/cargo/target/issue144-final-runset/pair-04-before/combined_26/run-01/repodb.sqlite",
+        "refresh",
+        "--changed"
+      ],
+      "elapsed_seconds": 0.018952920043375343,
+      "returncode": 0,
+      "database_bytes": 6709248,
+      "dataset": "combined_26",
+      "run": "run-01",
+      "repeat": 3,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "command": [
+        "/home/emfrom/opt/rust/cargo/target/release/repodb",
+        "--database",
+        "/home/emfrom/opt/rust/cargo/target/issue144-final-runset/pair-04-before/combined_26/run-01/repodb.sqlite",
+        "refresh",
+        "--changed"
+      ],
+      "elapsed_seconds": 0.017732972977682948,
+      "returncode": 0,
+      "database_bytes": 6709248,
+      "dataset": "combined_26",
+      "run": "run-01",
+      "repeat": 4,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "command": [
+        "/home/emfrom/opt/rust/cargo/target/release/repodb",
+        "--database",
+        "/home/emfrom/opt/rust/cargo/target/issue144-final-runset/pair-04-before/combined_26/run-01/repodb.sqlite",
+        "refresh",
+        "--changed"
+      ],
+      "elapsed_seconds": 0.01626383699476719,
+      "returncode": 0,
+      "database_bytes": 6709248,
+      "dataset": "combined_26",
+      "run": "run-01",
+      "repeat": 5,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "command": [
+        "/home/emfrom/opt/rust/cargo/target/release/repodb",
+        "--database",
+        "/home/emfrom/opt/rust/cargo/target/issue144-final-runset/pair-04-before/combined_26/run-01/repodb.sqlite",
+        "refresh",
+        "--changed"
+      ],
+      "elapsed_seconds": 0.018185054999776185,
+      "returncode": 0,
+      "database_bytes": 6709248,
+      "dataset": "combined_26",
+      "run": "run-01",
+      "repeat": 6,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "command": [
+        "/home/emfrom/opt/rust/cargo/target/release/repodb",
+        "--database",
+        "/home/emfrom/opt/rust/cargo/target/issue144-final-runset/pair-04-before/combined_26/run-01/repodb.sqlite",
+        "refresh",
+        "--changed"
+      ],
+      "elapsed_seconds": 0.017739536007866263,
+      "returncode": 0,
+      "database_bytes": 6709248,
+      "dataset": "combined_26",
+      "run": "run-01",
+      "repeat": 7,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "command": [
+        "/home/emfrom/opt/rust/cargo/target/release/repodb",
+        "--database",
+        "/home/emfrom/opt/rust/cargo/target/issue144-final-runset/pair-04-before/combined_26/run-01/repodb.sqlite",
+        "refresh",
+        "--changed"
+      ],
+      "elapsed_seconds": 0.017869941017124802,
+      "returncode": 0,
+      "database_bytes": 6709248,
+      "dataset": "combined_26",
+      "run": "run-01",
+      "repeat": 8,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "command": [
+        "/home/emfrom/opt/rust/cargo/target/release/repodb",
+        "--database",
+        "/home/emfrom/opt/rust/cargo/target/issue144-final-runset/pair-04-before/combined_26/run-01/repodb.sqlite",
+        "refresh",
+        "--changed"
+      ],
+      "elapsed_seconds": 0.019245008006691933,
+      "returncode": 0,
+      "database_bytes": 6709248,
+      "dataset": "combined_26",
+      "run": "run-01",
+      "repeat": 9,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "command": [
+        "/home/emfrom/opt/rust/cargo/target/release/repodb",
+        "--database",
+        "/home/emfrom/opt/rust/cargo/target/issue144-final-runset/pair-04-before/combined_26/run-01/repodb.sqlite",
+        "refresh",
+        "--changed"
+      ],
+      "elapsed_seconds": 0.01819491299102083,
+      "returncode": 0,
+      "database_bytes": 6709248,
+      "dataset": "combined_26",
+      "run": "run-01",
+      "repeat": 10,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "command": [
+        "/home/emfrom/opt/rust/cargo/target/release/repodb",
+        "--database",
+        "/home/emfrom/opt/rust/cargo/target/issue144-final-runset/pair-05-before/repodb/run-01/repodb.sqlite",
+        "refresh",
+        "--changed"
+      ],
+      "elapsed_seconds": 0.02217505598673597,
+      "returncode": 0,
+      "database_bytes": 107868160,
+      "dataset": "repodb",
+      "run": "run-01",
+      "repeat": 1,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "command": [
+        "/home/emfrom/opt/rust/cargo/target/release/repodb",
+        "--database",
+        "/home/emfrom/opt/rust/cargo/target/issue144-final-runset/pair-05-before/repodb/run-01/repodb.sqlite",
+        "refresh",
+        "--changed"
+      ],
+      "elapsed_seconds": 0.019977285992354155,
+      "returncode": 0,
+      "database_bytes": 107868160,
+      "dataset": "repodb",
+      "run": "run-01",
+      "repeat": 2,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "command": [
+        "/home/emfrom/opt/rust/cargo/target/release/repodb",
+        "--database",
+        "/home/emfrom/opt/rust/cargo/target/issue144-final-runset/pair-05-before/repodb/run-01/repodb.sqlite",
+        "refresh",
+        "--changed"
+      ],
+      "elapsed_seconds": 0.018004128010943532,
+      "returncode": 0,
+      "database_bytes": 107868160,
+      "dataset": "repodb",
+      "run": "run-01",
+      "repeat": 3,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "command": [
+        "/home/emfrom/opt/rust/cargo/target/release/repodb",
+        "--database",
+        "/home/emfrom/opt/rust/cargo/target/issue144-final-runset/pair-05-before/repodb/run-01/repodb.sqlite",
+        "refresh",
+        "--changed"
+      ],
+      "elapsed_seconds": 0.01881007000338286,
+      "returncode": 0,
+      "database_bytes": 107868160,
+      "dataset": "repodb",
+      "run": "run-01",
+      "repeat": 4,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "command": [
+        "/home/emfrom/opt/rust/cargo/target/release/repodb",
+        "--database",
+        "/home/emfrom/opt/rust/cargo/target/issue144-final-runset/pair-05-before/repodb/run-01/repodb.sqlite",
+        "refresh",
+        "--changed"
+      ],
+      "elapsed_seconds": 0.018654196988791227,
+      "returncode": 0,
+      "database_bytes": 107868160,
+      "dataset": "repodb",
+      "run": "run-01",
+      "repeat": 5,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "command": [
+        "/home/emfrom/opt/rust/cargo/target/release/repodb",
+        "--database",
+        "/home/emfrom/opt/rust/cargo/target/issue144-final-runset/pair-05-before/repodb/run-01/repodb.sqlite",
+        "refresh",
+        "--changed"
+      ],
+      "elapsed_seconds": 0.01727973803645,
+      "returncode": 0,
+      "database_bytes": 107868160,
+      "dataset": "repodb",
+      "run": "run-01",
+      "repeat": 6,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "command": [
+        "/home/emfrom/opt/rust/cargo/target/release/repodb",
+        "--database",
+        "/home/emfrom/opt/rust/cargo/target/issue144-final-runset/pair-05-before/repodb/run-01/repodb.sqlite",
+        "refresh",
+        "--changed"
+      ],
+      "elapsed_seconds": 0.01843626197660342,
+      "returncode": 0,
+      "database_bytes": 107868160,
+      "dataset": "repodb",
+      "run": "run-01",
+      "repeat": 7,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "command": [
+        "/home/emfrom/opt/rust/cargo/target/release/repodb",
+        "--database",
+        "/home/emfrom/opt/rust/cargo/target/issue144-final-runset/pair-05-before/repodb/run-01/repodb.sqlite",
+        "refresh",
+        "--changed"
+      ],
+      "elapsed_seconds": 0.018750893010292202,
+      "returncode": 0,
+      "database_bytes": 107868160,
+      "dataset": "repodb",
+      "run": "run-01",
+      "repeat": 8,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "command": [
+        "/home/emfrom/opt/rust/cargo/target/release/repodb",
+        "--database",
+        "/home/emfrom/opt/rust/cargo/target/issue144-final-runset/pair-05-before/repodb/run-01/repodb.sqlite",
+        "refresh",
+        "--changed"
+      ],
+      "elapsed_seconds": 0.01933742401888594,
+      "returncode": 0,
+      "database_bytes": 107868160,
+      "dataset": "repodb",
+      "run": "run-01",
+      "repeat": 9,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "command": [
+        "/home/emfrom/opt/rust/cargo/target/release/repodb",
+        "--database",
+        "/home/emfrom/opt/rust/cargo/target/issue144-final-runset/pair-05-before/repodb/run-01/repodb.sqlite",
+        "refresh",
+        "--changed"
+      ],
+      "elapsed_seconds": 0.019468476006295532,
+      "returncode": 0,
+      "database_bytes": 107868160,
+      "dataset": "repodb",
+      "run": "run-01",
+      "repeat": 10,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "command": [
+        "/home/emfrom/opt/rust/cargo/target/release/repodb",
+        "--database",
+        "/home/emfrom/opt/rust/cargo/target/issue144-final-runset/pair-05-before/combined_26/run-01/repodb.sqlite",
+        "refresh",
+        "--changed"
+      ],
+      "elapsed_seconds": 0.019695073016919196,
+      "returncode": 0,
+      "database_bytes": 6709248,
+      "dataset": "combined_26",
+      "run": "run-01",
+      "repeat": 1,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "command": [
+        "/home/emfrom/opt/rust/cargo/target/release/repodb",
+        "--database",
+        "/home/emfrom/opt/rust/cargo/target/issue144-final-runset/pair-05-before/combined_26/run-01/repodb.sqlite",
+        "refresh",
+        "--changed"
+      ],
+      "elapsed_seconds": 0.018412042991258204,
+      "returncode": 0,
+      "database_bytes": 6709248,
+      "dataset": "combined_26",
+      "run": "run-01",
+      "repeat": 2,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "command": [
+        "/home/emfrom/opt/rust/cargo/target/release/repodb",
+        "--database",
+        "/home/emfrom/opt/rust/cargo/target/issue144-final-runset/pair-05-before/combined_26/run-01/repodb.sqlite",
+        "refresh",
+        "--changed"
+      ],
+      "elapsed_seconds": 0.01935000898083672,
+      "returncode": 0,
+      "database_bytes": 6709248,
+      "dataset": "combined_26",
+      "run": "run-01",
+      "repeat": 3,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "command": [
+        "/home/emfrom/opt/rust/cargo/target/release/repodb",
+        "--database",
+        "/home/emfrom/opt/rust/cargo/target/issue144-final-runset/pair-05-before/combined_26/run-01/repodb.sqlite",
+        "refresh",
+        "--changed"
+      ],
+      "elapsed_seconds": 0.019122869009152055,
+      "returncode": 0,
+      "database_bytes": 6709248,
+      "dataset": "combined_26",
+      "run": "run-01",
+      "repeat": 4,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "command": [
+        "/home/emfrom/opt/rust/cargo/target/release/repodb",
+        "--database",
+        "/home/emfrom/opt/rust/cargo/target/issue144-final-runset/pair-05-before/combined_26/run-01/repodb.sqlite",
+        "refresh",
+        "--changed"
+      ],
+      "elapsed_seconds": 0.01778403698699549,
+      "returncode": 0,
+      "database_bytes": 6709248,
+      "dataset": "combined_26",
+      "run": "run-01",
+      "repeat": 5,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "command": [
+        "/home/emfrom/opt/rust/cargo/target/release/repodb",
+        "--database",
+        "/home/emfrom/opt/rust/cargo/target/issue144-final-runset/pair-05-before/combined_26/run-01/repodb.sqlite",
+        "refresh",
+        "--changed"
+      ],
+      "elapsed_seconds": 0.019705168961081654,
+      "returncode": 0,
+      "database_bytes": 6709248,
+      "dataset": "combined_26",
+      "run": "run-01",
+      "repeat": 6,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "command": [
+        "/home/emfrom/opt/rust/cargo/target/release/repodb",
+        "--database",
+        "/home/emfrom/opt/rust/cargo/target/issue144-final-runset/pair-05-before/combined_26/run-01/repodb.sqlite",
+        "refresh",
+        "--changed"
+      ],
+      "elapsed_seconds": 0.019569700001738966,
+      "returncode": 0,
+      "database_bytes": 6709248,
+      "dataset": "combined_26",
+      "run": "run-01",
+      "repeat": 7,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "command": [
+        "/home/emfrom/opt/rust/cargo/target/release/repodb",
+        "--database",
+        "/home/emfrom/opt/rust/cargo/target/issue144-final-runset/pair-05-before/combined_26/run-01/repodb.sqlite",
+        "refresh",
+        "--changed"
+      ],
+      "elapsed_seconds": 0.020190538023598492,
+      "returncode": 0,
+      "database_bytes": 6709248,
+      "dataset": "combined_26",
+      "run": "run-01",
+      "repeat": 8,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "command": [
+        "/home/emfrom/opt/rust/cargo/target/release/repodb",
+        "--database",
+        "/home/emfrom/opt/rust/cargo/target/issue144-final-runset/pair-05-before/combined_26/run-01/repodb.sqlite",
+        "refresh",
+        "--changed"
+      ],
+      "elapsed_seconds": 0.014687129005324095,
+      "returncode": 0,
+      "database_bytes": 6709248,
+      "dataset": "combined_26",
+      "run": "run-01",
+      "repeat": 9,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "command": [
+        "/home/emfrom/opt/rust/cargo/target/release/repodb",
+        "--database",
+        "/home/emfrom/opt/rust/cargo/target/issue144-final-runset/pair-05-before/combined_26/run-01/repodb.sqlite",
+        "refresh",
+        "--changed"
+      ],
+      "elapsed_seconds": 0.013095724978484213,
+      "returncode": 0,
+      "database_bytes": 6709248,
+      "dataset": "combined_26",
+      "run": "run-01",
+      "repeat": 10,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "command": [
+        "/home/emfrom/opt/rust/cargo/target/release/repodb",
+        "--database",
+        "/home/emfrom/opt/rust/cargo/target/issue144-final-runset/pair-05-after/repodb/run-01/repodb.sqlite",
+        "refresh",
+        "--changed"
+      ],
+      "elapsed_seconds": 0.013299359998200089,
+      "returncode": 0,
+      "database_bytes": 107868160,
+      "dataset": "repodb",
+      "run": "run-01",
+      "repeat": 1,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "command": [
+        "/home/emfrom/opt/rust/cargo/target/release/repodb",
+        "--database",
+        "/home/emfrom/opt/rust/cargo/target/issue144-final-runset/pair-05-after/repodb/run-01/repodb.sqlite",
+        "refresh",
+        "--changed"
+      ],
+      "elapsed_seconds": 0.011947995983064175,
+      "returncode": 0,
+      "database_bytes": 107868160,
+      "dataset": "repodb",
+      "run": "run-01",
+      "repeat": 2,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "command": [
+        "/home/emfrom/opt/rust/cargo/target/release/repodb",
+        "--database",
+        "/home/emfrom/opt/rust/cargo/target/issue144-final-runset/pair-05-after/repodb/run-01/repodb.sqlite",
+        "refresh",
+        "--changed"
+      ],
+      "elapsed_seconds": 0.011399193957913667,
+      "returncode": 0,
+      "database_bytes": 107868160,
+      "dataset": "repodb",
+      "run": "run-01",
+      "repeat": 3,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "command": [
+        "/home/emfrom/opt/rust/cargo/target/release/repodb",
+        "--database",
+        "/home/emfrom/opt/rust/cargo/target/issue144-final-runset/pair-05-after/repodb/run-01/repodb.sqlite",
+        "refresh",
+        "--changed"
+      ],
+      "elapsed_seconds": 0.011775493971072137,
+      "returncode": 0,
+      "database_bytes": 107868160,
+      "dataset": "repodb",
+      "run": "run-01",
+      "repeat": 4,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "command": [
+        "/home/emfrom/opt/rust/cargo/target/release/repodb",
+        "--database",
+        "/home/emfrom/opt/rust/cargo/target/issue144-final-runset/pair-05-after/repodb/run-01/repodb.sqlite",
+        "refresh",
+        "--changed"
+      ],
+      "elapsed_seconds": 0.011366217047907412,
+      "returncode": 0,
+      "database_bytes": 107868160,
+      "dataset": "repodb",
+      "run": "run-01",
+      "repeat": 5,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "command": [
+        "/home/emfrom/opt/rust/cargo/target/release/repodb",
+        "--database",
+        "/home/emfrom/opt/rust/cargo/target/issue144-final-runset/pair-05-after/repodb/run-01/repodb.sqlite",
+        "refresh",
+        "--changed"
+      ],
+      "elapsed_seconds": 0.009912576992064714,
+      "returncode": 0,
+      "database_bytes": 107868160,
+      "dataset": "repodb",
+      "run": "run-01",
+      "repeat": 6,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "command": [
+        "/home/emfrom/opt/rust/cargo/target/release/repodb",
+        "--database",
+        "/home/emfrom/opt/rust/cargo/target/issue144-final-runset/pair-05-after/repodb/run-01/repodb.sqlite",
+        "refresh",
+        "--changed"
+      ],
+      "elapsed_seconds": 0.011792852019425482,
+      "returncode": 0,
+      "database_bytes": 107868160,
+      "dataset": "repodb",
+      "run": "run-01",
+      "repeat": 7,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "command": [
+        "/home/emfrom/opt/rust/cargo/target/release/repodb",
+        "--database",
+        "/home/emfrom/opt/rust/cargo/target/issue144-final-runset/pair-05-after/repodb/run-01/repodb.sqlite",
+        "refresh",
+        "--changed"
+      ],
+      "elapsed_seconds": 0.01178213901584968,
+      "returncode": 0,
+      "database_bytes": 107868160,
+      "dataset": "repodb",
+      "run": "run-01",
+      "repeat": 8,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "command": [
+        "/home/emfrom/opt/rust/cargo/target/release/repodb",
+        "--database",
+        "/home/emfrom/opt/rust/cargo/target/issue144-final-runset/pair-05-after/repodb/run-01/repodb.sqlite",
+        "refresh",
+        "--changed"
+      ],
+      "elapsed_seconds": 0.01060270902235061,
+      "returncode": 0,
+      "database_bytes": 107868160,
+      "dataset": "repodb",
+      "run": "run-01",
+      "repeat": 9,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "command": [
+        "/home/emfrom/opt/rust/cargo/target/release/repodb",
+        "--database",
+        "/home/emfrom/opt/rust/cargo/target/issue144-final-runset/pair-05-after/repodb/run-01/repodb.sqlite",
+        "refresh",
+        "--changed"
+      ],
+      "elapsed_seconds": 0.010904046997893602,
+      "returncode": 0,
+      "database_bytes": 107868160,
+      "dataset": "repodb",
+      "run": "run-01",
+      "repeat": 10,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "command": [
+        "/home/emfrom/opt/rust/cargo/target/release/repodb",
+        "--database",
+        "/home/emfrom/opt/rust/cargo/target/issue144-final-runset/pair-05-after/combined_26/run-01/repodb.sqlite",
+        "refresh",
+        "--changed"
+      ],
+      "elapsed_seconds": 0.011788261006586254,
+      "returncode": 0,
+      "database_bytes": 6709248,
+      "dataset": "combined_26",
+      "run": "run-01",
+      "repeat": 1,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "command": [
+        "/home/emfrom/opt/rust/cargo/target/release/repodb",
+        "--database",
+        "/home/emfrom/opt/rust/cargo/target/issue144-final-runset/pair-05-after/combined_26/run-01/repodb.sqlite",
+        "refresh",
+        "--changed"
+      ],
+      "elapsed_seconds": 0.011109384009614587,
+      "returncode": 0,
+      "database_bytes": 6709248,
+      "dataset": "combined_26",
+      "run": "run-01",
+      "repeat": 2,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "command": [
+        "/home/emfrom/opt/rust/cargo/target/release/repodb",
+        "--database",
+        "/home/emfrom/opt/rust/cargo/target/issue144-final-runset/pair-05-after/combined_26/run-01/repodb.sqlite",
+        "refresh",
+        "--changed"
+      ],
+      "elapsed_seconds": 0.010972238960675895,
+      "returncode": 0,
+      "database_bytes": 6709248,
+      "dataset": "combined_26",
+      "run": "run-01",
+      "repeat": 3,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "command": [
+        "/home/emfrom/opt/rust/cargo/target/release/repodb",
+        "--database",
+        "/home/emfrom/opt/rust/cargo/target/issue144-final-runset/pair-05-after/combined_26/run-01/repodb.sqlite",
+        "refresh",
+        "--changed"
+      ],
+      "elapsed_seconds": 0.010887698968872428,
+      "returncode": 0,
+      "database_bytes": 6709248,
+      "dataset": "combined_26",
+      "run": "run-01",
+      "repeat": 4,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "command": [
+        "/home/emfrom/opt/rust/cargo/target/release/repodb",
+        "--database",
+        "/home/emfrom/opt/rust/cargo/target/issue144-final-runset/pair-05-after/combined_26/run-01/repodb.sqlite",
+        "refresh",
+        "--changed"
+      ],
+      "elapsed_seconds": 0.011238001985475421,
+      "returncode": 0,
+      "database_bytes": 6709248,
+      "dataset": "combined_26",
+      "run": "run-01",
+      "repeat": 5,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "command": [
+        "/home/emfrom/opt/rust/cargo/target/release/repodb",
+        "--database",
+        "/home/emfrom/opt/rust/cargo/target/issue144-final-runset/pair-05-after/combined_26/run-01/repodb.sqlite",
+        "refresh",
+        "--changed"
+      ],
+      "elapsed_seconds": 0.011949883017223328,
+      "returncode": 0,
+      "database_bytes": 6709248,
+      "dataset": "combined_26",
+      "run": "run-01",
+      "repeat": 6,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "command": [
+        "/home/emfrom/opt/rust/cargo/target/release/repodb",
+        "--database",
+        "/home/emfrom/opt/rust/cargo/target/issue144-final-runset/pair-05-after/combined_26/run-01/repodb.sqlite",
+        "refresh",
+        "--changed"
+      ],
+      "elapsed_seconds": 0.011815861973445863,
+      "returncode": 0,
+      "database_bytes": 6709248,
+      "dataset": "combined_26",
+      "run": "run-01",
+      "repeat": 7,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "command": [
+        "/home/emfrom/opt/rust/cargo/target/release/repodb",
+        "--database",
+        "/home/emfrom/opt/rust/cargo/target/issue144-final-runset/pair-05-after/combined_26/run-01/repodb.sqlite",
+        "refresh",
+        "--changed"
+      ],
+      "elapsed_seconds": 0.011015118972864002,
+      "returncode": 0,
+      "database_bytes": 6709248,
+      "dataset": "combined_26",
+      "run": "run-01",
+      "repeat": 8,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "command": [
+        "/home/emfrom/opt/rust/cargo/target/release/repodb",
+        "--database",
+        "/home/emfrom/opt/rust/cargo/target/issue144-final-runset/pair-05-after/combined_26/run-01/repodb.sqlite",
+        "refresh",
+        "--changed"
+      ],
+      "elapsed_seconds": 0.012490110995713621,
+      "returncode": 0,
+      "database_bytes": 6709248,
+      "dataset": "combined_26",
+      "run": "run-01",
+      "repeat": 9,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "command": [
+        "/home/emfrom/opt/rust/cargo/target/release/repodb",
+        "--database",
+        "/home/emfrom/opt/rust/cargo/target/issue144-final-runset/pair-05-after/combined_26/run-01/repodb.sqlite",
+        "refresh",
+        "--changed"
+      ],
+      "elapsed_seconds": 0.012238864961545914,
+      "returncode": 0,
+      "database_bytes": 6709248,
+      "dataset": "combined_26",
+      "run": "run-01",
+      "repeat": 10,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    }
+  ]
+}

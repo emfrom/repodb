@@ -1,0 +1,46 @@
+{
+  "schema_version": 1,
+  "purpose": "Resource diagnosis only; default-worker gate measurements remain unchanged.",
+  "binary_sha256": "ce084de6427d925816c7631537d3674213dd6c56973a3e0fe0a0414ba7a30fb8",
+  "default_workers": 8,
+  "sample_interval_seconds": 0.05,
+  "includes_persistent_embedder_daemon": true,
+  "measurements": [
+    {
+      "dataset": "repodb",
+      "workers": 1,
+      "warmup_seconds_excluded": 0.17648861202178523,
+      "command": [
+        "/home/emfrom/opt/rust/cargo/target/release/repodb",
+        "--database",
+        "/home/emfrom/opt/rust/cargo/target/issue144-final-runset/pair-05-after/repodb/run-01/repodb.sqlite",
+        "refresh",
+        "--semgrep-workers",
+        "1"
+      ],
+      "elapsed_seconds": 425.04179509798996,
+      "sampled_process_tree_peak_rss_kib": 990520,
+      "returncode": 0,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "dataset": "repodb",
+      "workers": 4,
+      "warmup_seconds_excluded": 0.19013255496975034,
+      "command": [
+        "/home/emfrom/opt/rust/cargo/target/release/repodb",
+        "--database",
+        "/home/emfrom/opt/rust/cargo/target/issue144-final-runset/pair-05-after/repodb/run-01/repodb.sqlite",
+        "refresh",
+        "--semgrep-workers",
+        "4"
+      ],
+      "elapsed_seconds": 329.7124444199726,
+      "sampled_process_tree_peak_rss_kib": 1782624,
+      "returncode": 0,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    }
+  ]
+}

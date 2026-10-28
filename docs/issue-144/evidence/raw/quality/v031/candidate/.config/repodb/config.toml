@@ -1,0 +1,3 @@
+[tools]
+embedding_command = "/home/emfrom/src/projects/generate_embeddings/generate_embeddings"
+semgrep_core = "/home/emfrom/.local/share/uv/tools/semgrep/lib/python3.13/site-packages/semgrep/bin/semgrep-core"

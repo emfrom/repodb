@@ -1,0 +1,126 @@
+{
+  "schema_version": 1,
+  "candidate": {
+    "source_commit": "6544cff83d12bcfd3af5b5df5259a3b83d008051",
+    "binary_path": "/home/emfrom/opt/rust/cargo/target/release/repodb",
+    "version": "repodb 0.3.1",
+    "sha256": "ce084de6427d925816c7631537d3674213dd6c56973a3e0fe0a0414ba7a30fb8",
+    "build_command": "cargo build --release --locked --offline",
+    "default_semgrep_workers": 8
+  },
+  "baseline": {
+    "source_commit": "f0a6b5d13ef3f8c5a4196aa655255a8f4f5d934d",
+    "binary_path": "/home/emfrom/.cache/repodb-baseline-031/target-verified-f0a/release/repodb",
+    "version": "repodb 0.3.1",
+    "sha256": "a7fa5ee72e5ff83419918275c8eb813891a5e942997133ad99bcb2bffb395f9a",
+    "validation_evidence": "../../issue-134/evidence/raw/release-validation-f0a.log"
+  },
+  "strict_runset": {
+    "pair_count": 5,
+    "accepted_criteria_sha256": "6fae81946475750c74f1e4753698ea04bf6ca0b823a5574e296585c1a520e28c",
+    "order": [
+      "baseline then candidate",
+      "candidate then baseline",
+      "baseline then candidate",
+      "candidate then baseline",
+      "baseline then candidate"
+    ],
+    "repo_pin": "f7cc6bc5451204c5696f1bbef7e5575772820f47",
+    "repo_commit_count": 231,
+    "combined_26_head": "6740e8af4d89bbb1b2b3577749fbf499d6c15e5e",
+    "combined_26_commits": [
+      "f2edfb8ae8d7e4c489e364deeaf7f15a833983f9",
+      "6740e8af4d89bbb1b2b3577749fbf499d6c15e5e"
+    ],
+    "combined_26_fixture_count": 26,
+    "combined_26_files_per_commit": 260,
+    "combined_26_generator_sha256": "5024ea3fb18f2c3d5779804c6ba53b6ad4d7d3a1647b12d751bfe4b5422c3cc1",
+    "combined_26_fixture_source_commit": "55a722572845ff8556c6be2e7efdcf7d441fdf6e",
+    "combined_26_fixture_input_sha256": "eb7a15ae2f7ebb0dbd749a748af079cc216d75f78a9a3aa601c16f3a8faf5df1",
+    "quality_task_pins": {
+      "repodb": "13639d6dbfed410bfa513f95861556acdf32cb5d",
+      "protonsync_ts": "7c77aab91aff586591a00092a19760d5dc15e90a"
+    },
+    "runner_protocol": {
+      "fresh_clone_and_database_per_binary_per_pair": true,
+      "embedder_warmup": "Two fixed strings through the pinned real embedder before each full runner invocation; warmup excluded.",
+      "filesystem_and_model_caches": "Warm-cache only; not reset between paired commands.",
+      "full_unchanged_refresh": "Measured immediately after each fresh init in the same runner invocation.",
+      "refresh_changed_noop": "Measured for both sides after both full-throughput runner invocations in each pair; it was not interposed between the paired full-throughput commands.",
+      "timeouts_seconds": {
+        "refresh": 900,
+        "outer_command": 1800
+      },
+      "rss_sample_interval_seconds": 0.05,
+      "rss_includes_persistent_embedder_daemon": true
+    },
+    "physical_scratch_filesystem": "/dev/nvme0n1p6 ext4, rooted under /home/emfrom/opt/rust/cargo/target/issue144-final-runset; run roots were exposed through /tmp/automate-spec-repodb-20261027/issue144-final-runs symlinks because /tmp is a 7.7 GiB tmpfs with limited free space.",
+    "sqlite_and_process_temp_directory": "/home/emfrom/opt/rust/cargo/target/issue144-final-runset/tmp",
+    "all_strict_pair_measurements_completed": true,
+    "extra_full_throughput_pair_interruption": false,
+    "separate_prior_attempts": [
+      {
+        "path": "incidents/initial-tmpfs-failure.md",
+        "use_in_gate": false,
+        "reason": "A baseline-only attempt on /tmp tmpfs failed during unchanged refresh with SQLite disk I/O error; the partial evidence is retained and excluded."
+      },
+      {
+        "path": "raw/runset-01-interleaved/",
+        "use_in_gate": false,
+        "reason": "A complete alternating set was retained separately, but changed/no-op refreshes were interposed between the paired full-throughput runs. The strict five-pair set above reran the accepted sequence without that cache-warming deviation."
+      }
+    ]
+  },
+  "tools": {
+    "embedder": {
+      "path": "/home/emfrom/src/projects/generate_embeddings/generate_embeddings",
+      "version": "1.0.0",
+      "sha256": "9216649f498981fe2b1a1a85a2677b0611a9a060dda75b7a585095b3bca5df1d",
+      "daemon_sha256": "838e05f224f491a10fc641b9c065a411c23a23d9e43b7b3f0f160f644a201628",
+      "model": "sentence-transformers/all-MiniLM-L6-v2",
+      "model_revision": "1110a243fdf4706b3f48f1d95db1a4f5529b4d41",
+      "model_files_sha256": {
+        "model.safetensors": "53aa51172d142c89d9012cce15ae4d6cc0ca6895895114379cacb4fab128d9db",
+        "tokenizer.json": "be50c3628f2bf5bb5e3a7f17b1f74611b2561a3a27eeab05e5aa30f411572037",
+        "vocab.txt": "07eced375cec144d27c900241f3e339478dec958f92fddbc551f295c992038a3"
+      },
+      "offline_mode": true
+    },
+    "semgrep_core": {
+      "path": "/home/emfrom/.local/share/uv/tools/semgrep/lib/python3.13/site-packages/semgrep/bin/semgrep-core",
+      "version": "1.181.0 (0f6e09374a)",
+      "sha256": "14f4b18720d881156bc0cc507b19130aa8d8db0882a5a479fb3919aadefca857"
+    },
+    "benchmark_scripts": {
+      "run-baseline.py": "03631af2be44110512ce10cb423d7f955fa1dbea1928148dea05b3a47b23b583",
+      "measure-nochange.py": "bd7d382268c2eab4a16898cf706ac23ae106324c0e1178c755eadff823d9d6ff",
+      "measure-quality.py": "02d30aeed60ae98f902eccef0c12e99cf805365f113575a6b13ec09bcf0bf048",
+      "check-26-exact.py": "a242aedc7ba3295c35f58baedf138a35bc231ce3975109f4152332d7e77f44c8",
+      "measure-26-semantic.py": "8eff525e0e64c778692fa4caaee6d8e8408de1da6a23717adcf70000b4c3814d",
+      "check-exact-controls.py": "2b8fe9097a4a0e3debc7fd5a48fa5388a60b222df9c67150e251e7ad611a0999",
+      "measure-query-resources.py": "daea3b85eed0e96b6a2fb883c2ca415eed9557a0f7e007edad6b5847adba1283",
+      "issue-83/tasks.json": "7643f7ceadad52989124a9e6211dcd3e4bfdc8e64b14308cd2803575eadc1384"
+    },
+    "issue_144_analysis_scripts": {
+      "analyze.py": "bf2e5c9faccf9eecd8a1da03d347ca5e0bae93e1b676c2bba5c05bef5c006a24",
+      "audit-semantic-references.py": "1d07a97faa7ab7543cc174386a38b7d16ce7daadb4137a5833cc61555a57b230",
+      "diagnose-noop.py": "7ffcd76f4f7d456c9ac300f750d0c0c3f985f9b4769aaca665f7116bbaf28860",
+      "profile-worker-rss.py": "493003d20c6883052204d5e431b08e83111393c7cc6e635fa48f451b246c82c6"
+    }
+  },
+  "host": {
+    "measurement_date_local": "2026-10-28",
+    "os_kernel": "Linux 7.0.0-38-generic x86_64",
+    "cpu": "13th Gen Intel(R) Core(TM) i5-13450HX",
+    "logical_cpus_visible": 16,
+    "run_load_trace_available": false,
+    "cpu_affinity_or_quota_recorded": false,
+    "cache_policy": "warm only; no cache reset"
+  },
+  "resource_interpretation": {
+    "memory_pass_fail_ceiling": "none in accepted criteria",
+    "unexpected_increase_investigation": "Peak refresh process-tree RSS with default 8 workers is materially higher than v0.3.1. Explicit-worker diagnostics on the same candidate indexes show the expected concurrency tradeoff: RepoDB one-run peaks were 990,520 KiB at 1 worker, 1,782,624 KiB at 4, and about 2.6 GiB at default 8; combined-26 peaks were 704,712 KiB, 1,013,940 KiB, and about 1.3 GiB respectively. The diagnostics are not paired performance results and do not change the default-worker gate measurements.",
+    "embedding_work": "Persisted unit_embeddings row counts are reported and equal indexed_units. Embedder process call/batch counts and GPU telemetry were not instrumented."
+  },
+  "interpretation": "This records the final candidate comparison environment and known deviations. See evidence/analysis.json and README.md for the gate results. No release, publish, deployment, or push occurred."
+}

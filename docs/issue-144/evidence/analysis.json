@@ -1,0 +1,1093 @@
+{
+  "schema_version": 1,
+  "analysis_script": "docs/issue-144/analyze.py",
+  "strict_runset": {
+    "pair_count": 5,
+    "order": [
+      "baseline,candidate",
+      "candidate,baseline",
+      "baseline,candidate",
+      "candidate,baseline",
+      "baseline,candidate"
+    ],
+    "pairing_unit": "fresh independent clone and database per binary; no extra command between the two full-throughput runner invocations; changed/no-op refreshes were measured after both full runs in each pair",
+    "primary_performance_gate": {
+      "paired_ratios_candidate_over_baseline": [
+        0.8646387052845548,
+        0.7950372794387172,
+        0.7559597314428187,
+        0.6410409044339596,
+        0.7242210084916538
+      ],
+      "median_ratio": 0.7559597314428187,
+      "median_threshold": 0.9,
+      "median_pass": true,
+      "individual_ratio_above_1_15": [],
+      "individual_investigation_pass": true,
+      "statistic": "geometric mean of paired ratios",
+      "bootstrap_resamples": 100000,
+      "bootstrap_seed": 134032,
+      "bootstrap_upper_percentile": 0.95,
+      "bootstrap_upper_bound_nearest_rank": 0.8069805922893959,
+      "bootstrap_upper_bound_must_be_below": 1.0,
+      "bootstrap_pass": true,
+      "pass": true
+    },
+    "secondary_nonregression_gates": {
+      "combined_26_fresh": {
+        "paired_ratios_candidate_over_baseline": [
+          0.26492113517286464,
+          0.22529881898919862,
+          0.2612385706962757,
+          0.25672450240176425,
+          0.2471798663529759
+        ],
+        "median_ratio": 0.25672450240176425,
+        "median_threshold": 1.05,
+        "median_pass": true,
+        "individual_ratio_above_1_15": [],
+        "individual_investigation_pass": true,
+        "pass": true
+      },
+      "repodb_full_unchanged_refresh": {
+        "paired_ratios_candidate_over_baseline": [
+          0.8886743191258951,
+          0.7617841831411101,
+          0.7699776204268085,
+          0.7583721436220577,
+          0.8220698824789451
+        ],
+        "median_ratio": 0.7699776204268085,
+        "median_threshold": 1.05,
+        "median_pass": true,
+        "individual_ratio_above_1_15": [],
+        "individual_investigation_pass": true,
+        "pass": true
+      },
+      "combined_26_full_unchanged_refresh": {
+        "paired_ratios_candidate_over_baseline": [
+          0.2495202163033135,
+          0.23679854224182,
+          0.24568544768771688,
+          0.2505018626188938,
+          0.27712023347378345
+        ],
+        "median_ratio": 0.2495202163033135,
+        "median_threshold": 1.05,
+        "median_pass": true,
+        "individual_ratio_above_1_15": [],
+        "individual_investigation_pass": true,
+        "pass": true
+      },
+      "repodb_refresh_changed_noop": {
+        "paired_ratios_candidate_over_baseline": [
+          0.6382406649064003,
+          1.2877201457563405,
+          0.8413102583127404,
+          1.1257710822903584,
+          0.8536404412226475
+        ],
+        "median_ratio": 0.8536404412226475,
+        "median_threshold": 1.05,
+        "median_pass": true,
+        "individual_ratio_above_1_15": [
+          2
+        ],
+        "individual_investigation_pass": false,
+        "pass": true,
+        "outlier_investigation": {
+          "flagged_pairs": [
+            2
+          ],
+          "investigation_completed": true,
+          "explanation": "The original one-shot no-op commands took about 10–22 ms. For every flagged pair, both binaries were then alternated 20 times against each same unchanged database. All crossed medians were below the 1.15 trigger and baseline/candidate timing ranges overlapped; database-owner/order changes altered which binary was slightly faster. This supports process-start/SQLite-open and shared-host timing noise rather than a stable candidate-specific regression.",
+          "cases": [
+            {
+              "pair": 2,
+              "original_single_sample_ratio": 1.2877201457563405,
+              "crossed_20_repeat_candidate_over_baseline_ratios_by_database_owner": {
+                "before": 1.0662334122697852,
+                "after": 0.933850760607451
+              },
+              "crossed_20_repeat_ranges_overlap_by_database_owner": {
+                "before": true,
+                "after": true
+              },
+              "crossed_20_repeat_all_ratios_below_investigation_trigger": true
+            }
+          ],
+          "interpretation": "Retain every original pair; diagnostic repeats are not substituted into the gate ratios."
+        }
+      },
+      "combined_26_refresh_changed_noop": {
+        "paired_ratios_candidate_over_baseline": [
+          0.7413334070188031,
+          1.1819666938146485,
+          0.8365089534290968,
+          1.3424954144668784,
+          0.9216517626217668
+        ],
+        "median_ratio": 0.9216517626217668,
+        "median_threshold": 1.05,
+        "median_pass": true,
+        "individual_ratio_above_1_15": [
+          2,
+          4
+        ],
+        "individual_investigation_pass": false,
+        "pass": true,
+        "outlier_investigation": {
+          "flagged_pairs": [
+            2,
+            4
+          ],
+          "investigation_completed": true,
+          "explanation": "The original one-shot no-op commands took about 10–22 ms. For every flagged pair, both binaries were then alternated 20 times against each same unchanged database. All crossed medians were below the 1.15 trigger and baseline/candidate timing ranges overlapped; database-owner/order changes altered which binary was slightly faster. This supports process-start/SQLite-open and shared-host timing noise rather than a stable candidate-specific regression.",
+          "cases": [
+            {
+              "pair": 2,
+              "original_single_sample_ratio": 1.1819666938146485,
+              "crossed_20_repeat_candidate_over_baseline_ratios_by_database_owner": {
+                "before": 1.0125620148345145,
+                "after": 1.039184226360516
+              },
+              "crossed_20_repeat_ranges_overlap_by_database_owner": {
+                "before": true,
+                "after": true
+              },
+              "crossed_20_repeat_all_ratios_below_investigation_trigger": true
+            },
+            {
+              "pair": 4,
+              "original_single_sample_ratio": 1.3424954144668784,
+              "crossed_20_repeat_candidate_over_baseline_ratios_by_database_owner": {
+                "before": 0.9991747845187398,
+                "after": 1.0361351521684041
+              },
+              "crossed_20_repeat_ranges_overlap_by_database_owner": {
+                "before": true,
+                "after": true
+              },
+              "crossed_20_repeat_all_ratios_below_investigation_trigger": true
+            }
+          ],
+          "interpretation": "Retain every original pair; diagnostic repeats are not substituted into the gate ratios."
+        }
+      }
+    },
+    "primary_and_secondary_pass": true
+  },
+  "resource_pairs": [
+    {
+      "pair": 1,
+      "baseline": {
+        "repodb": {
+          "fresh_seconds": 368.0912621789612,
+          "unchanged_full_seconds": 383.1886430159793,
+          "fresh_peak_process_tree_rss_kib": 1040428,
+          "unchanged_peak_process_tree_rss_kib": 1023360,
+          "fresh_database_bytes": 107868160,
+          "database_bytes_after_full_refresh": 107868160,
+          "indexed_units": 46681,
+          "unit_embeddings": 46681
+        },
+        "combined_26": {
+          "fresh_seconds": 121.32768702303292,
+          "unchanged_full_seconds": 131.1474444710184,
+          "fresh_peak_process_tree_rss_kib": 723464,
+          "unchanged_peak_process_tree_rss_kib": 721692,
+          "fresh_database_bytes": 6709248,
+          "database_bytes_after_full_refresh": 6709248,
+          "indexed_units": 2782,
+          "unit_embeddings": 2782
+        }
+      },
+      "candidate": {
+        "repodb": {
+          "fresh_seconds": 318.2659523569746,
+          "unchanged_full_seconds": 340.52990642900113,
+          "fresh_peak_process_tree_rss_kib": 2657408,
+          "unchanged_peak_process_tree_rss_kib": 2597592,
+          "fresh_database_bytes": 107868160,
+          "database_bytes_after_full_refresh": 107868160,
+          "indexed_units": 46681,
+          "unit_embeddings": 46681
+        },
+        "combined_26": {
+          "fresh_seconds": 32.14226857403992,
+          "unchanged_full_seconds": 32.723938712035306,
+          "fresh_peak_process_tree_rss_kib": 1337416,
+          "unchanged_peak_process_tree_rss_kib": 1371944,
+          "fresh_database_bytes": 6709248,
+          "database_bytes_after_full_refresh": 6709248,
+          "indexed_units": 2782,
+          "unit_embeddings": 2782
+        }
+      }
+    },
+    {
+      "pair": 2,
+      "baseline": {
+        "repodb": {
+          "fresh_seconds": 392.9632251680014,
+          "unchanged_full_seconds": 390.1468499470502,
+          "fresh_peak_process_tree_rss_kib": 986536,
+          "unchanged_peak_process_tree_rss_kib": 992508,
+          "fresh_database_bytes": 107868160,
+          "database_bytes_after_full_refresh": 107868160,
+          "indexed_units": 46681,
+          "unit_embeddings": 46681
+        },
+        "combined_26": {
+          "fresh_seconds": 123.60849667998264,
+          "unchanged_full_seconds": 125.32388697599526,
+          "fresh_peak_process_tree_rss_kib": 697816,
+          "unchanged_peak_process_tree_rss_kib": 703540,
+          "fresh_database_bytes": 6709248,
+          "database_bytes_after_full_refresh": 6709248,
+          "indexed_units": 2782,
+          "unit_embeddings": 2782
+        }
+      },
+      "candidate": {
+        "repodb": {
+          "fresh_seconds": 312.4204134570318,
+          "unchanged_full_seconds": 297.2076993919909,
+          "fresh_peak_process_tree_rss_kib": 2642864,
+          "unchanged_peak_process_tree_rss_kib": 2637328,
+          "fresh_database_bytes": 107868160,
+          "database_bytes_after_full_refresh": 107868160,
+          "indexed_units": 46681,
+          "unit_embeddings": 46681
+        },
+        "combined_26": {
+          "fresh_seconds": 27.848848319030367,
+          "unchanged_full_seconds": 29.676513743994292,
+          "fresh_peak_process_tree_rss_kib": 1378000,
+          "unchanged_peak_process_tree_rss_kib": 1343060,
+          "fresh_database_bytes": 6709248,
+          "database_bytes_after_full_refresh": 6709248,
+          "indexed_units": 2782,
+          "unit_embeddings": 2782
+        }
+      }
+    },
+    {
+      "pair": 3,
+      "baseline": {
+        "repodb": {
+          "fresh_seconds": 407.43904496496543,
+          "unchanged_full_seconds": 409.4181487460155,
+          "fresh_peak_process_tree_rss_kib": 988652,
+          "unchanged_peak_process_tree_rss_kib": 981156,
+          "fresh_database_bytes": 107868160,
+          "database_bytes_after_full_refresh": 107868160,
+          "indexed_units": 46681,
+          "unit_embeddings": 46681
+        },
+        "combined_26": {
+          "fresh_seconds": 101.48050357302418,
+          "unchanged_full_seconds": 109.46637027600082,
+          "fresh_peak_process_tree_rss_kib": 695132,
+          "unchanged_peak_process_tree_rss_kib": 695544,
+          "fresh_database_bytes": 6709248,
+          "database_bytes_after_full_refresh": 6709248,
+          "indexed_units": 2782,
+          "unit_embeddings": 2782
+        }
+      },
+      "candidate": {
+        "repodb": {
+          "fresh_seconds": 308.0075110110338,
+          "unchanged_full_seconds": 315.24281193100614,
+          "fresh_peak_process_tree_rss_kib": 2548368,
+          "unchanged_peak_process_tree_rss_kib": 2568400,
+          "fresh_database_bytes": 107868160,
+          "database_bytes_after_full_refresh": 107868160,
+          "indexed_units": 46681,
+          "unit_embeddings": 46681
+        },
+        "combined_26": {
+          "fresh_seconds": 26.510621706955135,
+          "unchanged_full_seconds": 26.894294188008644,
+          "fresh_peak_process_tree_rss_kib": 1358192,
+          "unchanged_peak_process_tree_rss_kib": 1378512,
+          "fresh_database_bytes": 6709248,
+          "database_bytes_after_full_refresh": 6709248,
+          "indexed_units": 2782,
+          "unit_embeddings": 2782
+        }
+      }
+    },
+    {
+      "pair": 4,
+      "baseline": {
+        "repodb": {
+          "fresh_seconds": 408.65370108996285,
+          "unchanged_full_seconds": 368.69190470600734,
+          "fresh_peak_process_tree_rss_kib": 987600,
+          "unchanged_peak_process_tree_rss_kib": 987476,
+          "fresh_database_bytes": 107868160,
+          "database_bytes_after_full_refresh": 107868160,
+          "indexed_units": 46681,
+          "unit_embeddings": 46681
+        },
+        "combined_26": {
+          "fresh_seconds": 114.68801161000738,
+          "unchanged_full_seconds": 114.13186619902262,
+          "fresh_peak_process_tree_rss_kib": 703400,
+          "unchanged_peak_process_tree_rss_kib": 697368,
+          "fresh_database_bytes": 6709248,
+          "database_bytes_after_full_refresh": 6709248,
+          "indexed_units": 2782,
+          "unit_embeddings": 2782
+        }
+      },
+      "candidate": {
+        "repodb": {
+          "fresh_seconds": 261.96373814699473,
+          "unchanged_full_seconds": 279.60567010799423,
+          "fresh_peak_process_tree_rss_kib": 2602084,
+          "unchanged_peak_process_tree_rss_kib": 2664276,
+          "fresh_database_bytes": 107868160,
+          "database_bytes_after_full_refresh": 107868160,
+          "indexed_units": 46681,
+          "unit_embeddings": 46681
+        },
+        "combined_26": {
+          "fresh_seconds": 29.44322271202691,
+          "unchanged_full_seconds": 28.590245067025535,
+          "fresh_peak_process_tree_rss_kib": 1377076,
+          "unchanged_peak_process_tree_rss_kib": 1349868,
+          "fresh_database_bytes": 6709248,
+          "database_bytes_after_full_refresh": 6709248,
+          "indexed_units": 2782,
+          "unit_embeddings": 2782
+        }
+      }
+    },
+    {
+      "pair": 5,
+      "baseline": {
+        "repodb": {
+          "fresh_seconds": 396.32207925000694,
+          "unchanged_full_seconds": 404.74113082903204,
+          "fresh_peak_process_tree_rss_kib": 980228,
+          "unchanged_peak_process_tree_rss_kib": 990044,
+          "fresh_database_bytes": 107868160,
+          "database_bytes_after_full_refresh": 107868160,
+          "indexed_units": 46681,
+          "unit_embeddings": 46681
+        },
+        "combined_26": {
+          "fresh_seconds": 122.72132452199003,
+          "unchanged_full_seconds": 120.65305124002043,
+          "fresh_peak_process_tree_rss_kib": 707364,
+          "unchanged_peak_process_tree_rss_kib": 702252,
+          "fresh_database_bytes": 6709248,
+          "database_bytes_after_full_refresh": 6709248,
+          "indexed_units": 2782,
+          "unit_embeddings": 2782
+        }
+      },
+      "candidate": {
+        "repodb": {
+          "fresh_seconds": 287.0247759219492,
+          "unchanged_full_seconds": 332.7254938550177,
+          "fresh_peak_process_tree_rss_kib": 2609948,
+          "unchanged_peak_process_tree_rss_kib": 2654432,
+          "fresh_database_bytes": 107868160,
+          "database_bytes_after_full_refresh": 107868160,
+          "indexed_units": 46681,
+          "unit_embeddings": 46681
+        },
+        "combined_26": {
+          "fresh_seconds": 30.334240594005678,
+          "unchanged_full_seconds": 33.43540172895882,
+          "fresh_peak_process_tree_rss_kib": 1355780,
+          "unchanged_peak_process_tree_rss_kib": 1343596,
+          "fresh_database_bytes": 6709248,
+          "database_bytes_after_full_refresh": 6709248,
+          "indexed_units": 2782,
+          "unit_embeddings": 2782
+        }
+      }
+    }
+  ],
+  "memory_diagnostics": {
+    "combined_26": {
+      "default_worker_count": 8,
+      "default_workers_gate_fresh_rss_median_kib": 1358192,
+      "default_workers_gate_fresh_seconds_median": 29.44322271202691,
+      "explicit_worker_diagnostics": {
+        "1": {
+          "elapsed_seconds": 126.9137164040003,
+          "sampled_process_tree_peak_rss_kib": 704712
+        },
+        "4": {
+          "elapsed_seconds": 40.278000141028315,
+          "sampled_process_tree_peak_rss_kib": 1013940
+        }
+      },
+      "sampled_process_tree_includes_persistent_embedder_daemon": true,
+      "interpretation": "One-run diagnostic on an existing candidate index; lower worker counts reduce peak RSS and also change full-refresh elapsed time. These diagnostics explain the RSS scaling but are not part of paired timing gates."
+    },
+    "repodb": {
+      "default_worker_count": 8,
+      "default_workers_gate_fresh_rss_median_kib": 2609948,
+      "default_workers_gate_fresh_seconds_median": 308.0075110110338,
+      "explicit_worker_diagnostics": {
+        "1": {
+          "elapsed_seconds": 425.04179509798996,
+          "sampled_process_tree_peak_rss_kib": 990520
+        },
+        "4": {
+          "elapsed_seconds": 329.7124444199726,
+          "sampled_process_tree_peak_rss_kib": 1782624
+        }
+      },
+      "sampled_process_tree_includes_persistent_embedder_daemon": true,
+      "interpretation": "One-run diagnostic on an existing candidate index; lower worker counts reduce peak RSS and also change full-refresh elapsed time. These diagnostics explain the RSS scaling but are not part of paired timing gates."
+    }
+  },
+  "persisted_embedding_work": {
+    "unit_embeddings_and_indexed_units_per_pair": [
+      {
+        "pair": 1,
+        "baseline_repodb": {
+          "indexed_units": 46681,
+          "unit_embeddings": 46681
+        },
+        "baseline_combined_26": {
+          "indexed_units": 2782,
+          "unit_embeddings": 2782
+        },
+        "candidate_repodb": {
+          "indexed_units": 46681,
+          "unit_embeddings": 46681
+        },
+        "candidate_combined_26": {
+          "indexed_units": 2782,
+          "unit_embeddings": 2782
+        }
+      },
+      {
+        "pair": 2,
+        "baseline_repodb": {
+          "indexed_units": 46681,
+          "unit_embeddings": 46681
+        },
+        "baseline_combined_26": {
+          "indexed_units": 2782,
+          "unit_embeddings": 2782
+        },
+        "candidate_repodb": {
+          "indexed_units": 46681,
+          "unit_embeddings": 46681
+        },
+        "candidate_combined_26": {
+          "indexed_units": 2782,
+          "unit_embeddings": 2782
+        }
+      },
+      {
+        "pair": 3,
+        "baseline_repodb": {
+          "indexed_units": 46681,
+          "unit_embeddings": 46681
+        },
+        "baseline_combined_26": {
+          "indexed_units": 2782,
+          "unit_embeddings": 2782
+        },
+        "candidate_repodb": {
+          "indexed_units": 46681,
+          "unit_embeddings": 46681
+        },
+        "candidate_combined_26": {
+          "indexed_units": 2782,
+          "unit_embeddings": 2782
+        }
+      },
+      {
+        "pair": 4,
+        "baseline_repodb": {
+          "indexed_units": 46681,
+          "unit_embeddings": 46681
+        },
+        "baseline_combined_26": {
+          "indexed_units": 2782,
+          "unit_embeddings": 2782
+        },
+        "candidate_repodb": {
+          "indexed_units": 46681,
+          "unit_embeddings": 46681
+        },
+        "candidate_combined_26": {
+          "indexed_units": 2782,
+          "unit_embeddings": 2782
+        }
+      },
+      {
+        "pair": 5,
+        "baseline_repodb": {
+          "indexed_units": 46681,
+          "unit_embeddings": 46681
+        },
+        "baseline_combined_26": {
+          "indexed_units": 2782,
+          "unit_embeddings": 2782
+        },
+        "candidate_repodb": {
+          "indexed_units": 46681,
+          "unit_embeddings": 46681
+        },
+        "candidate_combined_26": {
+          "indexed_units": 2782,
+          "unit_embeddings": 2782
+        }
+      }
+    ],
+    "embedder_invocation_batch_and_GPU_telemetry": "unavailable; not instrumented"
+  },
+  "quality": {
+    "quality_regressions": [],
+    "aggregate_issue83_floors": {
+      "semantic": {
+        "baseline": {
+          "source_reference_correct": 3,
+          "answer_correct": 9,
+          "outcomes": 42
+        },
+        "candidate": {
+          "source_reference_correct": 3,
+          "answer_correct": 9,
+          "outcomes": 42
+        },
+        "baseline_floors": {
+          "source_reference_correct": 3,
+          "answer_correct": 9
+        },
+        "pass": true
+      },
+      "combined": {
+        "baseline": {
+          "source_reference_correct": 3,
+          "answer_correct": 9,
+          "outcomes": 42
+        },
+        "candidate": {
+          "source_reference_correct": 3,
+          "answer_correct": 9,
+          "outcomes": 42
+        },
+        "baseline_floors": {
+          "source_reference_correct": 3,
+          "answer_correct": 9
+        },
+        "pass": true
+      }
+    },
+    "combined_26_controls": {
+      "before": {
+        "exact_positive_count": 52,
+        "all_exact_hits": true,
+        "all_exact_source_references_correct": true,
+        "negative_control_count": 26,
+        "all_negative_controls_empty": true,
+        "duplicate_explore_result_count": 30,
+        "duplicate_explore_total_count": 30,
+        "duplicate_explore_pages": 6,
+        "duplicate_explore_unique_reference_ids": true,
+        "duplicate_explore_all_references_source_correct": true,
+        "duplicate_explore_distinct_content_paths": [
+          "copy-0000/javascript/sample.js",
+          "copy-0001/javascript/sample.js",
+          "copy-0002/javascript/sample.js",
+          "copy-0003/javascript/sample.js",
+          "copy-0004/javascript/sample.js",
+          "copy-0005/javascript/sample.js",
+          "copy-0006/javascript/sample.js",
+          "copy-0007/javascript/sample.js",
+          "copy-0008/javascript/sample.js",
+          "copy-0009/javascript/sample.js"
+        ],
+        "semantic_successful_target_retrievals": 33,
+        "semantic_attempts": 78,
+        "semantic_passing_languages": [
+          "bash",
+          "c",
+          "cpp",
+          "html",
+          "java",
+          "javascript",
+          "ocaml",
+          "python",
+          "scala",
+          "swift",
+          "typescript"
+        ],
+        "semantic_reference_count": 303,
+        "semantic_reference_ranges_valid": true,
+        "semantic_reference_text_present_in_source_excerpt": true,
+        "semantic_reference_strict_full_excerpt_mismatches": 39,
+        "marker_helper_strict_full_line_validator_passed": false,
+        "quality_pass": true
+      },
+      "after": {
+        "exact_positive_count": 52,
+        "all_exact_hits": true,
+        "all_exact_source_references_correct": true,
+        "negative_control_count": 26,
+        "all_negative_controls_empty": true,
+        "duplicate_explore_result_count": 30,
+        "duplicate_explore_total_count": 30,
+        "duplicate_explore_pages": 6,
+        "duplicate_explore_unique_reference_ids": true,
+        "duplicate_explore_all_references_source_correct": true,
+        "duplicate_explore_distinct_content_paths": [
+          "copy-0000/javascript/sample.js",
+          "copy-0001/javascript/sample.js",
+          "copy-0002/javascript/sample.js",
+          "copy-0003/javascript/sample.js",
+          "copy-0004/javascript/sample.js",
+          "copy-0005/javascript/sample.js",
+          "copy-0006/javascript/sample.js",
+          "copy-0007/javascript/sample.js",
+          "copy-0008/javascript/sample.js",
+          "copy-0009/javascript/sample.js"
+        ],
+        "semantic_successful_target_retrievals": 33,
+        "semantic_attempts": 78,
+        "semantic_passing_languages": [
+          "bash",
+          "c",
+          "cpp",
+          "html",
+          "java",
+          "javascript",
+          "ocaml",
+          "python",
+          "scala",
+          "swift",
+          "typescript"
+        ],
+        "semantic_reference_count": 303,
+        "semantic_reference_ranges_valid": true,
+        "semantic_reference_text_present_in_source_excerpt": true,
+        "semantic_reference_strict_full_excerpt_mismatches": 39,
+        "marker_helper_strict_full_line_validator_passed": false,
+        "quality_pass": true
+      }
+    },
+    "baseline_semantic_passing_languages_preserved": true,
+    "issue83_source_reference_validation": "all returned references validated against pinned source by measure-quality.py",
+    "semantic_marker_reference_note": "The marker helper's strict content equality check flags 39 content-unit snippets per binary because it compares each unit to the whole source line. The independent audit verifies all 303 references per binary have valid pinned commit/path/line ranges and that every returned unit string occurs within its cited source excerpt; those 39 strict-equality differences are retained and reported.",
+    "pass": true
+  },
+  "query_resource_summary": {
+    "v031": {
+      "includes_persistent_embedder_daemon": true,
+      "sample_interval_seconds": 0.05,
+      "by_corpus_mode": {
+        "repodb": {
+          "exact": {
+            "query_count": 6,
+            "median_seconds": 0.12184781100950204,
+            "max_sampled_process_tree_peak_rss_kib": 602684
+          },
+          "semantic": {
+            "query_count": 6,
+            "median_seconds": 0.8502061780018266,
+            "max_sampled_process_tree_peak_rss_kib": 640800
+          },
+          "combined": {
+            "query_count": 6,
+            "median_seconds": 0.8644364509964362,
+            "max_sampled_process_tree_peak_rss_kib": 640936
+          }
+        },
+        "protonsync_ts": {
+          "exact": {
+            "query_count": 8,
+            "median_seconds": 0.11994356953073293,
+            "max_sampled_process_tree_peak_rss_kib": 602348
+          },
+          "semantic": {
+            "query_count": 8,
+            "median_seconds": 0.8164065100136213,
+            "max_sampled_process_tree_peak_rss_kib": 639348
+          },
+          "combined": {
+            "query_count": 8,
+            "median_seconds": 0.8409697699826211,
+            "max_sampled_process_tree_peak_rss_kib": 639680
+          }
+        }
+      }
+    },
+    "candidate": {
+      "includes_persistent_embedder_daemon": true,
+      "sample_interval_seconds": 0.05,
+      "by_corpus_mode": {
+        "repodb": {
+          "exact": {
+            "query_count": 6,
+            "median_seconds": 0.1300890900020022,
+            "max_sampled_process_tree_peak_rss_kib": 605012
+          },
+          "semantic": {
+            "query_count": 6,
+            "median_seconds": 0.8977581810031552,
+            "max_sampled_process_tree_peak_rss_kib": 627084
+          },
+          "combined": {
+            "query_count": 6,
+            "median_seconds": 0.9182465334888548,
+            "max_sampled_process_tree_peak_rss_kib": 643784
+          }
+        },
+        "protonsync_ts": {
+          "exact": {
+            "query_count": 8,
+            "median_seconds": 0.13306343252770603,
+            "max_sampled_process_tree_peak_rss_kib": 604828
+          },
+          "semantic": {
+            "query_count": 8,
+            "median_seconds": 0.7484630385297351,
+            "max_sampled_process_tree_peak_rss_kib": 642072
+          },
+          "combined": {
+            "query_count": 8,
+            "median_seconds": 0.9335144909855444,
+            "max_sampled_process_tree_peak_rss_kib": 642816
+          }
+        }
+      }
+    }
+  },
+  "release_gate_pass": true,
+  "evidence_inventory": [
+    {
+      "path": "environment-final.json",
+      "bytes": 7523,
+      "sha256": "52b50ea2dcf203ee18f3cadc79f644bd3b6509d75885df734f73ce557c58682a"
+    },
+    {
+      "path": "final-candidate-report.md",
+      "bytes": 6645,
+      "sha256": "ed631826cf164ecd080506cbb59ea5e1f9bdfa7abca16bf8a196bda1f3ab549a"
+    },
+    {
+      "path": "incidents/initial-tmpfs-failure.md",
+      "bytes": 1782,
+      "sha256": "d3553758a08e06ea94bc83c383b48ffb245af03372e97fe9c3502bca7d9f6425"
+    },
+    {
+      "path": "raw/candidate-release-validation.log",
+      "bytes": 191,
+      "sha256": "6c394eb538165e8d261c0f245d689c919a4fc79ac8a9e1533bb544841fd518af"
+    },
+    {
+      "path": "raw/memory-worker-diagnostic.json",
+      "bytes": 1480,
+      "sha256": "848e34c503837e65b6aa60eda6acd458abe619f2ae144338494c497bddfd35a4"
+    },
+    {
+      "path": "raw/memory-worker-repodb-diagnostic.json",
+      "bytes": 1461,
+      "sha256": "8e216743993ba6a370cf22c6347251a3b30ae5c46e737785da2d5f758b18a381"
+    },
+    {
+      "path": "raw/preliminary-tmpfs/pair-01-before.partial.json",
+      "bytes": 2623,
+      "sha256": "7003d6d0d0e95acd588a3669f785bdde55a92dd51b711b973f51fd3426f468f7"
+    },
+    {
+      "path": "raw/quality/candidate/candidate/.config/repodb/config.toml",
+      "bytes": 210,
+      "sha256": "019194c51d4a179bd9808dc9191c215fa2b45fd8361626a4c88ed5fda6f88376"
+    },
+    {
+      "path": "raw/quality/candidate/query-resources.json",
+      "bytes": 11310,
+      "sha256": "b24dc986ab0ed4b14268e83916ef8a804d3996f1be12f530830d238e9fbc8633"
+    },
+    {
+      "path": "raw/quality/candidate/raw-quality.json",
+      "bytes": 630664,
+      "sha256": "12696c8c5ea3b8300ed3dfbb9758df40a86c97beca80dcab7989e323c17a491a"
+    },
+    {
+      "path": "raw/quality/combined-26/after-exact-positive.json",
+      "bytes": 215118,
+      "sha256": "06f18bd963fe758404a4d26e09d703b8c7f637ac6bd64a16b370192ebe39107c"
+    },
+    {
+      "path": "raw/quality/combined-26/after-negative-explore.json",
+      "bytes": 38721,
+      "sha256": "9d39ca1a096dd7d3e6d6da23a178efbfc1ced49569194fc17a7208bb6bd0303a"
+    },
+    {
+      "path": "raw/quality/combined-26/after-semantic.json",
+      "bytes": 538674,
+      "sha256": "bea7143d4b90e9ea592bec99731a33451ec2e17d51dc32d2a4029e357453981c"
+    },
+    {
+      "path": "raw/quality/combined-26/before-exact-positive.json",
+      "bytes": 215114,
+      "sha256": "1652b1ffe23cb68f018ece29168ac7f9f50cb3b3c0e872bc8eb8780a8af0acb7"
+    },
+    {
+      "path": "raw/quality/combined-26/before-negative-explore.json",
+      "bytes": 38721,
+      "sha256": "3329289c6ab4ced757b63aca7088a7140cb2bd2a013cca711356b995d3232f2e"
+    },
+    {
+      "path": "raw/quality/combined-26/before-semantic.json",
+      "bytes": 538669,
+      "sha256": "156dc7c2ab089f0c5f7d5e15505eb173fec7e4eb9a709c4accb3337da7f610b9"
+    },
+    {
+      "path": "raw/quality/combined-26/semantic-reference-audit.json",
+      "bytes": 1669,
+      "sha256": "9d3bdb158626bb5c6d3ed23ce5a2e5a05d74c901716d2cfcb25699df049e1fd4"
+    },
+    {
+      "path": "raw/quality/v031/candidate/.config/repodb/config.toml",
+      "bytes": 210,
+      "sha256": "019194c51d4a179bd9808dc9191c215fa2b45fd8361626a4c88ed5fda6f88376"
+    },
+    {
+      "path": "raw/quality/v031/query-resources.json",
+      "bytes": 11316,
+      "sha256": "364b65c479f4992d1d9d608238bd8a30b20468390571cf0e24e0960c73699b9b"
+    },
+    {
+      "path": "raw/quality/v031/raw-quality.json",
+      "bytes": 630652,
+      "sha256": "0dc9b8a367082dcbeeca0b1b7e52ec0f64346efe6d8f2495f6d694e9f3e0b37a"
+    },
+    {
+      "path": "raw/runset-01-interleaved/pair-01-after-changed-noop.json",
+      "bytes": 1174,
+      "sha256": "b61dc60729e57aad54c603a2e24d2e171d0c8b27cbfbff02fd7c1ab82cb7e985"
+    },
+    {
+      "path": "raw/runset-01-interleaved/pair-01-after-throughput.json",
+      "bytes": 5065,
+      "sha256": "9c0a553529cf0f69148db6520c6f9e260fee41d88c25ae4d4cb52eb91c3feb30"
+    },
+    {
+      "path": "raw/runset-01-interleaved/pair-01-before-changed-noop.json",
+      "bytes": 1251,
+      "sha256": "3e4ae30dd92dea48b56ae2ca44fc121dfb2de6fae5356ba3dbf7dc8f6a449959"
+    },
+    {
+      "path": "raw/runset-01-interleaved/pair-01-before-throughput.json",
+      "bytes": 5192,
+      "sha256": "4a137ea5ff0149c07a54e37f48d2910a5ce448a7f86ecfc6adf0bf3c2241707b"
+    },
+    {
+      "path": "raw/runset-01-interleaved/pair-02-after-changed-noop.json",
+      "bytes": 1174,
+      "sha256": "6a7da44af0c5a709eebdaa56afa2714d846810eab29e8b3312fd24bbfad0002e"
+    },
+    {
+      "path": "raw/runset-01-interleaved/pair-02-after-throughput.json",
+      "bytes": 5066,
+      "sha256": "8cff3d09dcff47ce8a9908801b3c30d4a373712f81bfab549cb8a9b97d83272c"
+    },
+    {
+      "path": "raw/runset-01-interleaved/pair-02-before-changed-noop.json",
+      "bytes": 1251,
+      "sha256": "517c38088899845fe6dc51457149ac4b99d64ddff2b08f139b118835599ce55b"
+    },
+    {
+      "path": "raw/runset-01-interleaved/pair-02-before-throughput.json",
+      "bytes": 5192,
+      "sha256": "d35fe5e228c4631d272cceb10d134b7e5c82b28df629b490e3cd7c370a55a837"
+    },
+    {
+      "path": "raw/runset-01-interleaved/pair-03-after-changed-noop.json",
+      "bytes": 1174,
+      "sha256": "56d529a479624299a95573cf23f027dc373adbf185782557f5433812bad16133"
+    },
+    {
+      "path": "raw/runset-01-interleaved/pair-03-after-throughput.json",
+      "bytes": 5063,
+      "sha256": "924020a11446839b29594334dd35f2c6337a987b56ea77bf9b1133c33781046a"
+    },
+    {
+      "path": "raw/runset-01-interleaved/pair-03-before-changed-noop.json",
+      "bytes": 1249,
+      "sha256": "c544b09865c970b7d3692504c54ee2ad4439f556ef624cd8af2369d8cb007924"
+    },
+    {
+      "path": "raw/runset-01-interleaved/pair-03-before-throughput.json",
+      "bytes": 5191,
+      "sha256": "146fda3eb7c7b607851fbd21758ddb533bb4f8da6cb09da3c291af2c921fa2a6"
+    },
+    {
+      "path": "raw/runset-01-interleaved/pair-04-after-changed-noop.json",
+      "bytes": 1174,
+      "sha256": "494cd91fe4e444310f4459b19563f4ff4c6f9c7e41b8294e55fd6ab15a1d7670"
+    },
+    {
+      "path": "raw/runset-01-interleaved/pair-04-after-throughput.json",
+      "bytes": 5068,
+      "sha256": "4099bc4441cba6441f51b1ec57ccd3f84adb05f8814e70e4d16d82be8e068a32"
+    },
+    {
+      "path": "raw/runset-01-interleaved/pair-04-before-changed-noop.json",
+      "bytes": 1251,
+      "sha256": "2171f2385ecc9f8d3aa2bdbcb86261995485c0ab3d623203bfee1fe2575a8bfb"
+    },
+    {
+      "path": "raw/runset-01-interleaved/pair-04-before-throughput.json",
+      "bytes": 5193,
+      "sha256": "e5f4808e5baa1c98865a88e45b3e8e0d0c710e4bbe979671d1aee842d32469e3"
+    },
+    {
+      "path": "raw/runset-01-interleaved/pair-05-after-changed-noop.json",
+      "bytes": 1174,
+      "sha256": "ae0c1b58bdc5fc5c6877f528e5b3dd34d222adfb61824ec7cae5298c76fda32a"
+    },
+    {
+      "path": "raw/runset-01-interleaved/pair-05-after-throughput.json",
+      "bytes": 5066,
+      "sha256": "80ae6f9ce2fbdcdb422490f9d5f14c467d5f49894c48a28fa89eca6fd0039691"
+    },
+    {
+      "path": "raw/runset-01-interleaved/pair-05-before-changed-noop.json",
+      "bytes": 1251,
+      "sha256": "06a8f90e209be395108da674bcf12c0cc89edef3d7e18d5ecd4e3a24f87b30b3"
+    },
+    {
+      "path": "raw/runset-01-interleaved/pair-05-before-throughput.json",
+      "bytes": 5193,
+      "sha256": "085c3f1218728712d262407d46927e796ce75340624c775d6222df65f4f937c8"
+    },
+    {
+      "path": "raw/runset-02-strict/candidate-noop-repeat10-diagnostic-all-pairs.json",
+      "bytes": 100249,
+      "sha256": "b82338ac102f87a7035e18807999f52d7f475822a28a8eabe2521dfaca38c9db"
+    },
+    {
+      "path": "raw/runset-02-strict/changed-noop-crossed-pair02-diagnostic.json",
+      "bytes": 57199,
+      "sha256": "d242cb07777f106f745fdf2f325d89fa4ff72f95a5e3772cc41e5ea7420f0faf"
+    },
+    {
+      "path": "raw/runset-02-strict/changed-noop-crossed-pair04-diagnostic.json",
+      "bytes": 57214,
+      "sha256": "884a1d35cb7453f7df1fe7bc96d123b6245ee98ad1e912fdfa8b9accf0ef0336"
+    },
+    {
+      "path": "raw/runset-02-strict/pair-01-after-changed-noop.json",
+      "bytes": 1186,
+      "sha256": "a3f5bee4c205d6e1613c88fd9c0262df4c5d005c61633c32cb89a1984166e84e"
+    },
+    {
+      "path": "raw/runset-02-strict/pair-01-after-throughput.json",
+      "bytes": 5093,
+      "sha256": "85019bf1ba6aaa6a96218cd8983cea4322b8a302c33a42163dbe0d45b243e415"
+    },
+    {
+      "path": "raw/runset-02-strict/pair-01-before-changed-noop.json",
+      "bytes": 1265,
+      "sha256": "d53c654190ba372162b75c8775784b97898a6c4fe56e6b07b0224f5a2664f6fe"
+    },
+    {
+      "path": "raw/runset-02-strict/pair-01-before-throughput.json",
+      "bytes": 5219,
+      "sha256": "d2aa7ce4466fce91b610778781c38d5ab0636a42d5f81dd337d6e35c14a898f9"
+    },
+    {
+      "path": "raw/runset-02-strict/pair-02-after-changed-noop.json",
+      "bytes": 1187,
+      "sha256": "e5b1c734c0de22569798f77c22373dcc58b7752a4d60c7ba42fb4509e3980163"
+    },
+    {
+      "path": "raw/runset-02-strict/pair-02-after-throughput.json",
+      "bytes": 5094,
+      "sha256": "edb7a243d900987a79ad780e575baa3d4c3b7a622701ffdc59ee6aa0734abb27"
+    },
+    {
+      "path": "raw/runset-02-strict/pair-02-before-changed-noop.json",
+      "bytes": 1262,
+      "sha256": "81e97534217f9cd516f62adaeb29b5e51702815e005ea7f77890b03d99a5930a"
+    },
+    {
+      "path": "raw/runset-02-strict/pair-02-before-throughput.json",
+      "bytes": 5219,
+      "sha256": "b56bbaa5e1d5defb012e4e12e0abd0c0f29bfbef98b30920d6532d7085c241cf"
+    },
+    {
+      "path": "raw/runset-02-strict/pair-03-after-changed-noop.json",
+      "bytes": 1187,
+      "sha256": "e2fdaf6fc037cf223af12e10dc3af86b6db531a667ab3f7bbf20f13586fd8744"
+    },
+    {
+      "path": "raw/runset-02-strict/pair-03-after-throughput.json",
+      "bytes": 5094,
+      "sha256": "042393fd81ab1a34b33886a79d6c91d861d167d90350ad3e13036b8277d4b454"
+    },
+    {
+      "path": "raw/runset-02-strict/pair-03-before-changed-noop.json",
+      "bytes": 1265,
+      "sha256": "bc42f4aa1c3d15e9e364c3880031cfc74e32989ab2fed1f271d4661ad4a852f7"
+    },
+    {
+      "path": "raw/runset-02-strict/pair-03-before-throughput.json",
+      "bytes": 5220,
+      "sha256": "e5e31f70d63f3665159ec06dd46a98fe44a5b15200edae776e6b17d00aa94355"
+    },
+    {
+      "path": "raw/runset-02-strict/pair-04-after-changed-noop.json",
+      "bytes": 1188,
+      "sha256": "32fbe2ff925e7af974c72cb513d762e12dffa847449ddb739e35df3b6ff259b7"
+    },
+    {
+      "path": "raw/runset-02-strict/pair-04-after-throughput.json",
+      "bytes": 5094,
+      "sha256": "247a9453a34320a192d375b61c37b618dd618166c61d4c22f325d66956b2fa33"
+    },
+    {
+      "path": "raw/runset-02-strict/pair-04-before-changed-noop.json",
+      "bytes": 1265,
+      "sha256": "ba49801150b93d846f381520c30b80bd3e7c5f406beaf9e065cc30dd7edb4e64"
+    },
+    {
+      "path": "raw/runset-02-strict/pair-04-before-throughput.json",
+      "bytes": 5220,
+      "sha256": "212f2fd8a4a33b89d3d9b1435745a86863bc6388dac57a60117818e9466d984e"
+    },
+    {
+      "path": "raw/runset-02-strict/pair-05-after-changed-noop.json",
+      "bytes": 1187,
+      "sha256": "aad32186d26bd19932b8474d5ad05d25493eb46f3aec9531393e0230d3271361"
+    },
+    {
+      "path": "raw/runset-02-strict/pair-05-after-throughput.json",
+      "bytes": 5092,
+      "sha256": "a3fed2ca8439cd4aa4822f1c8001a3a9fd75874caffbbfe53f9aa5eee4ec7794"
+    },
+    {
+      "path": "raw/runset-02-strict/pair-05-before-changed-noop.json",
+      "bytes": 1263,
+      "sha256": "3d55240598fd868a38a19aebe3c839dfb98cffb846a7ed204f974137e16be78c"
+    },
+    {
+      "path": "raw/runset-02-strict/pair-05-before-throughput.json",
+      "bytes": 5221,
+      "sha256": "5f4bb935c7baf55a098bfdc17f2988eac2b52ed5f004dba791a50f3beddee28e"
+    },
+    {
+      "path": "release-gate-decision.md",
+      "bytes": 3256,
+      "sha256": "a555793c4f083bf4f45d04e6e2f8d270b49342cbd98e4e96ff06da20cfa0ff47"
+    }
+  ]
+}

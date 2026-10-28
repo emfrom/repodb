@@ -1,0 +1,46 @@
+{
+  "command": [
+    "/home/emfrom/opt/rust/cargo/target/release/repodb",
+    "--database",
+    "<per-run-db>",
+    "refresh",
+    "--changed"
+  ],
+  "repeat": 1,
+  "measurements": [
+    {
+      "command": [
+        "/home/emfrom/opt/rust/cargo/target/release/repodb",
+        "--database",
+        "/home/emfrom/opt/rust/cargo/target/issue144-final-runset/pair-03-after/repodb/run-01/repodb.sqlite",
+        "refresh",
+        "--changed"
+      ],
+      "elapsed_seconds": 0.011145329975988716,
+      "returncode": 0,
+      "database_bytes": 107868160,
+      "dataset": "repodb",
+      "run": "run-01",
+      "repeat": 1,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "command": [
+        "/home/emfrom/opt/rust/cargo/target/release/repodb",
+        "--database",
+        "/home/emfrom/opt/rust/cargo/target/issue144-final-runset/pair-03-after/combined_26/run-01/repodb.sqlite",
+        "refresh",
+        "--changed"
+      ],
+      "elapsed_seconds": 0.01114487904123962,
+      "returncode": 0,
+      "database_bytes": 6709248,
+      "dataset": "combined_26",
+      "run": "run-01",
+      "repeat": 1,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    }
+  ]
+}

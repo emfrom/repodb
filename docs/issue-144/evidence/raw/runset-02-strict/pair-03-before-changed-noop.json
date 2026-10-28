@@ -1,0 +1,46 @@
+{
+  "command": [
+    "/home/emfrom/.cache/repodb-baseline-031/target-verified-f0a/release/repodb",
+    "--database",
+    "<per-run-db>",
+    "refresh",
+    "--changed"
+  ],
+  "repeat": 1,
+  "measurements": [
+    {
+      "command": [
+        "/home/emfrom/.cache/repodb-baseline-031/target-verified-f0a/release/repodb",
+        "--database",
+        "/home/emfrom/opt/rust/cargo/target/issue144-final-runset/pair-03-before/repodb/run-01/repodb.sqlite",
+        "refresh",
+        "--changed"
+      ],
+      "elapsed_seconds": 0.013247585971839726,
+      "returncode": 0,
+      "database_bytes": 107868160,
+      "dataset": "repodb",
+      "run": "run-01",
+      "repeat": 1,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "command": [
+        "/home/emfrom/.cache/repodb-baseline-031/target-verified-f0a/release/repodb",
+        "--database",
+        "/home/emfrom/opt/rust/cargo/target/issue144-final-runset/pair-03-before/combined_26/run-01/repodb.sqlite",
+        "refresh",
+        "--changed"
+      ],
+      "elapsed_seconds": 0.013323083985596895,
+      "returncode": 0,
+      "database_bytes": 6709248,
+      "dataset": "combined_26",
+      "run": "run-01",
+      "repeat": 1,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    }
+  ]
+}

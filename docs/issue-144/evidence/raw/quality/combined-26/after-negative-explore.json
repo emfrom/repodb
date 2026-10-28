@@ -1,0 +1,1044 @@
+{
+  "negative_controls": [
+    {
+      "language": "bash",
+      "query": "RepodbDefinitelyAbsentbashBaselineNeedle0000",
+      "elapsed_seconds": 0.06510946701746434,
+      "returned_results": 0
+    },
+    {
+      "language": "c",
+      "query": "RepodbDefinitelyAbsentcBaselineNeedle0000",
+      "elapsed_seconds": 0.07205685402732342,
+      "returned_results": 0
+    },
+    {
+      "language": "clojure",
+      "query": "RepodbDefinitelyAbsentclojureBaselineNeedle0000",
+      "elapsed_seconds": 0.06534387799911201,
+      "returned_results": 0
+    },
+    {
+      "language": "cpp",
+      "query": "RepodbDefinitelyAbsentcppBaselineNeedle0000",
+      "elapsed_seconds": 0.06796941795619205,
+      "returned_results": 0
+    },
+    {
+      "language": "csharp",
+      "query": "RepodbDefinitelyAbsentcsharpBaselineNeedle0000",
+      "elapsed_seconds": 0.07123740896349773,
+      "returned_results": 0
+    },
+    {
+      "language": "dart",
+      "query": "RepodbDefinitelyAbsentdartBaselineNeedle0000",
+      "elapsed_seconds": 0.07890822301851586,
+      "returned_results": 0
+    },
+    {
+      "language": "go",
+      "query": "RepodbDefinitelyAbsentgoBaselineNeedle0000",
+      "elapsed_seconds": 0.06912576401373371,
+      "returned_results": 0
+    },
+    {
+      "language": "html",
+      "query": "RepodbDefinitelyAbsenthtmlBaselineNeedle0000",
+      "elapsed_seconds": 0.07313670497387648,
+      "returned_results": 0
+    },
+    {
+      "language": "java",
+      "query": "RepodbDefinitelyAbsentjavaBaselineNeedle0000",
+      "elapsed_seconds": 0.09052304096985608,
+      "returned_results": 0
+    },
+    {
+      "language": "javascript",
+      "query": "RepodbDefinitelyAbsentjavascriptBaselineNeedle0000",
+      "elapsed_seconds": 0.09837220603367314,
+      "returned_results": 0
+    },
+    {
+      "language": "julia",
+      "query": "RepodbDefinitelyAbsentjuliaBaselineNeedle0000",
+      "elapsed_seconds": 0.09098856803029776,
+      "returned_results": 0
+    },
+    {
+      "language": "kotlin",
+      "query": "RepodbDefinitelyAbsentkotlinBaselineNeedle0000",
+      "elapsed_seconds": 0.0828608630108647,
+      "returned_results": 0
+    },
+    {
+      "language": "lisp",
+      "query": "RepodbDefinitelyAbsentlispBaselineNeedle0000",
+      "elapsed_seconds": 0.0765353009919636,
+      "returned_results": 0
+    },
+    {
+      "language": "lua",
+      "query": "RepodbDefinitelyAbsentluaBaselineNeedle0000",
+      "elapsed_seconds": 0.06932032102486119,
+      "returned_results": 0
+    },
+    {
+      "language": "move_aptos",
+      "query": "RepodbDefinitelyAbsentmove_aptosBaselineNeedle0000",
+      "elapsed_seconds": 0.06904794997535646,
+      "returned_results": 0
+    },
+    {
+      "language": "move_sui",
+      "query": "RepodbDefinitelyAbsentmove_suiBaselineNeedle0000",
+      "elapsed_seconds": 0.07784812996396795,
+      "returned_results": 0
+    },
+    {
+      "language": "ocaml",
+      "query": "RepodbDefinitelyAbsentocamlBaselineNeedle0000",
+      "elapsed_seconds": 0.07305850100237876,
+      "returned_results": 0
+    },
+    {
+      "language": "php",
+      "query": "RepodbDefinitelyAbsentphpBaselineNeedle0000",
+      "elapsed_seconds": 0.07106607704190537,
+      "returned_results": 0
+    },
+    {
+      "language": "python",
+      "query": "RepodbDefinitelyAbsentpythonBaselineNeedle0000",
+      "elapsed_seconds": 0.06919327704235911,
+      "returned_results": 0
+    },
+    {
+      "language": "r",
+      "query": "RepodbDefinitelyAbsentrBaselineNeedle0000",
+      "elapsed_seconds": 0.09020855597918853,
+      "returned_results": 0
+    },
+    {
+      "language": "ruby",
+      "query": "RepodbDefinitelyAbsentrubyBaselineNeedle0000",
+      "elapsed_seconds": 0.08684862399240956,
+      "returned_results": 0
+    },
+    {
+      "language": "rust",
+      "query": "RepodbDefinitelyAbsentrustBaselineNeedle0000",
+      "elapsed_seconds": 0.10056250001071021,
+      "returned_results": 0
+    },
+    {
+      "language": "scala",
+      "query": "RepodbDefinitelyAbsentscalaBaselineNeedle0000",
+      "elapsed_seconds": 0.07936280802823603,
+      "returned_results": 0
+    },
+    {
+      "language": "solidity",
+      "query": "RepodbDefinitelyAbsentsolidityBaselineNeedle0000",
+      "elapsed_seconds": 0.07289256597869098,
+      "returned_results": 0
+    },
+    {
+      "language": "swift",
+      "query": "RepodbDefinitelyAbsentswiftBaselineNeedle0000",
+      "elapsed_seconds": 0.07975246297428384,
+      "returned_results": 0
+    },
+    {
+      "language": "typescript",
+      "query": "RepodbDefinitelyAbsenttypescriptBaselineNeedle0000",
+      "elapsed_seconds": 0.0697137099923566,
+      "returned_results": 0
+    }
+  ],
+  "duplicate_explore": {
+    "query": "function double(value)",
+    "first_page_seconds": 0.07679900096263736,
+    "pages": 6,
+    "result_count": 30,
+    "total_count": 30,
+    "snapshot_id": "bed8c9746125aeba",
+    "distinct_content_paths": [
+      "copy-0000/javascript/sample.js",
+      "copy-0001/javascript/sample.js",
+      "copy-0002/javascript/sample.js",
+      "copy-0003/javascript/sample.js",
+      "copy-0004/javascript/sample.js",
+      "copy-0005/javascript/sample.js",
+      "copy-0006/javascript/sample.js",
+      "copy-0007/javascript/sample.js",
+      "copy-0008/javascript/sample.js",
+      "copy-0009/javascript/sample.js"
+    ],
+    "reference_ids_unique": true,
+    "all_source_references_correct": true,
+    "references": [
+      {
+        "blob_id": "cfa8fd6949ff25a3435afd4258c5437c026230f1",
+        "commit_id": "6740e8af4d89bbb1b2b3577749fbf499d6c15e5e",
+        "component": "content",
+        "exact_match": true,
+        "first_retrieved_at": null,
+        "group_id": 0,
+        "kind": "content",
+        "last_retrieved_at": null,
+        "line_end": 2,
+        "line_start": 2,
+        "matched_components": [
+          "content"
+        ],
+        "matching_component": "content",
+        "path": "copy-0000/javascript/sample.js",
+        "primary_component": "content",
+        "ranking_method": "deterministic_fallback",
+        "reference_id": "00000000000000000001:[\"content\",\"local\",\"copy-0000/javascript/sample.js\",\"6740e8af4d89bbb1b2b3577749fbf499d6c15e5e\",\"cfa8fd6949ff25a3435afd4258c5437c026230f1\",null,2,2]",
+        "reference_only": true
+      },
+      {
+        "blob_id": "fa85751c6561c2aec58e235adf6716fa255d93f2",
+        "commit_id": "6740e8af4d89bbb1b2b3577749fbf499d6c15e5e",
+        "component": "content",
+        "exact_match": true,
+        "first_retrieved_at": null,
+        "group_id": 1,
+        "kind": "content",
+        "last_retrieved_at": null,
+        "line_end": 2,
+        "line_start": 2,
+        "matched_components": [
+          "content"
+        ],
+        "matching_component": "content",
+        "path": "copy-0001/javascript/sample.js",
+        "primary_component": "content",
+        "ranking_method": "deterministic_fallback",
+        "reference_id": "00000000000000000003:[\"content\",\"local\",\"copy-0001/javascript/sample.js\",\"6740e8af4d89bbb1b2b3577749fbf499d6c15e5e\",\"fa85751c6561c2aec58e235adf6716fa255d93f2\",null,2,2]",
+        "reference_only": true
+      },
+      {
+        "blob_id": "c537fe47db252e8da848efcb4ac4140e17a9c5f0",
+        "commit_id": "6740e8af4d89bbb1b2b3577749fbf499d6c15e5e",
+        "component": "content",
+        "exact_match": true,
+        "first_retrieved_at": null,
+        "group_id": 2,
+        "kind": "content",
+        "last_retrieved_at": null,
+        "line_end": 2,
+        "line_start": 2,
+        "matched_components": [
+          "content"
+        ],
+        "matching_component": "content",
+        "path": "copy-0002/javascript/sample.js",
+        "primary_component": "content",
+        "ranking_method": "deterministic_fallback",
+        "reference_id": "00000000000000000005:[\"content\",\"local\",\"copy-0002/javascript/sample.js\",\"6740e8af4d89bbb1b2b3577749fbf499d6c15e5e\",\"c537fe47db252e8da848efcb4ac4140e17a9c5f0\",null,2,2]",
+        "reference_only": true
+      },
+      {
+        "blob_id": "1adb4d053d435bdd3327c36a0b028b6c5b922323",
+        "commit_id": "6740e8af4d89bbb1b2b3577749fbf499d6c15e5e",
+        "component": "content",
+        "exact_match": true,
+        "first_retrieved_at": null,
+        "group_id": 3,
+        "kind": "content",
+        "last_retrieved_at": null,
+        "line_end": 2,
+        "line_start": 2,
+        "matched_components": [
+          "content"
+        ],
+        "matching_component": "content",
+        "path": "copy-0003/javascript/sample.js",
+        "primary_component": "content",
+        "ranking_method": "deterministic_fallback",
+        "reference_id": "00000000000000000006:[\"content\",\"local\",\"copy-0003/javascript/sample.js\",\"6740e8af4d89bbb1b2b3577749fbf499d6c15e5e\",\"1adb4d053d435bdd3327c36a0b028b6c5b922323\",null,2,2]",
+        "reference_only": true
+      },
+      {
+        "blob_id": "a5d9cd69298b7009ed324fab203ffbde93b2ca13",
+        "commit_id": "6740e8af4d89bbb1b2b3577749fbf499d6c15e5e",
+        "component": "content",
+        "exact_match": true,
+        "first_retrieved_at": null,
+        "group_id": 4,
+        "kind": "content",
+        "last_retrieved_at": null,
+        "line_end": 2,
+        "line_start": 2,
+        "matched_components": [
+          "content"
+        ],
+        "matching_component": "content",
+        "path": "copy-0004/javascript/sample.js",
+        "primary_component": "content",
+        "ranking_method": "deterministic_fallback",
+        "reference_id": "00000000000000000009:[\"content\",\"local\",\"copy-0004/javascript/sample.js\",\"6740e8af4d89bbb1b2b3577749fbf499d6c15e5e\",\"a5d9cd69298b7009ed324fab203ffbde93b2ca13\",null,2,2]",
+        "reference_only": true
+      },
+      {
+        "blob_id": "cdb190dc27b0b663a8bd79436dbfa383f96a1b58",
+        "commit_id": "6740e8af4d89bbb1b2b3577749fbf499d6c15e5e",
+        "component": "content",
+        "exact_match": true,
+        "first_retrieved_at": null,
+        "group_id": 5,
+        "kind": "content",
+        "last_retrieved_at": null,
+        "line_end": 2,
+        "line_start": 2,
+        "matched_components": [
+          "content"
+        ],
+        "matching_component": "content",
+        "path": "copy-0005/javascript/sample.js",
+        "primary_component": "content",
+        "ranking_method": "deterministic_fallback",
+        "reference_id": "00000000000000000011:[\"content\",\"local\",\"copy-0005/javascript/sample.js\",\"6740e8af4d89bbb1b2b3577749fbf499d6c15e5e\",\"cdb190dc27b0b663a8bd79436dbfa383f96a1b58\",null,2,2]",
+        "reference_only": true
+      },
+      {
+        "blob_id": "1947054cdd04c59e2f5ff6bdf58a2f88863001a3",
+        "commit_id": "6740e8af4d89bbb1b2b3577749fbf499d6c15e5e",
+        "component": "content",
+        "exact_match": true,
+        "first_retrieved_at": null,
+        "group_id": 6,
+        "kind": "content",
+        "last_retrieved_at": null,
+        "line_end": 2,
+        "line_start": 2,
+        "matched_components": [
+          "content"
+        ],
+        "matching_component": "content",
+        "path": "copy-0006/javascript/sample.js",
+        "primary_component": "content",
+        "ranking_method": "deterministic_fallback",
+        "reference_id": "00000000000000000012:[\"content\",\"local\",\"copy-0006/javascript/sample.js\",\"6740e8af4d89bbb1b2b3577749fbf499d6c15e5e\",\"1947054cdd04c59e2f5ff6bdf58a2f88863001a3\",null,2,2]",
+        "reference_only": true
+      },
+      {
+        "blob_id": "132c152187133e87a65ccf68eb7c25bc15a68ab4",
+        "commit_id": "6740e8af4d89bbb1b2b3577749fbf499d6c15e5e",
+        "component": "content",
+        "exact_match": true,
+        "first_retrieved_at": null,
+        "group_id": 7,
+        "kind": "content",
+        "last_retrieved_at": null,
+        "line_end": 2,
+        "line_start": 2,
+        "matched_components": [
+          "content"
+        ],
+        "matching_component": "content",
+        "path": "copy-0007/javascript/sample.js",
+        "primary_component": "content",
+        "ranking_method": "deterministic_fallback",
+        "reference_id": "00000000000000000014:[\"content\",\"local\",\"copy-0007/javascript/sample.js\",\"6740e8af4d89bbb1b2b3577749fbf499d6c15e5e\",\"132c152187133e87a65ccf68eb7c25bc15a68ab4\",null,2,2]",
+        "reference_only": true
+      },
+      {
+        "blob_id": "32f6b69bf7f67631c7e7cd1587db9e55a84ba40e",
+        "commit_id": "6740e8af4d89bbb1b2b3577749fbf499d6c15e5e",
+        "component": "content",
+        "exact_match": true,
+        "first_retrieved_at": null,
+        "group_id": 8,
+        "kind": "content",
+        "last_retrieved_at": null,
+        "line_end": 2,
+        "line_start": 2,
+        "matched_components": [
+          "content"
+        ],
+        "matching_component": "content",
+        "path": "copy-0008/javascript/sample.js",
+        "primary_component": "content",
+        "ranking_method": "deterministic_fallback",
+        "reference_id": "00000000000000000016:[\"content\",\"local\",\"copy-0008/javascript/sample.js\",\"6740e8af4d89bbb1b2b3577749fbf499d6c15e5e\",\"32f6b69bf7f67631c7e7cd1587db9e55a84ba40e\",null,2,2]",
+        "reference_only": true
+      },
+      {
+        "blob_id": "a82e18422b8b63ea7fe5348d1c83a0952617db48",
+        "commit_id": "6740e8af4d89bbb1b2b3577749fbf499d6c15e5e",
+        "component": "content",
+        "exact_match": true,
+        "first_retrieved_at": null,
+        "group_id": 9,
+        "kind": "content",
+        "last_retrieved_at": null,
+        "line_end": 2,
+        "line_start": 2,
+        "matched_components": [
+          "content"
+        ],
+        "matching_component": "content",
+        "path": "copy-0009/javascript/sample.js",
+        "primary_component": "content",
+        "ranking_method": "deterministic_fallback",
+        "reference_id": "00000000000000000018:[\"content\",\"local\",\"copy-0009/javascript/sample.js\",\"6740e8af4d89bbb1b2b3577749fbf499d6c15e5e\",\"a82e18422b8b63ea7fe5348d1c83a0952617db48\",null,2,2]",
+        "reference_only": true
+      },
+      {
+        "blob_id": "a6bbee526b135186c9d7a3b5bd36c091006b64ef",
+        "commit_id": "f2edfb8ae8d7e4c489e364deeaf7f15a833983f9",
+        "component": "content",
+        "exact_match": true,
+        "first_retrieved_at": null,
+        "group_id": 10,
+        "kind": "content",
+        "last_retrieved_at": null,
+        "line_end": 2,
+        "line_start": 2,
+        "matched_components": [
+          "content",
+          "diff"
+        ],
+        "matching_component": "content",
+        "path": "copy-0000/javascript/sample.js",
+        "primary_component": "diff",
+        "ranking_method": "deterministic_fallback",
+        "reference_id": "00000000000000000000:[\"content\",\"local\",\"copy-0000/javascript/sample.js\",\"f2edfb8ae8d7e4c489e364deeaf7f15a833983f9\",\"a6bbee526b135186c9d7a3b5bd36c091006b64ef\",null,2,2]",
+        "reference_only": true
+      },
+      {
+        "blob_id": "a6bbee526b135186c9d7a3b5bd36c091006b64ef",
+        "child_commit_id": "f2edfb8ae8d7e4c489e364deeaf7f15a833983f9",
+        "child_git_show_command": "git show 'f2edfb8ae8d7e4c489e364deeaf7f15a833983f9:copy-0000/javascript/sample.js'",
+        "component": "diff",
+        "exact_match": true,
+        "file_change": {
+          "available": true,
+          "detection_settings": {
+            "copy_threshold_percent": 50,
+            "diff_algorithm": "myers",
+            "find_copies_harder": true,
+            "git_version": "git version 2.53.0",
+            "rename_threshold_percent": 50
+          },
+          "heuristic": false,
+          "kind": "added",
+          "similarity_percent": null
+        },
+        "group_id": 10,
+        "hunk_id": 10,
+        "kind": "diff",
+        "matched_components": [
+          "content",
+          "diff"
+        ],
+        "matching_component": "diff",
+        "matching_line_end": 2,
+        "matching_line_start": 1,
+        "new_line_end": 2,
+        "new_line_start": 1,
+        "new_path": "copy-0000/javascript/sample.js",
+        "old_line_end": null,
+        "old_line_start": null,
+        "old_path": null,
+        "parent_commit_id": "4b825dc642cb6eb9a060e54bf8d69288fbee4904",
+        "parent_git_show_command": null,
+        "primary_component": "diff",
+        "ranking_method": "deterministic_fallback",
+        "reference_id": "[\"4b825dc642cb6eb9a060e54bf8d69288fbee4904\",\"f2edfb8ae8d7e4c489e364deeaf7f15a833983f9\",10,2532,\"added\"]",
+        "reference_only": true,
+        "side": "added"
+      },
+      {
+        "blob_id": "b2846ae6c6385972643524c6ea1277eaa38a80b5",
+        "commit_id": "f2edfb8ae8d7e4c489e364deeaf7f15a833983f9",
+        "component": "content",
+        "exact_match": true,
+        "first_retrieved_at": null,
+        "group_id": 11,
+        "kind": "content",
+        "last_retrieved_at": null,
+        "line_end": 2,
+        "line_start": 2,
+        "matched_components": [
+          "content",
+          "diff"
+        ],
+        "matching_component": "content",
+        "path": "copy-0001/javascript/sample.js",
+        "primary_component": "diff",
+        "ranking_method": "deterministic_fallback",
+        "reference_id": "00000000000000000002:[\"content\",\"local\",\"copy-0001/javascript/sample.js\",\"f2edfb8ae8d7e4c489e364deeaf7f15a833983f9\",\"b2846ae6c6385972643524c6ea1277eaa38a80b5\",null,2,2]",
+        "reference_only": true
+      },
+      {
+        "blob_id": "b2846ae6c6385972643524c6ea1277eaa38a80b5",
+        "child_commit_id": "f2edfb8ae8d7e4c489e364deeaf7f15a833983f9",
+        "child_git_show_command": "git show 'f2edfb8ae8d7e4c489e364deeaf7f15a833983f9:copy-0001/javascript/sample.js'",
+        "component": "diff",
+        "exact_match": true,
+        "file_change": {
+          "available": true,
+          "detection_settings": {
+            "copy_threshold_percent": 50,
+            "diff_algorithm": "myers",
+            "find_copies_harder": true,
+            "git_version": "git version 2.53.0",
+            "rename_threshold_percent": 50
+          },
+          "heuristic": false,
+          "kind": "added",
+          "similarity_percent": null
+        },
+        "group_id": 11,
+        "hunk_id": 36,
+        "kind": "diff",
+        "matched_components": [
+          "content",
+          "diff"
+        ],
+        "matching_component": "diff",
+        "matching_line_end": 2,
+        "matching_line_start": 1,
+        "new_line_end": 2,
+        "new_line_start": 1,
+        "new_path": "copy-0001/javascript/sample.js",
+        "old_line_end": null,
+        "old_line_start": null,
+        "old_path": null,
+        "parent_commit_id": "4b825dc642cb6eb9a060e54bf8d69288fbee4904",
+        "parent_git_show_command": null,
+        "primary_component": "diff",
+        "ranking_method": "deterministic_fallback",
+        "reference_id": "[\"4b825dc642cb6eb9a060e54bf8d69288fbee4904\",\"f2edfb8ae8d7e4c489e364deeaf7f15a833983f9\",36,2558,\"added\"]",
+        "reference_only": true,
+        "side": "added"
+      },
+      {
+        "blob_id": "8ebc309bcf89016824a08335a736751d2fe1a08c",
+        "commit_id": "f2edfb8ae8d7e4c489e364deeaf7f15a833983f9",
+        "component": "content",
+        "exact_match": true,
+        "first_retrieved_at": null,
+        "group_id": 12,
+        "kind": "content",
+        "last_retrieved_at": null,
+        "line_end": 2,
+        "line_start": 2,
+        "matched_components": [
+          "content",
+          "diff"
+        ],
+        "matching_component": "content",
+        "path": "copy-0002/javascript/sample.js",
+        "primary_component": "diff",
+        "ranking_method": "deterministic_fallback",
+        "reference_id": "00000000000000000004:[\"content\",\"local\",\"copy-0002/javascript/sample.js\",\"f2edfb8ae8d7e4c489e364deeaf7f15a833983f9\",\"8ebc309bcf89016824a08335a736751d2fe1a08c\",null,2,2]",
+        "reference_only": true
+      },
+      {
+        "blob_id": "8ebc309bcf89016824a08335a736751d2fe1a08c",
+        "child_commit_id": "f2edfb8ae8d7e4c489e364deeaf7f15a833983f9",
+        "child_git_show_command": "git show 'f2edfb8ae8d7e4c489e364deeaf7f15a833983f9:copy-0002/javascript/sample.js'",
+        "component": "diff",
+        "exact_match": true,
+        "file_change": {
+          "available": true,
+          "detection_settings": {
+            "copy_threshold_percent": 50,
+            "diff_algorithm": "myers",
+            "find_copies_harder": true,
+            "git_version": "git version 2.53.0",
+            "rename_threshold_percent": 50
+          },
+          "heuristic": false,
+          "kind": "added",
+          "similarity_percent": null
+        },
+        "group_id": 12,
+        "hunk_id": 62,
+        "kind": "diff",
+        "matched_components": [
+          "content",
+          "diff"
+        ],
+        "matching_component": "diff",
+        "matching_line_end": 2,
+        "matching_line_start": 1,
+        "new_line_end": 2,
+        "new_line_start": 1,
+        "new_path": "copy-0002/javascript/sample.js",
+        "old_line_end": null,
+        "old_line_start": null,
+        "old_path": null,
+        "parent_commit_id": "4b825dc642cb6eb9a060e54bf8d69288fbee4904",
+        "parent_git_show_command": null,
+        "primary_component": "diff",
+        "ranking_method": "deterministic_fallback",
+        "reference_id": "[\"4b825dc642cb6eb9a060e54bf8d69288fbee4904\",\"f2edfb8ae8d7e4c489e364deeaf7f15a833983f9\",62,2584,\"added\"]",
+        "reference_only": true,
+        "side": "added"
+      },
+      {
+        "blob_id": "ba8a9b4d7bee2872df5efa1d9f06b70792412d57",
+        "commit_id": "f2edfb8ae8d7e4c489e364deeaf7f15a833983f9",
+        "component": "content",
+        "exact_match": true,
+        "first_retrieved_at": null,
+        "group_id": 13,
+        "kind": "content",
+        "last_retrieved_at": null,
+        "line_end": 2,
+        "line_start": 2,
+        "matched_components": [
+          "content",
+          "diff"
+        ],
+        "matching_component": "content",
+        "path": "copy-0003/javascript/sample.js",
+        "primary_component": "diff",
+        "ranking_method": "deterministic_fallback",
+        "reference_id": "00000000000000000007:[\"content\",\"local\",\"copy-0003/javascript/sample.js\",\"f2edfb8ae8d7e4c489e364deeaf7f15a833983f9\",\"ba8a9b4d7bee2872df5efa1d9f06b70792412d57\",null,2,2]",
+        "reference_only": true
+      },
+      {
+        "blob_id": "ba8a9b4d7bee2872df5efa1d9f06b70792412d57",
+        "child_commit_id": "f2edfb8ae8d7e4c489e364deeaf7f15a833983f9",
+        "child_git_show_command": "git show 'f2edfb8ae8d7e4c489e364deeaf7f15a833983f9:copy-0003/javascript/sample.js'",
+        "component": "diff",
+        "exact_match": true,
+        "file_change": {
+          "available": true,
+          "detection_settings": {
+            "copy_threshold_percent": 50,
+            "diff_algorithm": "myers",
+            "find_copies_harder": true,
+            "git_version": "git version 2.53.0",
+            "rename_threshold_percent": 50
+          },
+          "heuristic": false,
+          "kind": "added",
+          "similarity_percent": null
+        },
+        "group_id": 13,
+        "hunk_id": 88,
+        "kind": "diff",
+        "matched_components": [
+          "content",
+          "diff"
+        ],
+        "matching_component": "diff",
+        "matching_line_end": 2,
+        "matching_line_start": 1,
+        "new_line_end": 2,
+        "new_line_start": 1,
+        "new_path": "copy-0003/javascript/sample.js",
+        "old_line_end": null,
+        "old_line_start": null,
+        "old_path": null,
+        "parent_commit_id": "4b825dc642cb6eb9a060e54bf8d69288fbee4904",
+        "parent_git_show_command": null,
+        "primary_component": "diff",
+        "ranking_method": "deterministic_fallback",
+        "reference_id": "[\"4b825dc642cb6eb9a060e54bf8d69288fbee4904\",\"f2edfb8ae8d7e4c489e364deeaf7f15a833983f9\",88,2610,\"added\"]",
+        "reference_only": true,
+        "side": "added"
+      },
+      {
+        "blob_id": "22ccd75c1c19eb8c4544daa41c046a2434496daf",
+        "commit_id": "f2edfb8ae8d7e4c489e364deeaf7f15a833983f9",
+        "component": "content",
+        "exact_match": true,
+        "first_retrieved_at": null,
+        "group_id": 14,
+        "kind": "content",
+        "last_retrieved_at": null,
+        "line_end": 2,
+        "line_start": 2,
+        "matched_components": [
+          "content",
+          "diff"
+        ],
+        "matching_component": "content",
+        "path": "copy-0004/javascript/sample.js",
+        "primary_component": "diff",
+        "ranking_method": "deterministic_fallback",
+        "reference_id": "00000000000000000008:[\"content\",\"local\",\"copy-0004/javascript/sample.js\",\"f2edfb8ae8d7e4c489e364deeaf7f15a833983f9\",\"22ccd75c1c19eb8c4544daa41c046a2434496daf\",null,2,2]",
+        "reference_only": true
+      },
+      {
+        "blob_id": "22ccd75c1c19eb8c4544daa41c046a2434496daf",
+        "child_commit_id": "f2edfb8ae8d7e4c489e364deeaf7f15a833983f9",
+        "child_git_show_command": "git show 'f2edfb8ae8d7e4c489e364deeaf7f15a833983f9:copy-0004/javascript/sample.js'",
+        "component": "diff",
+        "exact_match": true,
+        "file_change": {
+          "available": true,
+          "detection_settings": {
+            "copy_threshold_percent": 50,
+            "diff_algorithm": "myers",
+            "find_copies_harder": true,
+            "git_version": "git version 2.53.0",
+            "rename_threshold_percent": 50
+          },
+          "heuristic": false,
+          "kind": "added",
+          "similarity_percent": null
+        },
+        "group_id": 14,
+        "hunk_id": 114,
+        "kind": "diff",
+        "matched_components": [
+          "content",
+          "diff"
+        ],
+        "matching_component": "diff",
+        "matching_line_end": 2,
+        "matching_line_start": 1,
+        "new_line_end": 2,
+        "new_line_start": 1,
+        "new_path": "copy-0004/javascript/sample.js",
+        "old_line_end": null,
+        "old_line_start": null,
+        "old_path": null,
+        "parent_commit_id": "4b825dc642cb6eb9a060e54bf8d69288fbee4904",
+        "parent_git_show_command": null,
+        "primary_component": "diff",
+        "ranking_method": "deterministic_fallback",
+        "reference_id": "[\"4b825dc642cb6eb9a060e54bf8d69288fbee4904\",\"f2edfb8ae8d7e4c489e364deeaf7f15a833983f9\",114,2636,\"added\"]",
+        "reference_only": true,
+        "side": "added"
+      },
+      {
+        "blob_id": "2a4ab09603ef72d23fb744def726e688657b3af2",
+        "commit_id": "f2edfb8ae8d7e4c489e364deeaf7f15a833983f9",
+        "component": "content",
+        "exact_match": true,
+        "first_retrieved_at": null,
+        "group_id": 15,
+        "kind": "content",
+        "last_retrieved_at": null,
+        "line_end": 2,
+        "line_start": 2,
+        "matched_components": [
+          "content",
+          "diff"
+        ],
+        "matching_component": "content",
+        "path": "copy-0005/javascript/sample.js",
+        "primary_component": "diff",
+        "ranking_method": "deterministic_fallback",
+        "reference_id": "00000000000000000010:[\"content\",\"local\",\"copy-0005/javascript/sample.js\",\"f2edfb8ae8d7e4c489e364deeaf7f15a833983f9\",\"2a4ab09603ef72d23fb744def726e688657b3af2\",null,2,2]",
+        "reference_only": true
+      },
+      {
+        "blob_id": "2a4ab09603ef72d23fb744def726e688657b3af2",
+        "child_commit_id": "f2edfb8ae8d7e4c489e364deeaf7f15a833983f9",
+        "child_git_show_command": "git show 'f2edfb8ae8d7e4c489e364deeaf7f15a833983f9:copy-0005/javascript/sample.js'",
+        "component": "diff",
+        "exact_match": true,
+        "file_change": {
+          "available": true,
+          "detection_settings": {
+            "copy_threshold_percent": 50,
+            "diff_algorithm": "myers",
+            "find_copies_harder": true,
+            "git_version": "git version 2.53.0",
+            "rename_threshold_percent": 50
+          },
+          "heuristic": false,
+          "kind": "added",
+          "similarity_percent": null
+        },
+        "group_id": 15,
+        "hunk_id": 140,
+        "kind": "diff",
+        "matched_components": [
+          "content",
+          "diff"
+        ],
+        "matching_component": "diff",
+        "matching_line_end": 2,
+        "matching_line_start": 1,
+        "new_line_end": 2,
+        "new_line_start": 1,
+        "new_path": "copy-0005/javascript/sample.js",
+        "old_line_end": null,
+        "old_line_start": null,
+        "old_path": null,
+        "parent_commit_id": "4b825dc642cb6eb9a060e54bf8d69288fbee4904",
+        "parent_git_show_command": null,
+        "primary_component": "diff",
+        "ranking_method": "deterministic_fallback",
+        "reference_id": "[\"4b825dc642cb6eb9a060e54bf8d69288fbee4904\",\"f2edfb8ae8d7e4c489e364deeaf7f15a833983f9\",140,2662,\"added\"]",
+        "reference_only": true,
+        "side": "added"
+      },
+      {
+        "blob_id": "daf8906e726170ccff8fc46ec84df3c57686d3d4",
+        "commit_id": "f2edfb8ae8d7e4c489e364deeaf7f15a833983f9",
+        "component": "content",
+        "exact_match": true,
+        "first_retrieved_at": null,
+        "group_id": 16,
+        "kind": "content",
+        "last_retrieved_at": null,
+        "line_end": 2,
+        "line_start": 2,
+        "matched_components": [
+          "content",
+          "diff"
+        ],
+        "matching_component": "content",
+        "path": "copy-0006/javascript/sample.js",
+        "primary_component": "diff",
+        "ranking_method": "deterministic_fallback",
+        "reference_id": "00000000000000000013:[\"content\",\"local\",\"copy-0006/javascript/sample.js\",\"f2edfb8ae8d7e4c489e364deeaf7f15a833983f9\",\"daf8906e726170ccff8fc46ec84df3c57686d3d4\",null,2,2]",
+        "reference_only": true
+      },
+      {
+        "blob_id": "daf8906e726170ccff8fc46ec84df3c57686d3d4",
+        "child_commit_id": "f2edfb8ae8d7e4c489e364deeaf7f15a833983f9",
+        "child_git_show_command": "git show 'f2edfb8ae8d7e4c489e364deeaf7f15a833983f9:copy-0006/javascript/sample.js'",
+        "component": "diff",
+        "exact_match": true,
+        "file_change": {
+          "available": true,
+          "detection_settings": {
+            "copy_threshold_percent": 50,
+            "diff_algorithm": "myers",
+            "find_copies_harder": true,
+            "git_version": "git version 2.53.0",
+            "rename_threshold_percent": 50
+          },
+          "heuristic": false,
+          "kind": "added",
+          "similarity_percent": null
+        },
+        "group_id": 16,
+        "hunk_id": 166,
+        "kind": "diff",
+        "matched_components": [
+          "content",
+          "diff"
+        ],
+        "matching_component": "diff",
+        "matching_line_end": 2,
+        "matching_line_start": 1,
+        "new_line_end": 2,
+        "new_line_start": 1,
+        "new_path": "copy-0006/javascript/sample.js",
+        "old_line_end": null,
+        "old_line_start": null,
+        "old_path": null,
+        "parent_commit_id": "4b825dc642cb6eb9a060e54bf8d69288fbee4904",
+        "parent_git_show_command": null,
+        "primary_component": "diff",
+        "ranking_method": "deterministic_fallback",
+        "reference_id": "[\"4b825dc642cb6eb9a060e54bf8d69288fbee4904\",\"f2edfb8ae8d7e4c489e364deeaf7f15a833983f9\",166,2688,\"added\"]",
+        "reference_only": true,
+        "side": "added"
+      },
+      {
+        "blob_id": "2f472e7468276b446da9efada93359eea8bf8255",
+        "commit_id": "f2edfb8ae8d7e4c489e364deeaf7f15a833983f9",
+        "component": "content",
+        "exact_match": true,
+        "first_retrieved_at": null,
+        "group_id": 17,
+        "kind": "content",
+        "last_retrieved_at": null,
+        "line_end": 2,
+        "line_start": 2,
+        "matched_components": [
+          "content",
+          "diff"
+        ],
+        "matching_component": "content",
+        "path": "copy-0007/javascript/sample.js",
+        "primary_component": "diff",
+        "ranking_method": "deterministic_fallback",
+        "reference_id": "00000000000000000015:[\"content\",\"local\",\"copy-0007/javascript/sample.js\",\"f2edfb8ae8d7e4c489e364deeaf7f15a833983f9\",\"2f472e7468276b446da9efada93359eea8bf8255\",null,2,2]",
+        "reference_only": true
+      },
+      {
+        "blob_id": "2f472e7468276b446da9efada93359eea8bf8255",
+        "child_commit_id": "f2edfb8ae8d7e4c489e364deeaf7f15a833983f9",
+        "child_git_show_command": "git show 'f2edfb8ae8d7e4c489e364deeaf7f15a833983f9:copy-0007/javascript/sample.js'",
+        "component": "diff",
+        "exact_match": true,
+        "file_change": {
+          "available": true,
+          "detection_settings": {
+            "copy_threshold_percent": 50,
+            "diff_algorithm": "myers",
+            "find_copies_harder": true,
+            "git_version": "git version 2.53.0",
+            "rename_threshold_percent": 50
+          },
+          "heuristic": false,
+          "kind": "added",
+          "similarity_percent": null
+        },
+        "group_id": 17,
+        "hunk_id": 192,
+        "kind": "diff",
+        "matched_components": [
+          "content",
+          "diff"
+        ],
+        "matching_component": "diff",
+        "matching_line_end": 2,
+        "matching_line_start": 1,
+        "new_line_end": 2,
+        "new_line_start": 1,
+        "new_path": "copy-0007/javascript/sample.js",
+        "old_line_end": null,
+        "old_line_start": null,
+        "old_path": null,
+        "parent_commit_id": "4b825dc642cb6eb9a060e54bf8d69288fbee4904",
+        "parent_git_show_command": null,
+        "primary_component": "diff",
+        "ranking_method": "deterministic_fallback",
+        "reference_id": "[\"4b825dc642cb6eb9a060e54bf8d69288fbee4904\",\"f2edfb8ae8d7e4c489e364deeaf7f15a833983f9\",192,2714,\"added\"]",
+        "reference_only": true,
+        "side": "added"
+      },
+      {
+        "blob_id": "6f0a6dd4861a04f6f3ccea88ac256bbaa1c2ceb6",
+        "commit_id": "f2edfb8ae8d7e4c489e364deeaf7f15a833983f9",
+        "component": "content",
+        "exact_match": true,
+        "first_retrieved_at": null,
+        "group_id": 18,
+        "kind": "content",
+        "last_retrieved_at": null,
+        "line_end": 2,
+        "line_start": 2,
+        "matched_components": [
+          "content",
+          "diff"
+        ],
+        "matching_component": "content",
+        "path": "copy-0008/javascript/sample.js",
+        "primary_component": "diff",
+        "ranking_method": "deterministic_fallback",
+        "reference_id": "00000000000000000017:[\"content\",\"local\",\"copy-0008/javascript/sample.js\",\"f2edfb8ae8d7e4c489e364deeaf7f15a833983f9\",\"6f0a6dd4861a04f6f3ccea88ac256bbaa1c2ceb6\",null,2,2]",
+        "reference_only": true
+      },
+      {
+        "blob_id": "6f0a6dd4861a04f6f3ccea88ac256bbaa1c2ceb6",
+        "child_commit_id": "f2edfb8ae8d7e4c489e364deeaf7f15a833983f9",
+        "child_git_show_command": "git show 'f2edfb8ae8d7e4c489e364deeaf7f15a833983f9:copy-0008/javascript/sample.js'",
+        "component": "diff",
+        "exact_match": true,
+        "file_change": {
+          "available": true,
+          "detection_settings": {
+            "copy_threshold_percent": 50,
+            "diff_algorithm": "myers",
+            "find_copies_harder": true,
+            "git_version": "git version 2.53.0",
+            "rename_threshold_percent": 50
+          },
+          "heuristic": false,
+          "kind": "added",
+          "similarity_percent": null
+        },
+        "group_id": 18,
+        "hunk_id": 218,
+        "kind": "diff",
+        "matched_components": [
+          "content",
+          "diff"
+        ],
+        "matching_component": "diff",
+        "matching_line_end": 2,
+        "matching_line_start": 1,
+        "new_line_end": 2,
+        "new_line_start": 1,
+        "new_path": "copy-0008/javascript/sample.js",
+        "old_line_end": null,
+        "old_line_start": null,
+        "old_path": null,
+        "parent_commit_id": "4b825dc642cb6eb9a060e54bf8d69288fbee4904",
+        "parent_git_show_command": null,
+        "primary_component": "diff",
+        "ranking_method": "deterministic_fallback",
+        "reference_id": "[\"4b825dc642cb6eb9a060e54bf8d69288fbee4904\",\"f2edfb8ae8d7e4c489e364deeaf7f15a833983f9\",218,2740,\"added\"]",
+        "reference_only": true,
+        "side": "added"
+      },
+      {
+        "blob_id": "f86deeae7f0c544ee68f89c0654956e9eff53803",
+        "commit_id": "f2edfb8ae8d7e4c489e364deeaf7f15a833983f9",
+        "component": "content",
+        "exact_match": true,
+        "first_retrieved_at": null,
+        "group_id": 19,
+        "kind": "content",
+        "last_retrieved_at": null,
+        "line_end": 2,
+        "line_start": 2,
+        "matched_components": [
+          "content",
+          "diff"
+        ],
+        "matching_component": "content",
+        "path": "copy-0009/javascript/sample.js",
+        "primary_component": "diff",
+        "ranking_method": "deterministic_fallback",
+        "reference_id": "00000000000000000019:[\"content\",\"local\",\"copy-0009/javascript/sample.js\",\"f2edfb8ae8d7e4c489e364deeaf7f15a833983f9\",\"f86deeae7f0c544ee68f89c0654956e9eff53803\",null,2,2]",
+        "reference_only": true
+      },
+      {
+        "blob_id": "f86deeae7f0c544ee68f89c0654956e9eff53803",
+        "child_commit_id": "f2edfb8ae8d7e4c489e364deeaf7f15a833983f9",
+        "child_git_show_command": "git show 'f2edfb8ae8d7e4c489e364deeaf7f15a833983f9:copy-0009/javascript/sample.js'",
+        "component": "diff",
+        "exact_match": true,
+        "file_change": {
+          "available": true,
+          "detection_settings": {
+            "copy_threshold_percent": 50,
+            "diff_algorithm": "myers",
+            "find_copies_harder": true,
+            "git_version": "git version 2.53.0",
+            "rename_threshold_percent": 50
+          },
+          "heuristic": false,
+          "kind": "added",
+          "similarity_percent": null
+        },
+        "group_id": 19,
+        "hunk_id": 244,
+        "kind": "diff",
+        "matched_components": [
+          "content",
+          "diff"
+        ],
+        "matching_component": "diff",
+        "matching_line_end": 2,
+        "matching_line_start": 1,
+        "new_line_end": 2,
+        "new_line_start": 1,
+        "new_path": "copy-0009/javascript/sample.js",
+        "old_line_end": null,
+        "old_line_start": null,
+        "old_path": null,
+        "parent_commit_id": "4b825dc642cb6eb9a060e54bf8d69288fbee4904",
+        "parent_git_show_command": null,
+        "primary_component": "diff",
+        "ranking_method": "deterministic_fallback",
+        "reference_id": "[\"4b825dc642cb6eb9a060e54bf8d69288fbee4904\",\"f2edfb8ae8d7e4c489e364deeaf7f15a833983f9\",244,2766,\"added\"]",
+        "reference_only": true,
+        "side": "added"
+      }
+    ]
+  }
+}

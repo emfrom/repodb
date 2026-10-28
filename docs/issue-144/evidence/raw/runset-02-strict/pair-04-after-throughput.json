@@ -1,0 +1,138 @@
+{
+  "schema_version": 1,
+  "binary": {
+    "path": "/home/emfrom/opt/rust/cargo/target/release/repodb",
+    "version": "repodb 0.3.1",
+    "sha256": "ce084de6427d925816c7631537d3674213dd6c56973a3e0fe0a0414ba7a30fb8"
+  },
+  "repo_pin": "f7cc6bc5451204c5696f1bbef7e5575772820f47",
+  "process_timeout_seconds": 900,
+  "outer_command_timeout_seconds": 1800,
+  "scaled_head": "6740e8af4d89bbb1b2b3577749fbf499d6c15e5e",
+  "embedder": {
+    "path": "/home/emfrom/src/projects/generate_embeddings/generate_embeddings",
+    "version": "1.0.0",
+    "sha256": "9216649f498981fe2b1a1a85a2677b0611a9a060dda75b7a585095b3bca5df1d",
+    "daemon_sha256": "838e05f224f491a10fc641b9c065a411c23a23d9e43b7b3f0f160f644a201628",
+    "daemon_pid": 1502572,
+    "model_revision": "1110a243fdf4706b3f48f1d95db1a4f5529b4d41",
+    "warmup_seconds_excluded": 0.1633284359704703
+  },
+  "semgrep_core": {
+    "path": "/home/emfrom/.local/share/uv/tools/semgrep/lib/python3.13/site-packages/semgrep/bin/semgrep-core",
+    "version": "semgrep-core version: 1.181.0 (0f6e09374a)",
+    "sha256": "14f4b18720d881156bc0cc507b19130aa8d8db0882a5a479fb3919aadefca857"
+  },
+  "refresh": {
+    "repodb": {
+      "pin": "f7cc6bc5451204c5696f1bbef7e5575772820f47",
+      "runs": [
+        {
+          "repeat": 1,
+          "fresh_refresh": {
+            "command": [
+              "/home/emfrom/opt/rust/cargo/target/release/repodb",
+              "--database",
+              "/home/emfrom/opt/rust/cargo/target/issue144-final-runset/pair-04-after/repodb/run-01/repodb.sqlite",
+              "init"
+            ],
+            "elapsed_seconds": 261.96373814699473,
+            "sampled_process_tree_peak_rss_kib": 2602084,
+            "returncode": 0,
+            "stdout_tail": "",
+            "stderr_tail": "",
+            "database_bytes": 107868160,
+            "table_counts": {
+              "embedding_config": 3,
+              "imported_sources": 0,
+              "imported_versions": 0,
+              "imported_units": 0,
+              "import_config": 3,
+              "imported_git_units": 0,
+              "git_commits": 231,
+              "blob_contents": 649,
+              "git_occurrences": 14649,
+              "indexed_units": 46681,
+              "git_blob_units": 38866,
+              "commit_message_units": 236,
+              "diff_references": 7579,
+              "diff_file_changes": 909,
+              "diff_detection_settings": 1,
+              "unit_embeddings": 46681
+            }
+          },
+          "unchanged_refresh": {
+            "command": [
+              "/home/emfrom/opt/rust/cargo/target/release/repodb",
+              "--database",
+              "/home/emfrom/opt/rust/cargo/target/issue144-final-runset/pair-04-after/repodb/run-01/repodb.sqlite",
+              "refresh"
+            ],
+            "elapsed_seconds": 279.60567010799423,
+            "sampled_process_tree_peak_rss_kib": 2664276,
+            "returncode": 0,
+            "stdout_tail": "",
+            "stderr_tail": "",
+            "database_bytes": 107868160
+          },
+          "database_bytes_after_refresh": 107868160
+        }
+      ]
+    },
+    "combined_26": {
+      "pin": "6740e8af4d89bbb1b2b3577749fbf499d6c15e5e",
+      "runs": [
+        {
+          "repeat": 1,
+          "fresh_refresh": {
+            "command": [
+              "/home/emfrom/opt/rust/cargo/target/release/repodb",
+              "--database",
+              "/home/emfrom/opt/rust/cargo/target/issue144-final-runset/pair-04-after/combined_26/run-01/repodb.sqlite",
+              "init"
+            ],
+            "elapsed_seconds": 29.44322271202691,
+            "sampled_process_tree_peak_rss_kib": 1377076,
+            "returncode": 0,
+            "stdout_tail": "",
+            "stderr_tail": "",
+            "database_bytes": 6709248,
+            "table_counts": {
+              "embedding_config": 3,
+              "imported_sources": 0,
+              "imported_versions": 0,
+              "imported_units": 0,
+              "import_config": 3,
+              "imported_git_units": 0,
+              "git_commits": 2,
+              "blob_contents": 521,
+              "git_occurrences": 522,
+              "indexed_units": 2782,
+              "git_blob_units": 2000,
+              "commit_message_units": 2,
+              "diff_references": 780,
+              "diff_file_changes": 521,
+              "diff_detection_settings": 1,
+              "unit_embeddings": 2782
+            }
+          },
+          "unchanged_refresh": {
+            "command": [
+              "/home/emfrom/opt/rust/cargo/target/release/repodb",
+              "--database",
+              "/home/emfrom/opt/rust/cargo/target/issue144-final-runset/pair-04-after/combined_26/run-01/repodb.sqlite",
+              "refresh"
+            ],
+            "elapsed_seconds": 28.590245067025535,
+            "sampled_process_tree_peak_rss_kib": 1349868,
+            "returncode": 0,
+            "stdout_tail": "",
+            "stderr_tail": "",
+            "database_bytes": 6709248
+          },
+          "database_bytes_after_refresh": 6709248
+        }
+      ]
+    }
+  }
+}
