@@ -127,7 +127,7 @@ pub fn visit_with_workers(
         visit_ranges(text, &ranges, &mut visitor);
         return Ok(());
     }
-    if let Some(ranges) = semgrep_ranges(&command, kind, text.as_bytes()) {
+    if let Some(ranges) = semgrep_ranges(&command, kind, text.as_bytes())? {
         visit_ranges(text, &ranges, &mut visitor);
     } else {
         paragraphs(text, 1, &mut visitor);
@@ -176,13 +176,13 @@ fn semgrep_ranges(
     executable: &std::ffi::OsStr,
     language: &str,
     source: &[u8],
-) -> Option<Vec<(usize, usize)>> {
+) -> Result<Option<Vec<(usize, usize)>>, String> {
     if language != "move" {
         return semgrep_ranges_for_language(executable, language, source);
     }
-    let sui = semgrep_ranges_for_language(executable, "move_on_sui", source);
-    let aptos = semgrep_ranges_for_language(executable, "move_on_aptos", source);
-    reconcile_move_ranges(sui, aptos)
+    let sui = semgrep_ranges_for_language(executable, "move_on_sui", source)?;
+    let aptos = semgrep_ranges_for_language(executable, "move_on_aptos", source)?;
+    Ok(reconcile_move_ranges(sui, aptos))
 }
 
 fn reconcile_move_ranges(
@@ -200,7 +200,7 @@ fn semgrep_ranges_for_language(
     executable: &std::ffi::OsStr,
     language: &str,
     source: &[u8],
-) -> Option<Vec<(usize, usize)>> {
+) -> Result<Option<Vec<(usize, usize)>>, String> {
     use std::{
         fs::OpenOptions,
         process::{Command, Stdio},
@@ -216,7 +216,7 @@ fn semgrep_ranges_for_language(
     }
 
     if !semgrep_core_is_pinned(executable) {
-        return None;
+        return Ok(None);
     }
 
     let path = (0..16).find_map(|_| {
@@ -240,38 +240,70 @@ fn semgrep_ranges_for_language(
             Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => None,
             Err(_) => None,
         }
-    })?;
+    });
+    let Some(path) = path else {
+        return Ok(None);
+    };
 
-    let mut command = Command::new(executable);
-    command
-        .args(["-l", language, "-json", "-full_token_info", "-dump_ast"])
-        .arg(&path.0)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-    #[cfg(unix)]
-    {
-        use std::os::unix::process::CommandExt;
-        command.process_group(0);
+    let mut output = None;
+    for attempt in 0..2 {
+        let mut command = Command::new(executable);
+        command
+            .args(["-l", language, "-json", "-full_token_info", "-dump_ast"])
+            .arg(&path.0)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        #[cfg(unix)]
+        {
+            use std::os::unix::process::CommandExt;
+            command.process_group(0);
+        }
+        let mut child = match command.spawn() {
+            Ok(child) => child,
+            Err(_) if attempt == 0 => continue,
+            Err(_) => return Ok(None),
+        };
+        let attempt_output = match crate::process::capture_with_input_timeout(
+            &mut child,
+            &[],
+            8 * 1024 * 1024,
+            64 * 1024,
+            Duration::from_secs(10),
+        ) {
+            Ok(output) => output,
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {
+                return Err(error.to_string());
+            }
+            Err(_) if attempt == 0 => continue,
+            Err(_) => return Ok(None),
+        };
+        if !attempt_output.status.success() {
+            if attempt == 0 {
+                continue;
+            }
+            return Ok(None);
+        }
+        output = Some(attempt_output);
+        break;
     }
-    let mut child = command.spawn().ok()?;
-    let output = crate::process::capture_with_input_timeout(
-        &mut child,
-        &[],
-        8 * 1024 * 1024,
-        64 * 1024,
-        Duration::from_secs(10),
-    )
-    .ok()?;
-    if !output.status.success() || output.exceeded {
-        return None;
+    let Some(output) = output else {
+        return Ok(None);
+    };
+    if output.exceeded {
+        return Ok(None);
     }
-    let ast: serde_json::Value = serde_json::from_slice(&output.stdout).ok()?;
-    let syntax = crate::semgrep_languages::syntax_ranges_from_ast(language, &ast, source)?;
+    let Ok(ast) = serde_json::from_slice::<serde_json::Value>(&output.stdout) else {
+        return Ok(None);
+    };
+    let Some(syntax) = crate::semgrep_languages::syntax_ranges_from_ast(language, &ast, source)
+    else {
+        return Ok(None);
+    };
     let mut ranges = Vec::with_capacity(syntax.len() * 2 + 1);
     let mut cursor = 0;
     for [start, end] in syntax {
         if start < cursor || start >= end || end > source.len() {
-            return None;
+            return Ok(None);
         }
         if cursor < start {
             ranges.push([cursor, start]);
@@ -282,7 +314,7 @@ fn semgrep_ranges_for_language(
     if cursor < source.len() {
         ranges.push([cursor, source.len()]);
     }
-    validate_partition(source, ranges)
+    Ok(validate_partition(source, ranges))
 }
 
 fn semgrep_core_is_pinned(executable: &std::ffi::OsStr) -> bool {

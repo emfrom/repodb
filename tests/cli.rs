@@ -68,6 +68,24 @@ fn test_config_home(repo: &Path) -> PathBuf {
     config_home
 }
 
+fn fake_semgrep_core(repo: &Path, body: &str) -> (PathBuf, PathBuf) {
+    use std::os::unix::fs::PermissionsExt;
+
+    let executable = repo.join(".git/fake-semgrep-core");
+    let attempts = repo.join(".git/fake-semgrep-attempts");
+    fs::write(
+        &executable,
+        format!(
+            "#!/bin/sh\nif [ \"$1\" = \"-version\" ]; then echo 'semgrep-core 1.181.0'; exit 0; fi\ncount_file='{}'\ncount=0\n[ ! -f \"$count_file\" ] || count=$(cat \"$count_file\")\ncount=$((count + 1))\nprintf '%s\\n' \"$count\" > \"$count_file\"\n{}\n",
+            attempts.display(),
+            body
+        ),
+    )
+    .unwrap();
+    fs::set_permissions(&executable, fs::Permissions::from_mode(0o755)).unwrap();
+    (executable, attempts)
+}
+
 fn run_with_env(repo: &Path, args: &[&str], vars: &[(&str, &str)]) -> (bool, String) {
     let config_home = test_config_home(repo);
     let mut command = Command::new(env!("CARGO_BIN_EXE_repodb"));
@@ -9839,4 +9857,166 @@ fn native_refresh_worker_count_config_and_cli_are_validated() {
     let output = invoke(&["refresh"]);
     assert!(!output.status.success());
     assert!(String::from_utf8_lossy(&output.stderr).contains("[refresh].semgrep_workers"));
+}
+
+#[test]
+fn native_parser_retries_execution_failure_once_then_falls_back_per_blob() {
+    let repo = repository();
+    let root = repo.path();
+    let (semgrep, attempts) = fake_semgrep_core(root, "exit 17");
+    let semgrep = semgrep.to_string_lossy().into_owned();
+
+    let (ok, output) = run_with_env(root, &["init"], &[("REPODB_SEMGREP_CORE", &semgrep)]);
+    assert!(ok, "fallback refresh failed: {output}");
+    assert_eq!(fs::read_to_string(attempts).unwrap().trim(), "2");
+    assert!(
+        search_json(root, &["Rust phrase"])
+            .iter()
+            .any(|result| result["path"] == "src/main.rs" && result["line_start"] == 1)
+    );
+    assert!(
+        search_json(root, &["Exact [literal] TARGET"])
+            .iter()
+            .any(|result| result["path"] == "notes.txt")
+    );
+}
+
+#[test]
+fn invalid_native_parser_response_falls_back_without_retry() {
+    let repo = repository();
+    let root = repo.path();
+    let (semgrep, attempts) = fake_semgrep_core(root, r#"printf '%s\n' '{"unsupported":true}'"#);
+    let semgrep = semgrep.to_string_lossy().into_owned();
+
+    let (ok, output) = run_with_env(root, &["init"], &[("REPODB_SEMGREP_CORE", &semgrep)]);
+    assert!(ok, "fallback refresh failed: {output}");
+    assert_eq!(fs::read_to_string(attempts).unwrap().trim(), "1");
+    assert!(
+        search_json(root, &["Rust phrase"])
+            .iter()
+            .any(|result| result["path"] == "src/main.rs")
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn native_parser_interrupt_aborts_without_retry_and_preserves_snapshot() {
+    use std::time::{Duration, Instant};
+
+    let repo = repository();
+    let root = repo.path();
+    assert!(run(root, &["init"]).0);
+    let previous = root.join("previous-interrupt.txt");
+    fs::write(&previous, "previous interrupt snapshot marker\n").unwrap();
+    let previous_locator = previous.to_string_lossy().into_owned();
+    assert!(run(root, &["import", &previous_locator]).0);
+    assert!(run(root, &["refresh", "--imports"]).0);
+    assert_eq!(
+        search_json(root, &["previous interrupt snapshot marker"]).len(),
+        1
+    );
+    fs::write(root.join("src/interrupt.rs"), "fn interrupt_marker() {}\n").unwrap();
+    git(root, &["add", "src/interrupt.rs"]);
+    git(root, &["commit", "-qm", "add interrupt parser input"]);
+
+    let (semgrep, attempts) = fake_semgrep_core(root, "sleep 30");
+    let config_home = test_config_home(root);
+    let mut child = Command::new(env!("CARGO_BIN_EXE_repodb"))
+        .args(["refresh", "--changed"])
+        .current_dir(root)
+        .env("REPODB_SEMGREP_CORE", semgrep)
+        .env("XDG_CONFIG_HOME", config_home)
+        .spawn()
+        .unwrap();
+    let start_deadline = Instant::now() + Duration::from_secs(5);
+    while !attempts.exists() && Instant::now() < start_deadline {
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert!(attempts.exists(), "native parser should have started");
+    unsafe {
+        assert_eq!(libc::kill(child.id() as i32, libc::SIGINT), 0);
+    }
+    let exit_deadline = Instant::now() + Duration::from_secs(5);
+    let status = loop {
+        if let Some(status) = child.try_wait().unwrap() {
+            break status;
+        }
+        if Instant::now() >= exit_deadline {
+            unsafe {
+                libc::kill(child.id() as i32, libc::SIGKILL);
+            }
+            let _ = child.wait();
+            panic!("interrupted native refresh did not exit promptly");
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    };
+    assert!(!status.success(), "interrupt must fail refresh");
+    assert_eq!(fs::read_to_string(attempts).unwrap().trim(), "1");
+    assert_eq!(
+        search_json(root, &["previous interrupt snapshot marker"]).len(),
+        1
+    );
+    assert!(search_json(root, &["interrupt_marker"]).is_empty());
+}
+
+#[cfg(unix)]
+#[test]
+fn native_parser_deadline_aborts_without_retry_and_preserves_snapshot() {
+    use std::time::{Duration, Instant};
+
+    let repo = repository();
+    let root = repo.path();
+    assert!(run(root, &["init"]).0);
+    let previous = root.join("previous-deadline.txt");
+    fs::write(&previous, "previous deadline snapshot marker\n").unwrap();
+    let previous_locator = previous.to_string_lossy().into_owned();
+    assert!(run(root, &["import", &previous_locator]).0);
+    assert!(run(root, &["refresh", "--imports"]).0);
+    assert_eq!(
+        search_json(root, &["previous deadline snapshot marker"]).len(),
+        1
+    );
+    let changed = root.join("src/deadline.rs");
+    fs::write(&changed, "fn deadline_marker() {}\n").unwrap();
+    git(root, &["add", "src/deadline.rs"]);
+    git(root, &["commit", "-qm", "add deadline parser input"]);
+
+    let (semgrep, attempts) = fake_semgrep_core(root, "sleep 30");
+    let config_home = test_config_home(root);
+    let mut child = Command::new(env!("CARGO_BIN_EXE_repodb"))
+        .args(["refresh", "--changed"])
+        .current_dir(root)
+        .env("REPODB_SEMGREP_CORE", semgrep)
+        .env("XDG_CONFIG_HOME", config_home)
+        .env("REPODB_MAX_REFRESH_DURATION_SECS", "1")
+        .spawn()
+        .unwrap();
+    let start_deadline = Instant::now() + Duration::from_secs(5);
+    while !attempts.exists() && Instant::now() < start_deadline {
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert!(attempts.exists(), "native parser should have started");
+    let exit_deadline = Instant::now() + Duration::from_secs(5);
+    let status = loop {
+        if let Some(status) = child.try_wait().unwrap() {
+            break status;
+        }
+        if Instant::now() >= exit_deadline {
+            unsafe {
+                libc::kill(child.id() as i32, libc::SIGKILL);
+            }
+            let _ = child.wait();
+            panic!("deadline-expired native refresh did not exit promptly");
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    };
+    assert!(!status.success(), "overall deadline must fail refresh");
+    assert_eq!(fs::read_to_string(attempts).unwrap().trim(), "1");
+    let previous_results = search_json(root, &["previous deadline snapshot marker"]);
+    assert_eq!(
+        previous_results.len(),
+        1,
+        "previous snapshot must survive: {previous_results:?}"
+    );
+    assert!(search_json(root, &["deadline_marker"]).is_empty());
 }
