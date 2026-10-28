@@ -120,15 +120,20 @@ Examples:
 const REFRESH_HELP: &str = r#"Initialize or refresh the local index.
 
 Usage:
-  repodb init [--size-limit=error|warn|ignore]
+  repodb init [--semgrep-workers N] [--size-limit=error|warn|ignore]
   repodb refresh [--imports | --changed | --update COMMIT]
-                 [--size-limit=error|warn|ignore]
+                 [--semgrep-workers N] [--size-limit=error|warn|ignore]
 
 `init` creates the index and captures the checked-out repository plus registered imports.
 `refresh` performs a full refresh. `--imports` refreshes registered external sources
 only; `--changed` indexes commits since the previous snapshot; `--update COMMIT`
 adds the selected commit. `--changed` and `--update` cannot be combined with
 --imports or --size-limit.
+
+`--semgrep-workers N` sets the positive native Git Semgrep worker count. The default
+is half of the process-available logical parallelism, rounded down and at least one.
+`[refresh].semgrep_workers` sets a persistent value; the CLI option overrides it.
+This option does not apply to `refresh --imports`.
 
 `--size-limit` applies to local and URL document imports during `init`, a full
 `refresh`, or `refresh --imports`: `error` (default) aborts oversized documents,
@@ -145,8 +150,8 @@ staging cap (`REPODB_MAX_REFRESH_TEMP_BYTES`), a 10 GiB Git mirror cache cap
 On Unix, SIGINT cancels refresh and terminates its active child process group.
 
 Examples:
-  repodb init --size-limit=warn
-  repodb refresh --size-limit=warn
+  repodb init --semgrep-workers 1 --size-limit=warn
+  repodb refresh --semgrep-workers=4 --size-limit=warn
   repodb refresh --imports --size-limit=ignore
   repodb refresh --changed
   repodb refresh --update COMMIT_ID

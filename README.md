@@ -265,6 +265,10 @@ semgrep_core = "/path/to/semgrep-core"
 embedding_command = "/path/to/generate_embeddings"
 # Optional override for source byte ranges:
 # segmenter = "/path/to/segmenter"
+
+[refresh]
+# Optional positive native Git parser worker count; CLI --semgrep-workers overrides it.
+semgrep_workers = 4
 ```
 
 `REPODB_SEMGREP_CORE` and `REPODB_SEGMENTER`, when set, override their config

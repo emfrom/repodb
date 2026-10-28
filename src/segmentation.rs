@@ -89,11 +89,19 @@ fn paragraphs(text: &str, base_line: usize, visit: &mut impl FnMut(Unit<'_>) -> 
 }
 
 /// Visits borrowed units in segmentation order; returning false stops before any later unit is staged.
-pub fn visit(
+pub fn visit(kind: &str, text: &str, visitor: impl FnMut(Unit<'_>) -> bool) -> Result<(), String> {
+    visit_with_workers(kind, text, 1, visitor)
+}
+
+pub fn visit_with_workers(
     kind: &str,
     text: &str,
+    worker_count: usize,
     mut visitor: impl FnMut(Unit<'_>) -> bool,
 ) -> Result<(), String> {
+    if worker_count == 0 {
+        return Err("Semgrep worker count must be positive".into());
+    }
     if matches!(kind, "paragraph" | "fallback") {
         paragraphs(text, 1, &mut visitor);
         return Ok(());

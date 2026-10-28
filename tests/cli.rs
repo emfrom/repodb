@@ -9772,3 +9772,71 @@ fn status_and_settings_commands_preserve_invalid_argument_errors() {
     let (ok, output) = run(root, &["redirect-limit", "not-a-number"]);
     assert!(!ok, "malformed settings values must fail: {output}");
 }
+
+#[test]
+fn native_refresh_worker_count_config_and_cli_are_validated() {
+    let repo = repository();
+    let root = repo.path();
+    let config_home = test_config_home(root);
+    let config_file = config_home.join("repodb/config.toml");
+    let embedder = root.join(".git/repodb-test-embedder");
+    fs::write(
+        &config_file,
+        format!(
+            "[tools]\nembedding_command = {:?}\n\n[refresh]\nsemgrep_workers = 3\n",
+            embedder.to_string_lossy()
+        ),
+    )
+    .unwrap();
+    let invoke = |args: &[&str]| {
+        Command::new(env!("CARGO_BIN_EXE_repodb"))
+            .args(args)
+            .current_dir(root)
+            .env(
+                "REPODB_SEMGREP_CORE",
+                semgrep_corpus::required_semgrep_core(),
+            )
+            .env("XDG_CONFIG_HOME", &config_home)
+            .output()
+            .unwrap()
+    };
+
+    let output = invoke(&["refresh", "--semgrep-workers=0"]);
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("greater than zero"));
+
+    let output = invoke(&["refresh", "--semgrep-workers", "bogus"]);
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("positive integer"));
+
+    let output = invoke(&["refresh", "--semgrep-workers", "1", "--semgrep-workers=2"]);
+    assert!(!output.status.success());
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("specified only once"),
+        "unexpected duplicate-option error: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let output = invoke(&["refresh", "--imports", "--semgrep-workers", "1"]);
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("native Git refresh"));
+
+    let output = invoke(&["init", "--semgrep-workers", "1"]);
+    assert!(
+        output.status.success(),
+        "CLI override of persistent config failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    fs::write(
+        &config_file,
+        format!(
+            "[tools]\nembedding_command = {:?}\n\n[refresh]\nsemgrep_workers = 0\n",
+            embedder.to_string_lossy()
+        ),
+    )
+    .unwrap();
+    let output = invoke(&["refresh"]);
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("[refresh].semgrep_workers"));
+}

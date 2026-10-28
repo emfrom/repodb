@@ -1402,6 +1402,7 @@ fn flush_embedding_batch(
 }
 
 struct StagedUnitWriter<'a, 'connection> {
+    worker_count: usize,
     next_unit_id: &'a mut i64,
     unit_statement: &'a mut rusqlite::Statement<'connection>,
     batch: &'a mut EmbeddingBatch,
@@ -1415,40 +1416,41 @@ struct StagedUnitWriter<'a, 'connection> {
 impl StagedUnitWriter<'_, '_> {
     fn segment_blob(&mut self, content: &str, blob_id: &str, kind: &str) -> Result<()> {
         let mut staging_error = None;
-        let segmentation_result = segmentation::visit(kind, content, |unit| {
-            let staged = (|| -> Result<()> {
-                self.budget.charge_records(1, "history content unit")?;
-                *self.next_unit_id += 1;
-                let text = unit.text.to_owned();
-                self.unit_statement.execute(params![
-                    *self.next_unit_id,
-                    blob_id,
-                    kind,
-                    &text,
-                    unit.byte_start,
-                    unit.byte_end,
-                    unit.line_start,
-                    unit.line_end
-                ])?;
-                self.budget.charge(text.len(), self.budget_label)?;
-                self.batch.push((*self.next_unit_id, text));
-                if self.batch.len() == HISTORY_EMBEDDING_BATCH_SIZE {
-                    flush_embedding_batch(
-                        self.batch,
-                        self.pipeline,
-                        self.embedding_dimension,
-                        self.embedding_statement,
-                        self.budget,
-                    )?;
+        let segmentation_result =
+            segmentation::visit_with_workers(kind, content, self.worker_count, |unit| {
+                let staged = (|| -> Result<()> {
+                    self.budget.charge_records(1, "history content unit")?;
+                    *self.next_unit_id += 1;
+                    let text = unit.text.to_owned();
+                    self.unit_statement.execute(params![
+                        *self.next_unit_id,
+                        blob_id,
+                        kind,
+                        &text,
+                        unit.byte_start,
+                        unit.byte_end,
+                        unit.line_start,
+                        unit.line_end
+                    ])?;
+                    self.budget.charge(text.len(), self.budget_label)?;
+                    self.batch.push((*self.next_unit_id, text));
+                    if self.batch.len() == HISTORY_EMBEDDING_BATCH_SIZE {
+                        flush_embedding_batch(
+                            self.batch,
+                            self.pipeline,
+                            self.embedding_dimension,
+                            self.embedding_statement,
+                            self.budget,
+                        )?;
+                    }
+                    Ok(())
+                })();
+                if let Err(error) = staged {
+                    staging_error = Some(error);
+                    return false;
                 }
-                Ok(())
-            })();
-            if let Err(error) = staged {
-                staging_error = Some(error);
-                return false;
-            }
-            true
-        });
+                true
+            });
         segmentation_result?;
         if let Some(error) = staging_error {
             return Err(error);
@@ -3016,12 +3018,13 @@ fn stage_commit_message(
 
 #[cfg(test)]
 fn prepare_refresh(c: &Connection) -> Result<()> {
-    prepare_refresh_excluding(c, None)
+    prepare_refresh_excluding(c, None, 1)
 }
 
 pub fn prepare_refresh_excluding(
     c: &Connection,
     excluded_database_path: Option<&[u8]>,
+    worker_count: usize,
 ) -> Result<()> {
     is_current(c)?;
     let mut preparation_bytes = Budget::refresh("history refresh preparation accounting")?;
@@ -3163,6 +3166,7 @@ pub fn prepare_refresh_excluding(
                     && variant_stage.execute(params![blob_id, kind])? != 0
                 {
                     StagedUnitWriter {
+                        worker_count,
                         next_unit_id: &mut unit_count,
                         unit_statement: &mut unit_stage,
                         batch: &mut batch,
@@ -3294,22 +3298,25 @@ pub fn resolve_update_commit(commit_id: &str) -> Result<String> {
 pub fn refresh_changed_excluding(
     c: &mut Connection,
     excluded_database_path: Option<&[u8]>,
+    worker_count: usize,
 ) -> Result<()> {
-    refresh_scoped(c, None, excluded_database_path)
+    refresh_scoped(c, None, excluded_database_path, worker_count)
 }
 
 pub fn refresh_update_excluding(
     c: &mut Connection,
     commit_id: &str,
     excluded_database_path: Option<&[u8]>,
+    worker_count: usize,
 ) -> Result<()> {
-    refresh_scoped(c, Some(commit_id), excluded_database_path)
+    refresh_scoped(c, Some(commit_id), excluded_database_path, worker_count)
 }
 
 fn refresh_scoped(
     c: &mut Connection,
     target: Option<&str>,
     excluded_database_path: Option<&[u8]>,
+    worker_count: usize,
 ) -> Result<()> {
     let version = snapshot_version(c)?;
     let schema: i64 = c.query_row("PRAGMA user_version", [], |row| row.get(0))?;
@@ -3530,6 +3537,7 @@ fn refresh_scoped(
                     budget.charge(content.len(), "staged scoped Git blob text")?;
                 }
                 StagedUnitWriter {
+                    worker_count,
                     next_unit_id: &mut next_unit_id,
                     unit_statement: &mut unit_stage,
                     batch: &mut batch,

@@ -5,6 +5,7 @@ use std::{env, ffi::OsString, fs, path::PathBuf, sync::OnceLock};
 #[serde(default, deny_unknown_fields)]
 struct Config {
     tools: Tools,
+    refresh: Refresh,
 }
 
 #[derive(Clone, Default, Deserialize)]
@@ -13,6 +14,12 @@ struct Tools {
     semgrep_core: Option<PathBuf>,
     segmenter: Option<PathBuf>,
     embedding_command: Option<PathBuf>,
+}
+
+#[derive(Clone, Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+struct Refresh {
+    semgrep_workers: Option<usize>,
 }
 
 static CONFIG: OnceLock<std::result::Result<Config, String>> = OnceLock::new();
@@ -75,6 +82,32 @@ pub fn segmenter() -> std::result::Result<Option<OsString>, String> {
     Ok(load()?.tools.segmenter.map(PathBuf::into_os_string))
 }
 
+pub fn semgrep_workers(cli_override: Option<usize>) -> std::result::Result<usize, String> {
+    let config = load()?;
+    let available = std::thread::available_parallelism()
+        .map(usize::from)
+        .unwrap_or(1);
+    resolve_semgrep_workers(available, config.refresh.semgrep_workers, cli_override)
+}
+
+fn resolve_semgrep_workers(
+    available: usize,
+    configured: Option<usize>,
+    cli_override: Option<usize>,
+) -> std::result::Result<usize, String> {
+    if let Some(count) = configured
+        && count == 0
+    {
+        return Err("[refresh].semgrep_workers must be a positive integer".into());
+    }
+    if let Some(count) = cli_override
+        && count == 0
+    {
+        return Err("--semgrep-workers must be greater than zero".into());
+    }
+    Ok(cli_override.unwrap_or_else(|| configured.unwrap_or_else(|| (available / 2).max(1))))
+}
+
 pub const DEFAULT_EMBEDDING_MODEL: &str = "all-MiniLM-L6-v2";
 
 pub fn embedding_command() -> std::result::Result<String, String> {
@@ -91,4 +124,38 @@ pub fn embedding_command() -> std::result::Result<String, String> {
         .join("bin/generate_embeddings")
         .to_string_lossy()
         .into_owned())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::resolve_semgrep_workers;
+
+    #[test]
+    fn semgrep_worker_policy_uses_half_available_parallelism_and_minimum_one() {
+        assert_eq!(resolve_semgrep_workers(16, None, None).unwrap(), 8);
+        assert_eq!(resolve_semgrep_workers(3, None, None).unwrap(), 1);
+        assert_eq!(resolve_semgrep_workers(1, None, None).unwrap(), 1);
+        assert_eq!(resolve_semgrep_workers(0, None, None).unwrap(), 1);
+    }
+
+    #[test]
+    fn semgrep_worker_policy_prefers_cli_over_config() {
+        assert_eq!(resolve_semgrep_workers(16, Some(3), Some(7)).unwrap(), 7);
+        assert_eq!(resolve_semgrep_workers(16, Some(3), None).unwrap(), 3);
+        assert_eq!(resolve_semgrep_workers(16, None, Some(1)).unwrap(), 1);
+    }
+
+    #[test]
+    fn semgrep_worker_policy_rejects_zero_values() {
+        assert!(
+            resolve_semgrep_workers(16, Some(0), None)
+                .unwrap_err()
+                .contains("[refresh].semgrep_workers")
+        );
+        assert!(
+            resolve_semgrep_workers(16, None, Some(0))
+                .unwrap_err()
+                .contains("--semgrep-workers")
+        );
+    }
 }
