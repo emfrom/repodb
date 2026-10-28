@@ -33,7 +33,7 @@ Throughput medians are unpaired checkpoint observations and are **not** a gate c
 ## CLI contract and validation
 
 - Public integration suite covers help, status, settings, import/preview, re-embedding, init/refresh modes, search modes/scopes/pagination/references, errors, JSON/text output and exit status. Invalid status/settings arguments now have an explicit regression test.
-- `cargo test --all-targets`: **311 passed, 1 ignored**. An earlier attempt had one transient `stdin writer failed` in a PDF fixture; its isolated rerun passed, followed by the complete passing suite.
+- `cargo test --all-targets`: **313 passed, 1 ignored**. An earlier attempt had one transient `stdin writer failed` in a PDF fixture; its isolated rerun passed, followed by the complete passing suite.
 - `cargo clippy --all-targets -- -D warnings`: passed.
 - `cargo fmt --check`: passed. `git diff --check`: passed.
 - `src/main.rs::execute` now handles only global options, database selection, help routing, and command routing. Command parsing/orchestration/presentation is in `src/commands/{help,status,settings,import,refresh,search}.rs`; no additional executable or shared all-dependencies context was introduced.
