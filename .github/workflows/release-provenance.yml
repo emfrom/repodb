@@ -30,7 +30,7 @@ jobs:
         run: |
           mkdir -p dist
           cp target/package/*.crate dist/
-          install -m 0644 target/release/repodb dist/repodb-linux-x86_64
+          install -m 0755 target/release/repodb dist/repodb-linux-x86_64
           (cd dist && sha256sum *.crate repodb-linux-x86_64 > SHA256SUMS.txt)
       - name: Upload workflow artifact (not a GitHub Release)
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
