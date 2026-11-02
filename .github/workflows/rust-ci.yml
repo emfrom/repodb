@@ -29,5 +29,12 @@ jobs:
         run: cargo fmt --all -- --check
       - name: Run strict Clippy
         run: cargo clippy --locked --all-targets --all-features -- -D warnings
+      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+      - name: Locate pinned Semgrep Core
+        run: |
+          core="$(uv run --no-project --with semgrep==1.181.0 -- python -c 'from pathlib import Path; import semgrep; print(Path(semgrep.__file__).parent / "bin" / "semgrep-core")')"
+          test -x "$core"
+          "$core" -version
+          echo "REPODB_SEMGREP_CORE=$core" >> "$GITHUB_ENV"
       - name: Run tests
-        run: cargo test --locked --all-targets --all-features
+        run: cargo test --locked --all-targets --all-features -- --test-threads=1
